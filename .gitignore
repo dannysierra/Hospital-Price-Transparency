@@ -1,12 +1,16 @@
 # 1. Ignore everything in the project by default
 *
 
-# 2. Do not ignore the 'Code' folder itself (so Git can open it)
-!Code/
-
-# 3. Explicitly allow ONLY your single specific R file
-!Code/NationalRegressions_System_Peer_Pressure_Commented.R
-
-# 4. Keep essential RStudio and Git settings
+# 2. Keep essential RStudio settings
 !.gitignore
 !*.Rproj
+
+# 3. Allow Git to look inside the Code folder
+!Code/
+
+# 4. Explicitly ignore everything INSIDE Code by default
+Code/*
+
+# 5. Make the absolute exception for your ONE file
+!Code/NationalRegressions_System_Peer_Pressure_Commented.R
+
