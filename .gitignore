@@ -1,16 +1,18 @@
-# 1. Ignore everything in the project by default
-*
+# 1. Ignore everything in the project by default 
+* 
 
-# 2. Keep essential RStudio settings
-!.gitignore
-!*.Rproj
+# 2. Keep essential RStudio settings and documentation
+!.gitignore 
+!*.Rproj 
+!README.md
 
-# 3. Allow Git to look inside the Code folder
-!Code/
+# 3. Allow Git to look inside the Code folder 
+!Code/ 
 
-# 4. Explicitly ignore everything INSIDE Code by default
-Code/*
+# 4. Explicitly ignore everything INSIDE Code by default 
+Code/* 
 
-# 5. Make the absolute exception for your ONE file
+# 5. Make the absolute exception for your ONE file 
 !Code/NationalRegressions_System_Peer_Pressure_Commented.R
+
 
