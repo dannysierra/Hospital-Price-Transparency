@@ -1,12 +1,12 @@
-# Ignore everything by default
+# 1. Ignore everything in the project by default
 *
 
-# Allow the Code folder and R scripts
+# 2. Do not ignore the 'Code' folder itself (so Git can open it)
 !Code/
-!Code/*/
-!Code/**/*.R
-!Code/**/*.Rmd
 
-# Keep Git/RStudio settings
+# 3. Explicitly allow ONLY your single specific R file
+!Code/NationalRegressions_System_Peer_Pressure_Commented.R
+
+# 4. Keep essential RStudio and Git settings
 !.gitignore
 !*.Rproj
