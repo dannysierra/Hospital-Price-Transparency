@@ -1,0 +1,12 @@
+# Ignore everything by default
+*
+
+# Allow the Code folder and R scripts
+!Code/
+!Code/*/
+!Code/**/*.R
+!Code/**/*.Rmd
+
+# Keep Git/RStudio settings
+!.gitignore
+!*.Rproj
