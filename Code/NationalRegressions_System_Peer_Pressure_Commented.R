@@ -263,8 +263,8 @@ add_service_groups <- function(df) {
 # ----------------------------------------------------------------------------
 # Reads the county-level cleaned national price file and constructs the 
 # primary county entrant-month analysis panel with log price outcomes.
-df_county_raw <- fread(here("..", "Data", "data_clean",
-                            "National_prices_with_controls_county_final.csv"))
+setwd("~/Library/CloudStorage/OneDrive-FloridaStateUniversity/Hospital Price Transparency Paper/Data")
+df_county_raw <- fread("../Data/data_clean/National_prices_with_controls_county_final.csv")
 cat("County rows:", nrow(df_county_raw), "| Columns:", ncol(df_county_raw), "\n")
 
 df_iv_county <- df_county_raw %>%
@@ -419,8 +419,8 @@ for (iv in ivs_county) {
 # ----------------------------------------------------------------------------
 # Reads the city-level cleaned national price file and constructs the city 
 # entrant-month robustness panel.
-df_city_raw <- fread(here("..", "Data", "data_clean",
-                          "National_prices_with_controls_city_final.csv"))
+df_city_raw <- fread("../Data/data_clean/National_prices_with_controls_city_final.csv")
+
 cat("City rows:", nrow(df_city_raw), "| Columns:", ncol(df_city_raw), "\n")
 
 df_iv_city <- df_city_raw %>%
@@ -455,12 +455,12 @@ print(summary(df_iv_city$n_prior_posters))
 
 # Step 1: Systems spanning >1 city
 system_geo_city <- df_iv_city %>%
-# ----------------------------------------------------------------------------
+  # ----------------------------------------------------------------------------
 # SECTION 4 GUIDE
 # ----------------------------------------------------------------------------
 # Constructs corrected city instruments for 6m, 9m, and 12m trailing windows 
 # using only health systems present in the focal city.
-  distinct(HOSPITAL_ID, city_state, HEALTH_SYSTEM_NAME) %>%
+distinct(HOSPITAL_ID, city_state, HEALTH_SYSTEM_NAME) %>%
   filter(!is.na(HEALTH_SYSTEM_NAME), HEALTH_SYSTEM_NAME != "") %>%
   group_by(HEALTH_SYSTEM_NAME) %>%
   summarise(n_cities = n_distinct(city_state), .groups = "drop") %>%
@@ -515,13 +515,13 @@ build_city_instrument <- function(hosp_data, panel_months, focal_systems,
 cat("Building city instruments...\n")
 
 city_iv_6m  <- build_city_instrument(hosp_system_city, panel_city_months,
-                                      focal_city_systems, window_months = 6)
+                                     focal_city_systems, window_months = 6)
 city_iv_9m  <- build_city_instrument(hosp_system_city, panel_city_months,
-                                      focal_city_systems, window_months = 9,
-                                      var_suffix = "_9m")
+                                     focal_city_systems, window_months = 9,
+                                     var_suffix = "_9m")
 city_iv_12m <- build_city_instrument(hosp_system_city, panel_city_months,
-                                      focal_city_systems, window_months = 12,
-                                      var_suffix = "_12m")
+                                     focal_city_systems, window_months = 12,
+                                     var_suffix = "_12m")
 
 df_iv_city <- df_iv_city %>%
   select(-any_of(c("system_peer_pressure_city",
@@ -1017,7 +1017,7 @@ pooled_iv_list <- list(mean = iv_county_mean, p25 = iv_county_p25,
                        max = iv_county_max, min = iv_county_min, iqr = iv_county_iqr)
 for (nm in names(pooled_iv_list)) {
   f_val <- tryCatch(fitstat(pooled_iv_list[[nm]], "ivwald")[["ivwald1::n_prior_posters"]]$stat,
-                   error = function(e) NA_real_)
+                    error = function(e) NA_real_)
   cat(sprintf("  %-8s Wald F = %.1f\n", nm, f_val))
 }
 
@@ -2138,447 +2138,13 @@ modelsummary(
 
 
 
-# ── Palette ──────────────────────────────────────────────────────
-COL_GARNET <- "#8B0000"
-COL_GOLD   <- "#8B6914"
-COL_SLATE  <- "#2C3E50"
-COL_GREY   <- "grey65"
-
-cat_cols <- c(
-  "Shoppable"     = COL_GARNET,
-  "Intermediate"  = COL_GOLD,
-  "Non-Shoppable" = COL_SLATE
-)
-
-# ── Theory V2 category assignments ───────────────────────────────
-shoppable_v2 <- c(
-  "CT Lung", "Mammography",
-  "Ultrasound Abdomen", "Ultrasound OB", "Ultrasound Pelvis",
-  "Ultrasound Vascular", "Ultrasound Extremity",
-  "Ultrasound Other", "Ultrasound Breast"
-)
-nonshoppable_v2 <- c(
-  "MRI Brain/Head", "MRI Spine", "MRI Abdomen", "MRI Pelvis",
-  "MRI Neck", "MRI Chest", "MRI Extremity", "MRI Angio",
-  "MRI Breast", "MRI Other",
-  "Biopsy Lymph Node", "Biopsy Liver", "Biopsy Bone",
-  "Biopsy Kidney", "Biopsy Lung", "Biopsy Thyroid",
-  "Biopsy Pancreas", "Biopsy Other", "Biopsy Breast",
-  "Colonoscopy", "Endoscopy"
-)
-
-# ── Panel A data ──────────────────────────────────────────────────
-svc <- read.csv("results_service_iv_detail.csv") %>%
-  mutate(
-    iv_pct   = as.numeric(estimate_pct),
-    se_pct   = as.numeric(se_pct),
-    sig      = as.numeric(pval) < 0.05,
-    weight   = 1 / se_pct^2,
-    category = case_when(
-      SERVICE_GROUP %in% shoppable_v2    ~ "Shoppable",
-      SERVICE_GROUP %in% nonshoppable_v2 ~ "Non-Shoppable",
-      TRUE                               ~ "Intermediate"
-    ),
-    category = factor(category,
-                      levels = c("Shoppable", "Intermediate", "Non-Shoppable"))
-  )
-
-# Precision-weighted category means
-cat_means <- svc %>%
-  group_by(category) %>%
-  summarise(wmean = weighted.mean(iv_pct, weight), .groups = "drop")
-
-# ── Panel A: scatter plot ─────────────────────────────────────────
-set.seed(42)
-
-# ----------------------------------------------------------------------------
-# OUTPUT_FIGURE_METAREG_PANEL_A_DRAFT
-# ----------------------------------------------------------------------------
-# Intermediate panel_a draft; replaced by a cleaner panel_a definition below.
-panel_a <- ggplot(svc) +
-  aes(x = category, y = iv_pct, color = category) +
-  # Zero line
-  geom_hline(yintercept = 0, color = COL_GREY, linewidth = 0.4,
-             linetype = "dashed") +
-  # Jittered points — filled = significant, open = not
-  geom_jitter(aes(shape = sig, size = sig),
-              width = 0.18, height = 0, alpha = 0.80) +
-  # Weighted-mean crossbar for each category
-  stat_summary(
-    fun = function(x) weighted.mean(x, svc$weight[svc$iv_pct %in% x]),
-    geom = "crossbar",
-    data = left_join(svc, cat_means, by = "category"),
-    aes(y = wmean),
-    width = 0.45, linewidth = 0.9, fatten = 0, alpha = 0.75,
-    show.legend = FALSE
-  ) +
-  scale_color_manual(values = cat_cols, name = NULL) +
-  scale_shape_manual(values = c("FALSE" = 1, "TRUE" = 16), guide = "none") +
-  scale_size_manual(values  = c("FALSE" = 2.0, "TRUE" = 2.5), guide = "none") +
-  labs(x = NULL,
-       y = "IV Estimate (% per additional prior poster)",
-       title = "A  Service-Level Estimates by Category",
-       subtitle = "Horizontal bar = precision-weighted mean | filled = p < 0.05") +
-  theme_minimal(base_size = 10) +
-  theme(
-    legend.position  = "none",
-    axis.text.x      = element_text(size = 10, face = "bold"),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor   = element_blank(),
-    plot.title         = element_text(face = "bold", size = 11),
-    plot.subtitle      = element_text(size = 8, color = "grey45")
-  )
-
-# ----------------------------------------------------------------------------
-# OUTPUT_FIGURE_METAREG_PANEL_A_FINAL
-# ----------------------------------------------------------------------------
-# Final panel_a: service-level estimates by shoppability category.
-panel_a <- ggplot(svc) +
-  aes(x = category, y = iv_pct, color = category) +
-  geom_hline(yintercept = 0, color = COL_GREY, linewidth = 0.4,
-             linetype = "dashed") +
-  # Jittered service dots
-  geom_jitter(aes(shape = sig, size = sig),
-              width = 0.18, height = 0, alpha = 0.80) +
-  # Precision-weighted mean bar (drawn from cat_means)
-  geom_crossbar(
-    data    = cat_means,
-    aes(x   = category, y = wmean,
-        ymin = wmean, ymax = wmean),
-    width   = 0.45, linewidth = 1.0, fatten = 0,
-    show.legend = FALSE
-  ) +
-  scale_color_manual(values = cat_cols, name = NULL) +
-  scale_shape_manual(values = c("FALSE" = 1, "TRUE" = 16), guide = "none") +
-  scale_size_manual(values  = c("FALSE" = 2.0, "TRUE" = 2.5), guide = "none") +
-  labs(x     = NULL,
-       y     = "IV Estimate (% per additional prior poster)",
-       title = "A  Service-Level Estimates by Category",
-       subtitle = "Horizontal bar = precision-weighted mean  |  filled point = p < 0.05") +
-  theme_minimal(base_size = 10) +
-  theme(
-    legend.position    = "none",
-    axis.text.x        = element_text(size = 10, face = "bold"),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor   = element_blank(),
-    plot.title         = element_text(face = "bold", size = 11),
-    plot.subtitle      = element_text(size = 8, color = "grey45")
-  )
-
-# ── Panel B: gradient across schemes (unchanged) ──────────────────
-scheme_short <- c(
-  "CMS Rule Definition"                                    = "CMS Rule",
-  "Theory-Based"                                           = "Theory-Based",
-  "Broad Shoppable"                                        = "Broad",
-  "Imaging vs Procedural"                                  = "Imaging vs Proc.",
-  "Theory-Based V2 (MRI as nonshoppable)"                  = "Theory V2 \u25C6",
-  "Split Non-Shoppable: MRI vs Procedural"                 = "Split Non-Shop.",
-  "CMS Statutory Shoppable List"                           = "CMS Statutory",
-  "High vs Low Shoppability Within Modality"               = "High vs Low",
-  "CT-Inclusive (all CT modalities shoppable)"             = "CT-Inclusive (All CT)",
-  "CT-Inclusive Except Angio (acute vascular CT excluded)" = "CT-Inclusive Ex. Angio"
-)
-
-schemes <- read.csv("results_meta_regression_all_schemes.csv") %>%
-  filter(model == "Simple (shoppable)") %>%
-  mutate(
-    estimate   = as.numeric(estimate),
-    se         = as.numeric(se),
-    p_value    = as.numeric(p_value),
-    label      = scheme_short[scheme],
-    label      = ifelse(is.na(label), scheme, label),
-    is_primary = (scheme == "Theory-Based V2 (MRI as nonshoppable)")
-  ) %>%
-  arrange(estimate) %>%
-  mutate(label = factor(label, levels = label))
-
-# ----------------------------------------------------------------------------
-# OUTPUT_FIGURE_METAREG_PANEL_B
-# ----------------------------------------------------------------------------
-# panel_b: gradient robustness across the ten shoppability classification 
-# schemes.
-panel_b <- ggplot(schemes) +
-  aes(x = estimate, y = label, shape = is_primary) +
-  geom_vline(xintercept = 0, color = COL_GREY, linewidth = 0.4,
-             linetype = "dashed") +
-  geom_errorbarh(
-    aes(xmin = estimate - 1.96 * se,
-        xmax = estimate + 1.96 * se),
-    color = COL_GARNET, height = 0, linewidth = 0.65
-  ) +
-  geom_point(color = COL_GARNET, size = 3.2) +
-  geom_text(
-    aes(x = estimate + 1.96 * se + 0.06, label = stars),
-    color = COL_GARNET, size = 3.2, hjust = 0, show.legend = FALSE
-  ) +
-  scale_shape_manual(values = c("TRUE" = 18, "FALSE" = 16), guide = "none") +
-  labs(x     = "Shoppability Gradient (pp per additional prior poster)",
-       y     = NULL,
-       title = "B  Robustness Across Ten Classification Schemes",
-       subtitle = "Diamond = primary spec (Theory V2)  |  whiskers = 95% CI") +
-  theme_minimal(base_size = 10) +
-  theme(
-    axis.text.y        = element_text(size = 9),
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor   = element_blank(),
-    plot.title         = element_text(face = "bold", size = 11),
-    plot.subtitle      = element_text(size = 8, color = "grey45")
-  )
-
-# ── Combine and save ──────────────────────────────────────────────
-fig_metareg_combined <- panel_a + panel_b +
-  plot_layout(widths = c(1, 1.4)) &
-  theme(plot.background = element_rect(fill = "white", color = NA))
-
-# ----------------------------------------------------------------------------
-# OUTPUT_FIGURE_02_METAREG_COMBINED_ALT
-# ----------------------------------------------------------------------------
-# Prints fig_metareg_combined: combined panel A + panel B meta-regression 
-# figure.
-print(fig_metareg_combined)
-
-
-
-
-
-
-
-# ================================================================
-# fig:saturation — Shoppable and Non-Shoppable Effects by Bin
-# Theory V2 primary scheme
-# Bins 2 & 3 visually distinguished as non-causally-identified
-# ================================================================
-
-library(ggplot2)
-library(dplyr)
-
-TARGET_SCHEME <- "Theory-Based V2 (MRI as nonshoppable)"
-
-sat <- read.csv("results_saturation_meta_schemes.csv") %>%
-  filter(scheme == TARGET_SCHEME) %>%
-  mutate(
-    estimate = as.numeric(estimate),
-    se       = as.numeric(se),
-    p_value  = as.numeric(p_value),
-    ci_lo    = estimate - 1.96 * se,
-    ci_hi    = estimate + 1.96 * se,
-    
-    # Numeric x-position so annotate("rect") works cleanly
-    x_pos = case_when(
-      bin == "1-3 prior posters" ~ 1,
-      bin == "4-8 prior posters" ~ 2,
-      bin == "9+ prior posters"  ~ 3,
-      TRUE ~ NA_real_
-    ),
-    
-    identified = bin == "1-3 prior posters",
-    
-    series = case_when(
-      model == "Simple shoppable (WLS)" & term == "is_shoppableTRUE"    ~ "Shoppable",
-      model == "Three-way (WLS)"        & term == "is_nonshoppableTRUE" ~ "Non-Shoppable",
-      TRUE ~ NA_character_
-    ),
-    
-    stars = case_when(
-      p_value < 0.001 ~ "***",
-      p_value < 0.01  ~ "**",
-      p_value < 0.05  ~ "*",
-      TRUE            ~ ""
-    )
-  ) %>%
-  filter(!is.na(series), !is.na(x_pos))
-
-# Custom x-axis labels
-x_labels <- c(
-  "1" = "Bin 1\n1–3 posters\nWald F = 13.0\n[identified]",
-  "2" = "Bin 2\n4–8 posters\nWald F = 7.2\n[weak IV]",
-  "3" = "Bin 3\n9+ posters\nWald F = 0.006\n[no variation]"
-)
-
-COL_GARNET <- "#8B0000"
-COL_SLATE  <- "#2C3E50"
-
-# ----------------------------------------------------------------------------
-# OUTPUT_FIGURE_04_SATURATION_MAIN
-# ----------------------------------------------------------------------------
-# Figure object fig_saturation: shoppable and non-shoppable effects by 
-# saturation bin.
-fig_saturation <- ggplot(sat) +
-  
-  aes(
-    x     = x_pos,
-    y     = estimate,
-    color = series,
-    group = series
-  ) +
-  
-  # Grey shading for non-identified / descriptive region
-  annotate(
-    "rect",
-    xmin = 1.5, xmax = 3.5,
-    ymin = -Inf, ymax = Inf,
-    fill = "grey92", alpha = 0.65
-  ) +
-  
-  annotate(
-    "text",
-    x = 2.5, y = Inf,
-    label = " ",
-    vjust = 1.6,
-    size = 3.0,
-    color = "grey45",
-    fontface = "italic"
-  ) +
-  
-  # Zero reference line
-  geom_hline(
-    yintercept = 0,
-    color = "grey65",
-    linewidth = 0.4,
-    linetype = "dashed"
-  ) +
-  
-  # Full-sample gradient reference
-  geom_hline(
-    yintercept = -2.603,
-    color = COL_GARNET,
-    linewidth = 0.35,
-    linetype = "dotted",
-    alpha = 0.5
-  ) +
-  
-  annotate(
-    "text",
-    x = 0.62,
-    y = -2.603,
-    label = "Full-sample gradient (−2.60 pp)",
-    hjust = 0,
-    vjust = -0.45,
-    size = 2.8,
-    color = COL_GARNET,
-    fontface = "italic"
-  ) +
-  
-  # Confidence interval ribbon
-  geom_ribbon(
-    aes(
-      ymin = ci_lo,
-      ymax = ci_hi,
-      fill = series
-    ),
-    alpha = 0.12,
-    color = NA,
-    show.legend = FALSE
-  ) +
-  
-  # Descriptive connecting line.
-  # Keep dashed throughout to avoid implying Bin 2 is causally identified.
-  geom_line(
-    linewidth = 0.9,
-    linetype = "dashed"
-  ) +
-  
-  # Points: filled = identified Bin 1; open = descriptive Bins 2–3
-  geom_point(
-    aes(shape = identified),
-    size = 3.8,
-    stroke = 1.0
-  ) +
-  
-  # Significance stars
-  geom_text(
-    data = filter(sat, stars != ""),
-    aes(
-      label = stars,
-      y = ci_hi + 1.2
-    ),
-    size = 4.5,
-    show.legend = FALSE,
-    fontface = "bold"
-  ) +
-  
-  scale_color_manual(
-    values = c(
-      "Shoppable"     = COL_GARNET,
-      "Non-Shoppable" = COL_SLATE
-    ),
-    name = NULL
-  ) +
-  
-  scale_fill_manual(
-    values = c(
-      "Shoppable"     = COL_GARNET,
-      "Non-Shoppable" = COL_SLATE
-    )
-  ) +
-  
-  scale_shape_manual(
-    values = c(
-      "TRUE"  = 16,
-      "FALSE" = 1
-    ),
-    guide = "none"
-  ) +
-  
-  scale_x_continuous(
-    breaks = 1:3,
-    labels = x_labels,
-    limits = c(0.6, 3.4)
-  ) +
-  
-  labs(
-    x = NULL,
-    y = "Meta-Regression Coefficient\n(pp per additional prior poster)",
-    title = "Shoppable and Non-Shoppable Price Effects by Market Saturation",
-    caption = paste0(
-      "Theory V2 scheme. Filled point = Bin 1 (Wald F = 13.0, marginal identification).\n",
-      "Open points and shaded region = Bins 2–3, descriptive only. Shaded bands = 95% CIs."
-    )
-  ) +
-  
-  theme_minimal(base_size = 11) +
-  
-  theme(
-    legend.position = c(0.15, 0.15),
-    legend.background = element_rect(
-      fill = "white",
-      color = "grey85",
-      linewidth = 0.4
-    ),
-    legend.text = element_text(size = 10),
-    axis.text.x = element_text(
-      size = 8.5,
-      lineheight = 1.25
-    ),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor = element_blank(),
-    plot.caption = element_text(
-      size = 7.5,
-      color = "grey40",
-      hjust = 0,
-      lineheight = 1.3
-    ),
-    plot.title = element_text(
-      face = "bold",
-      size = 12
-    )
-  )
-
-# ----------------------------------------------------------------------------
-# OUTPUT_FIGURE_04_SATURATION_MAIN_PRINT
-# ----------------------------------------------------------------------------
-# Prints fig_saturation.
-print(fig_saturation)
-
-
-
 
 # ============================================================
 # SECTION 11: HETEROGENEITY — MARKET CHARACTERISTICS
 # ============================================================
 
-merged_final <- fread(here("..", "Data", "data_clean",
-                           "HHI_CBSA_health_insurance_market_competition.csv"))
+merged_final <- fread("../Data/data_clean/HHI_CBSA_health_insurance_market_competition.csv")
+
 # ----------------------------------------------------------------------------
 # SECTION 11 GUIDE
 # ----------------------------------------------------------------------------
@@ -3346,7 +2912,7 @@ hosp_type_meta <- lapply(
       df_meta <- build_meta_data_scheme(ht$res, scheme)
       if (nrow(df_meta) < 5) next
       m <- tryCatch(lm(estimate_pct~is_shoppable,data=df_meta,weights=weight),
-                   error=function(e)NULL)
+                    error=function(e)NULL)
       if (is.null(m)) next
       ct <- coef(summary(m))
       if (!"is_shoppableTRUE" %in% rownames(ct)) next
@@ -3458,7 +3024,7 @@ prox_meta <- lapply(
       df_meta <- build_meta_data_scheme(px$res, scheme)
       if (nrow(df_meta) < 5) next
       m <- tryCatch(lm(estimate_pct~is_shoppable,data=df_meta,weights=weight),
-                   error=function(e)NULL)
+                    error=function(e)NULL)
       if (is.null(m)) next
       ct <- coef(summary(m)); if (!"is_shoppableTRUE" %in% rownames(ct)) next
       meta_rows[[scheme_nm]] <- data.frame(
@@ -3683,35 +3249,35 @@ loo_results_county <- map_dfr(top_systems_county, function(sys) {
     summarise(n=n_distinct(peer_hosp), .groups="drop") %>%
     group_by(County_State, post_month) %>%
     summarise(system_peer_pressure_loo=sum(n), .groups="drop")
-
+  
   df_loo <- df_iv_county %>%
     select(-any_of("system_peer_pressure_loo")) %>%
     left_join(events_loo, by=c("County_State","post_month")) %>%
     mutate(system_peer_pressure_loo=replace_na(system_peer_pressure_loo,0))
-
+  
   res_loo <- do.call(rbind, lapply(unique(df_loo$SERVICE_GROUP), function(sg) {
     df_sub <- df_loo[df_loo$SERVICE_GROUP==sg,]
     if (nrow(df_sub) < 100) return(NULL)
     fit <- tryCatch(feols(ln_median_price~1|market_id+post_month|
                             n_prior_posters~system_peer_pressure_loo,
                           data=df_sub, cluster=~County_State+post_month),
-                   error=function(e)NULL)
+                    error=function(e)NULL)
     if (is.null(fit)) return(NULL)
     data.frame(SERVICE_GROUP=sg,
                estimate_pct=tryCatch(coef(fit)["fit_n_prior_posters"]*100,error=function(e)NA_real_),
                se_pct=tryCatch(se(fit)["fit_n_prior_posters"]*100,error=function(e)NA_real_))
   }))
   if (is.null(res_loo) || nrow(res_loo)==0) return(NULL)
-
+  
   meta_loo <- res_loo %>%
     mutate(is_shoppable=grepl("Ultrasound",SERVICE_GROUP)|SERVICE_GROUP%in%c("CT Lung","Mammography"),
            weight=1/se_pct^2) %>% filter(is.finite(weight))
-
+  
   coef_shop <- tryCatch({
     m <- lm(estimate_pct~is_shoppable, data=meta_loo, weights=weight)
     coef(m)["is_shoppableTRUE"]
   }, error=function(e)NA_real_)
-
+  
   tibble(dropped_system=sys, shop_coef=coef_shop)
 })
 
@@ -5657,6 +5223,205 @@ write.csv(res_county %>%
           "results_service_iv_detail.csv", row.names = FALSE)
 cat("Saved: results_service_iv_detail.csv\n")
 
+# ── Palette ──────────────────────────────────────────────────────
+COL_GARNET <- "#8B0000"
+COL_GOLD   <- "#8B6914"
+COL_SLATE  <- "#2C3E50"
+COL_GREY   <- "grey65"
+
+cat_cols <- c(
+  "Shoppable"     = COL_GARNET,
+  "Intermediate"  = COL_GOLD,
+  "Non-Shoppable" = COL_SLATE
+)
+
+# ── Theory V2 category assignments ───────────────────────────────
+shoppable_v2 <- c(
+  "CT Lung", "Mammography",
+  "Ultrasound Abdomen", "Ultrasound OB", "Ultrasound Pelvis",
+  "Ultrasound Vascular", "Ultrasound Extremity",
+  "Ultrasound Other", "Ultrasound Breast"
+)
+nonshoppable_v2 <- c(
+  "MRI Brain/Head", "MRI Spine", "MRI Abdomen", "MRI Pelvis",
+  "MRI Neck", "MRI Chest", "MRI Extremity", "MRI Angio",
+  "MRI Breast", "MRI Other",
+  "Biopsy Lymph Node", "Biopsy Liver", "Biopsy Bone",
+  "Biopsy Kidney", "Biopsy Lung", "Biopsy Thyroid",
+  "Biopsy Pancreas", "Biopsy Other", "Biopsy Breast",
+  "Colonoscopy", "Endoscopy"
+)
+
+# ── Panel A data ──────────────────────────────────────────────────
+svc <- read.csv("results_service_iv_detail.csv") %>%
+  mutate(
+    iv_pct   = as.numeric(estimate_pct),
+    se_pct   = as.numeric(se_pct),
+    sig      = as.numeric(pval) < 0.05,
+    weight   = 1 / se_pct^2,
+    category = case_when(
+      SERVICE_GROUP %in% shoppable_v2    ~ "Shoppable",
+      SERVICE_GROUP %in% nonshoppable_v2 ~ "Non-Shoppable",
+      TRUE                               ~ "Intermediate"
+    ),
+    category = factor(category,
+                      levels = c("Shoppable", "Intermediate", "Non-Shoppable"))
+  )
+
+# Precision-weighted category means
+cat_means <- svc %>%
+  group_by(category) %>%
+  summarise(wmean = weighted.mean(iv_pct, weight), .groups = "drop")
+
+# ── Panel A: scatter plot ─────────────────────────────────────────
+set.seed(42)
+
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_METAREG_PANEL_A_DRAFT
+# ----------------------------------------------------------------------------
+# Intermediate panel_a draft; replaced by a cleaner panel_a definition below.
+panel_a <- ggplot(svc) +
+  aes(x = category, y = iv_pct, color = category) +
+  # Zero line
+  geom_hline(yintercept = 0, color = COL_GREY, linewidth = 0.4,
+             linetype = "dashed") +
+  # Jittered points — filled = significant, open = not
+  geom_jitter(aes(shape = sig, size = sig),
+              width = 0.18, height = 0, alpha = 0.80) +
+  # Weighted-mean crossbar for each category
+  stat_summary(
+    fun = function(x) weighted.mean(x, svc$weight[svc$iv_pct %in% x]),
+    geom = "crossbar",
+    data = left_join(svc, cat_means, by = "category"),
+    aes(y = wmean),
+    width = 0.45, linewidth = 0.9, fatten = 0, alpha = 0.75,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = cat_cols, name = NULL) +
+  scale_shape_manual(values = c("FALSE" = 1, "TRUE" = 16), guide = "none") +
+  scale_size_manual(values  = c("FALSE" = 2.0, "TRUE" = 2.5), guide = "none") +
+  labs(x = NULL,
+       y = "IV Estimate (% per additional prior poster)",
+       title = "A  Service-Level Estimates by Category",
+       subtitle = "Horizontal bar = precision-weighted mean | filled = p < 0.05") +
+  theme_minimal(base_size = 10) +
+  theme(
+    legend.position  = "none",
+    axis.text.x      = element_text(size = 10, face = "bold"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    plot.title         = element_text(face = "bold", size = 11),
+    plot.subtitle      = element_text(size = 8, color = "grey45")
+  )
+
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_METAREG_PANEL_A_FINAL
+# ----------------------------------------------------------------------------
+# Final panel_a: service-level estimates by shoppability category.
+panel_a <- ggplot(svc) +
+  aes(x = category, y = iv_pct, color = category) +
+  geom_hline(yintercept = 0, color = COL_GREY, linewidth = 0.4,
+             linetype = "dashed") +
+  # Jittered service dots
+  geom_jitter(aes(shape = sig, size = sig),
+              width = 0.18, height = 0, alpha = 0.80) +
+  # Precision-weighted mean bar (drawn from cat_means)
+  geom_crossbar(
+    data    = cat_means,
+    aes(x   = category, y = wmean,
+        ymin = wmean, ymax = wmean),
+    width   = 0.45, linewidth = 1.0, fatten = 0,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = cat_cols, name = NULL) +
+  scale_shape_manual(values = c("FALSE" = 1, "TRUE" = 16), guide = "none") +
+  scale_size_manual(values  = c("FALSE" = 2.0, "TRUE" = 2.5), guide = "none") +
+  labs(x     = NULL,
+       y     = "IV Estimate (% per additional prior poster)",
+       title = "A  Service-Level Estimates by Category",
+       subtitle = "Horizontal bar = precision-weighted mean  |  filled point = p < 0.05") +
+  theme_minimal(base_size = 10) +
+  theme(
+    legend.position    = "none",
+    axis.text.x        = element_text(size = 10, face = "bold"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    plot.title         = element_text(face = "bold", size = 11),
+    plot.subtitle      = element_text(size = 8, color = "grey45")
+  )
+
+# ── Panel B: gradient across schemes (unchanged) ──────────────────
+scheme_short <- c(
+  "CMS Rule Definition"                                    = "CMS Rule",
+  "Theory-Based"                                           = "Theory-Based",
+  "Broad Shoppable"                                        = "Broad",
+  "Imaging vs Procedural"                                  = "Imaging vs Proc.",
+  "Theory-Based V2 (MRI as nonshoppable)"                  = "Theory V2 \u25C6",
+  "Split Non-Shoppable: MRI vs Procedural"                 = "Split Non-Shop.",
+  "CMS Statutory Shoppable List"                           = "CMS Statutory",
+  "High vs Low Shoppability Within Modality"               = "High vs Low",
+  "CT-Inclusive (all CT modalities shoppable)"             = "CT-Inclusive (All CT)",
+  "CT-Inclusive Except Angio (acute vascular CT excluded)" = "CT-Inclusive Ex. Angio"
+)
+
+schemes <- read.csv("results_meta_regression_all_schemes.csv") %>%
+  filter(model == "Simple (shoppable)") %>%
+  mutate(
+    estimate   = as.numeric(estimate),
+    se         = as.numeric(se),
+    p_value    = as.numeric(p_value),
+    label      = scheme_short[scheme],
+    label      = ifelse(is.na(label), scheme, label),
+    is_primary = (scheme == "Theory-Based V2 (MRI as nonshoppable)")
+  ) %>%
+  arrange(estimate) %>%
+  mutate(label = factor(label, levels = label))
+
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_METAREG_PANEL_B
+# ----------------------------------------------------------------------------
+# panel_b: gradient robustness across the ten shoppability classification 
+# schemes.
+panel_b <- ggplot(schemes) +
+  aes(x = estimate, y = label, shape = is_primary) +
+  geom_vline(xintercept = 0, color = COL_GREY, linewidth = 0.4,
+             linetype = "dashed") +
+  geom_errorbarh(
+    aes(xmin = estimate - 1.96 * se,
+        xmax = estimate + 1.96 * se),
+    color = COL_GARNET, height = 0, linewidth = 0.65
+  ) +
+  geom_point(color = COL_GARNET, size = 3.2) +
+  geom_text(
+    aes(x = estimate + 1.96 * se + 0.06, label = stars),
+    color = COL_GARNET, size = 3.2, hjust = 0, show.legend = FALSE
+  ) +
+  scale_shape_manual(values = c("TRUE" = 18, "FALSE" = 16), guide = "none") +
+  labs(x     = "Shoppability Gradient (pp per additional prior poster)",
+       y     = NULL,
+       title = "B  Robustness Across Ten Classification Schemes",
+       subtitle = "Diamond = primary spec (Theory V2)  |  whiskers = 95% CI") +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.y        = element_text(size = 9),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    plot.title         = element_text(face = "bold", size = 11),
+    plot.subtitle      = element_text(size = 8, color = "grey45")
+  )
+
+# ── Combine and save ──────────────────────────────────────────────
+fig_metareg_combined <- panel_a + panel_b +
+  plot_layout(widths = c(1, 1.4)) &
+  theme(plot.background = element_rect(fill = "white", color = NA))
+
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_02_METAREG_COMBINED_ALT
+# ----------------------------------------------------------------------------
+# Prints fig_metareg_combined: combined panel A + panel B meta-regression 
+# figure.
+print(fig_metareg_combined)
+
 
 # -----------------------------------------------------------
 # 5. SHOP2 GROUP ESTIMATES
@@ -5762,6 +5527,233 @@ write.csv(sat_meta_df %>%
             mutate(across(where(is.numeric), ~round(.x, 4))),
           "results_saturation_meta_schemes.csv", row.names = FALSE)
 cat("Saved: results_saturation_meta_schemes.csv\n")
+
+# ================================================================
+# fig:saturation — Shoppable and Non-Shoppable Effects by Bin
+# Theory V2 primary scheme
+# Bins 2 & 3 visually distinguished as non-causally-identified
+# ================================================================
+
+library(ggplot2)
+library(dplyr)
+
+TARGET_SCHEME <- "Theory-Based V2 (MRI as nonshoppable)"
+
+sat <- read.csv("results_saturation_meta_schemes.csv") %>%
+  filter(scheme == TARGET_SCHEME) %>%
+  mutate(
+    estimate = as.numeric(estimate),
+    se       = as.numeric(se),
+    p_value  = as.numeric(p_value),
+    ci_lo    = estimate - 1.96 * se,
+    ci_hi    = estimate + 1.96 * se,
+    
+    # Numeric x-position so annotate("rect") works cleanly
+    x_pos = case_when(
+      bin == "1-3 prior posters" ~ 1,
+      bin == "4-8 prior posters" ~ 2,
+      bin == "9+ prior posters"  ~ 3,
+      TRUE ~ NA_real_
+    ),
+    
+    identified = bin == "1-3 prior posters",
+    
+    series = case_when(
+      model == "Simple shoppable (WLS)" & term == "is_shoppableTRUE"    ~ "Shoppable",
+      model == "Three-way (WLS)"        & term == "is_nonshoppableTRUE" ~ "Non-Shoppable",
+      TRUE ~ NA_character_
+    ),
+    
+    stars = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ ""
+    )
+  ) %>%
+  filter(!is.na(series), !is.na(x_pos))
+
+# Custom x-axis labels
+x_labels <- c(
+  "1" = "Bin 1\n1–3 posters\nWald F = 13.0\n[identified]",
+  "2" = "Bin 2\n4–8 posters\nWald F = 7.2\n[weak IV]",
+  "3" = "Bin 3\n9+ posters\nWald F = 0.006\n[no variation]"
+)
+
+COL_GARNET <- "#8B0000"
+COL_SLATE  <- "#2C3E50"
+
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_04_SATURATION_MAIN
+# ----------------------------------------------------------------------------
+# Figure object fig_saturation: shoppable and non-shoppable effects by 
+# saturation bin.
+fig_saturation <- ggplot(sat) +
+  
+  aes(
+    x     = x_pos,
+    y     = estimate,
+    color = series,
+    group = series
+  ) +
+  
+  # Grey shading for non-identified / descriptive region
+  annotate(
+    "rect",
+    xmin = 1.5, xmax = 3.5,
+    ymin = -Inf, ymax = Inf,
+    fill = "grey92", alpha = 0.65
+  ) +
+  
+  annotate(
+    "text",
+    x = 2.5, y = Inf,
+    label = " ",
+    vjust = 1.6,
+    size = 3.0,
+    color = "grey45",
+    fontface = "italic"
+  ) +
+  
+  # Zero reference line
+  geom_hline(
+    yintercept = 0,
+    color = "grey65",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  
+  # Full-sample gradient reference
+  geom_hline(
+    yintercept = -2.603,
+    color = COL_GARNET,
+    linewidth = 0.35,
+    linetype = "dotted",
+    alpha = 0.5
+  ) +
+  
+  annotate(
+    "text",
+    x = 0.62,
+    y = -2.603,
+    label = "Full-sample gradient (−2.60 pp)",
+    hjust = 0,
+    vjust = -0.45,
+    size = 2.8,
+    color = COL_GARNET,
+    fontface = "italic"
+  ) +
+  
+  # Confidence interval ribbon
+  geom_ribbon(
+    aes(
+      ymin = ci_lo,
+      ymax = ci_hi,
+      fill = series
+    ),
+    alpha = 0.12,
+    color = NA,
+    show.legend = FALSE
+  ) +
+  
+  # Descriptive connecting line.
+  # Keep dashed throughout to avoid implying Bin 2 is causally identified.
+  geom_line(
+    linewidth = 0.9,
+    linetype = "dashed"
+  ) +
+  
+  # Points: filled = identified Bin 1; open = descriptive Bins 2–3
+  geom_point(
+    aes(shape = identified),
+    size = 3.8,
+    stroke = 1.0
+  ) +
+  
+  # Significance stars
+  geom_text(
+    data = filter(sat, stars != ""),
+    aes(
+      label = stars,
+      y = ci_hi + 1.2
+    ),
+    size = 4.5,
+    show.legend = FALSE,
+    fontface = "bold"
+  ) +
+  
+  scale_color_manual(
+    values = c(
+      "Shoppable"     = COL_GARNET,
+      "Non-Shoppable" = COL_SLATE
+    ),
+    name = NULL
+  ) +
+  
+  scale_fill_manual(
+    values = c(
+      "Shoppable"     = COL_GARNET,
+      "Non-Shoppable" = COL_SLATE
+    )
+  ) +
+  
+  scale_shape_manual(
+    values = c(
+      "TRUE"  = 16,
+      "FALSE" = 1
+    ),
+    guide = "none"
+  ) +
+  
+  scale_x_continuous(
+    breaks = 1:3,
+    labels = x_labels,
+    limits = c(0.6, 3.4)
+  ) +
+  
+  labs(
+    x = NULL,
+    y = "Meta-Regression Coefficient\n(pp per additional prior poster)",
+    title = "Shoppable and Non-Shoppable Price Effects by Market Saturation",
+    caption = paste0(
+      "Theory V2 scheme. Filled point = Bin 1 (Wald F = 13.0, marginal identification).\n",
+      "Open points and shaded region = Bins 2–3, descriptive only. Shaded bands = 95% CIs."
+    )
+  ) +
+  
+  theme_minimal(base_size = 11) +
+  
+  theme(
+    legend.position = c(0.15, 0.15),
+    legend.background = element_rect(
+      fill = "white",
+      color = "grey85",
+      linewidth = 0.4
+    ),
+    legend.text = element_text(size = 10),
+    axis.text.x = element_text(
+      size = 8.5,
+      lineheight = 1.25
+    ),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(
+      size = 7.5,
+      color = "grey40",
+      hjust = 0,
+      lineheight = 1.3
+    ),
+    plot.title = element_text(
+      face = "bold",
+      size = 12
+    )
+  )
+
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_04_SATURATION_MAIN_PRINT
+# ----------------------------------------------------------------------------
+# Prints fig_saturation.
+print(fig_saturation)
 
 
 # -----------------------------------------------------------
@@ -6377,4 +6369,333 @@ dispersion %>%
 
 
 
+
+
+
+
+
+
+
+# =====================================================================
+# Payer-conditional robustness check (FULL PIPELINE)
+# Excludes "CT Other" -- a residual/catch-all CT category that was
+# found to be the single largest driver of the Medicaid and
+# MedicareAdv shoppability-gradient sign patterns. Excluded here
+# because it aggregates heterogeneous, ambiguously-classified CT
+# codes rather than representing a coherent clinical service --
+# document this exclusion explicitly in the paper/appendix.
+#
+# Reuses run_iv_pooled(), run_iv_by_service(), build_meta_data(),
+# run_meta_regressions(), print_meta_results() exactly as defined in
+# NationalRegressions_System_Peer_Pressure_Commented.R -- run this
+# AFTER sourcing that script.
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# 0. Load payer-split price panel (from payer_split_prices.sql)
+# ---------------------------------------------------------------------
+payer_split_raw <- fread("../Data/data_clean/payer_split_prices.csv")
+
+payer_split_raw <- payer_split_raw %>%
+  rename(County_State = COUNTY_STATE) %>%             # Snowflake export uppercased this column
+  mutate(
+    post_month      = as.Date(INGESTED_ON),
+    post_month      = lubridate::floor_date(post_month, "month"),
+    ln_median_price = log(MEDIAN_PRICE + 1),
+    ln_mean_price   = log(MEAN_PRICE   + 1),
+    ln_p25_price    = log(P25          + 1),
+    ln_p75_price    = log(P75          + 1),
+    ln_max_price    = log(MAX_PRICE    + 1),
+    ln_min_price    = log(MIN_PRICE    + 1),
+    ln_iqr_price    = log(IQR_PRICE    + 1)
+  )
+
+payer_buckets <- c("Commercial", "Medicaid", "MedicareAdv")
+price_cols <- c("ln_median_price", "ln_mean_price", "ln_p25_price",
+                "ln_p75_price", "ln_max_price", "ln_min_price", "ln_iqr_price")
+
+# ---------------------------------------------------------------------
+# 1. Build payer-specific panels, EXCLUDING CT Other
+# ---------------------------------------------------------------------
+build_payer_panel <- function(pb) {
+  price_sub <- payer_split_raw %>%
+    filter(PAYER_BUCKET == pb, SERVICE_GROUP != "CT Other") %>%
+    select(HOSPITAL_ID, County_State, post_month, SERVICE_GROUP, all_of(price_cols))
+  
+  df_iv_county %>%
+    filter(SERVICE_GROUP != "CT Other") %>%
+    select(-all_of(price_cols)) %>%
+    inner_join(
+      price_sub,
+      by = c("HOSPITAL_ID", "County_State", "post_month", "SERVICE_GROUP")
+    )
+}
+
+df_payer_panels <- setNames(lapply(payer_buckets, build_payer_panel), payer_buckets)
+
+for (pb in payer_buckets) {
+  cat(sprintf("\n%s panel (CT Other excluded): %d rows | %d hospitals | %d counties | %d services\n",
+              pb, nrow(df_payer_panels[[pb]]),
+              uniqueN(df_payer_panels[[pb]]$HOSPITAL_ID),
+              uniqueN(df_payer_panels[[pb]]$County_State),
+              uniqueN(df_payer_panels[[pb]]$SERVICE_GROUP)))
+}
+
+# ---------------------------------------------------------------------
+# 2. Main pooled IV coefficient, per payer bucket
+# ---------------------------------------------------------------------
+iv_pooled_by_payer <- lapply(payer_buckets, function(pb) {
+  run_iv_pooled(df_payer_panels[[pb]], "ln_median_price",
+                "system_peer_pressure_county_9m",
+                c("County_State", "post_month"), verbose = TRUE)
+})
+names(iv_pooled_by_payer) <- payer_buckets
+
+cat("\n=== Main IV coefficient by payer class (CT Other excluded) ===\n")
+etable(iv_pooled_by_payer,
+       keep    = "%fit_n_prior_posters",
+       headers = payer_buckets)
+
+for (pb in payer_buckets) {
+  wald_f <- fitstat(iv_pooled_by_payer[[pb]], "ivwald")[["ivwald1::n_prior_posters"]]$stat
+  cat(sprintf("  %-12s Wald F: %.1f\n", pb, wald_f))
+}
+
+# ---------------------------------------------------------------------
+# 3. Shoppability gradient, per payer bucket (CT Other excluded)
+#    Stage 1: run_iv_by_service()
+#    Stage 2: build_meta_data() + run_meta_regressions()
+# ---------------------------------------------------------------------
+shop_gradient_by_payer <- lapply(payer_buckets, function(pb) {
+  res_service <- run_iv_by_service(
+    df_payer_panels[[pb]], "ln_median_price",
+    "system_peer_pressure_county_9m",
+    c("County_State", "post_month"), min_obs = 100
+  )
+  meta_data <- build_meta_data(res_service)
+  models    <- run_meta_regressions(meta_data)
+  list(res_service = res_service, meta_data = meta_data, models = models)
+})
+names(shop_gradient_by_payer) <- payer_buckets
+
+for (pb in payer_buckets) {
+  print_meta_results(shop_gradient_by_payer[[pb]]$models, label = paste(pb, "(CT Other excluded)"))
+}
+
+# ---------------------------------------------------------------------
+# 4. Summary table: Simple WLS shoppability gradient by payer bucket
+# ---------------------------------------------------------------------
+shop_gradient_summary <- do.call(rbind, lapply(payer_buckets, function(pb) {
+  m <- shop_gradient_by_payer[[pb]]$models$simple
+  co <- coef(m)["is_shoppableTRUE"]
+  se_v <- summary(m)$coefficients["is_shoppableTRUE", "Std. Error"]
+  n_services <- nrow(shop_gradient_by_payer[[pb]]$meta_data)
+  data.frame(payer_bucket = pb, gradient_pct = co, se_pct = se_v,
+             t_stat = co / se_v, n_services = n_services,
+             row.names = NULL)
+}))
+
+cat("\n=== Shoppability gradient (Simple WLS), CT Other excluded ===\n")
+shop_gradient_summary %>% as.data.frame() %>% print()
+
+write.csv(shop_gradient_summary,
+          "EXPORT_CSV_shop_gradient_by_payer_no_ctother.csv", row.names = FALSE)
+
+# ---------------------------------------------------------------------
+# 5. Cell-size / thinness diagnostics (mirrors payer_cell_diagnostics.R)
+# ---------------------------------------------------------------------
+cell_diagnostics_by_payer <- lapply(payer_buckets, function(pb) {
+  panel <- df_payer_panels[[pb]]
+  res   <- shop_gradient_by_payer[[pb]]$res_service
+  
+  cell_counts <- panel %>%
+    group_by(SERVICE_GROUP) %>%
+    summarise(
+      n_obs_raw   = n(),
+      n_hospitals = n_distinct(HOSPITAL_ID),
+      n_counties  = n_distinct(County_State),
+      .groups = "drop"
+    )
+  
+  res %>%
+    left_join(cell_counts, by = "SERVICE_GROUP") %>%
+    mutate(payer_bucket = pb) %>%
+    select(payer_bucket, SERVICE_GROUP, n_obs, n_obs_raw, n_hospitals,
+           n_counties, fs_f, estimate_pct, se_pct, pval)
+})
+names(cell_diagnostics_by_payer) <- payer_buckets
+cell_diagnostics_all <- do.call(rbind, cell_diagnostics_by_payer)
+
+cat("\n=== Cell size summary by payer bucket (CT Other excluded) ===\n")
+cell_diagnostics_all %>%
+  group_by(payer_bucket) %>%
+  summarise(
+    min_n_obs        = min(n_obs, na.rm = TRUE),
+    median_n_obs     = median(n_obs, na.rm = TRUE),
+    min_fs_f         = min(fs_f, na.rm = TRUE),
+    pct_fs_f_below10 = mean(fs_f < 10, na.rm = TRUE) * 100,
+    .groups = "drop"
+  ) %>%
+  as.data.frame() %>% print()
+
+write.csv(cell_diagnostics_all,
+          "EXPORT_CSV_cell_diagnostics_by_payer_no_ctother.csv", row.names = FALSE)
+
+# ---------------------------------------------------------------------
+# 6. LOO stability check (CT Other already excluded, so this shows
+#    stability among the remaining 45 services)
+# ---------------------------------------------------------------------
+loo_gradient_by_payer <- lapply(payer_buckets, function(pb) {
+  md <- shop_gradient_by_payer[[pb]]$meta_data
+  services <- unique(md$SERVICE_GROUP)
+  
+  loo_results <- lapply(services, function(sg) {
+    md_sub <- md %>% filter(SERVICE_GROUP != sg)
+    m <- tryCatch(
+      lm(estimate_pct ~ is_shoppable, data = md_sub, weights = weight),
+      error = function(e) NULL
+    )
+    if (is.null(m)) return(NULL)
+    data.frame(dropped_service = sg,
+               gradient_pct = coef(m)["is_shoppableTRUE"], row.names = NULL)
+  })
+  do.call(rbind, loo_results) %>% mutate(payer_bucket = pb)
+})
+names(loo_gradient_by_payer) <- payer_buckets
+
+cat("\n=== LOO gradient stability by payer bucket (CT Other excluded) ===\n")
+for (pb in payer_buckets) {
+  rng <- range(loo_gradient_by_payer[[pb]]$gradient_pct, na.rm = TRUE)
+  full_est <- coef(shop_gradient_by_payer[[pb]]$models$simple)["is_shoppableTRUE"]
+  cat(sprintf("  %-12s full estimate: %.3f | LOO range: [%.3f, %.3f]\n",
+              pb, full_est, rng[1], rng[2]))
+}
+
+# ---------------------------------------------------------------------
+# 7. Full service x payer breakdown table + forest plot (CT Other
+#    excluded) -- mirrors service_by_payer_breakdown.R
+# ---------------------------------------------------------------------
+full_breakdown <- lapply(payer_buckets, function(pb) {
+  shop_gradient_by_payer[[pb]]$res_service %>% mutate(payer_bucket = pb)
+}) %>% bind_rows()
+
+full_breakdown <- full_breakdown %>%
+  mutate(
+    category = case_when(
+      SERVICE_GROUP %in% shoppable_v2    ~ "Shoppable",
+      SERVICE_GROUP %in% nonshoppable_v2 ~ "Non-Shoppable",
+      TRUE                               ~ "Intermediate"
+    ),
+    category = factor(category,
+                      levels = c("Shoppable", "Intermediate", "Non-Shoppable")),
+    payer_bucket = factor(payer_bucket,
+                          levels = c("Commercial", "Medicaid", "MedicareAdv")),
+    sig = pval < 0.05
+  )
+
+cat(sprintf("\n=== Full service x payer breakdown (CT Other excluded): %d rows (expect 45 x 3 = 135) ===\n",
+            nrow(full_breakdown)))
+
+full_breakdown_display <- full_breakdown %>%
+  select(payer_bucket, SERVICE_GROUP, category, n_obs, fs_f,
+         estimate_pct, se_pct, pval, sig) %>%
+  arrange(payer_bucket, estimate_pct)
+
+full_breakdown_display %>% as.data.frame() %>% print()
+
+write.csv(full_breakdown_display,
+          "EXPORT_CSV_full_service_by_payer_breakdown_no_ctother.csv", row.names = FALSE)
+
+library(kableExtra)
+latex_table <- full_breakdown_display %>%
+  mutate(
+    estimate_pct = round(estimate_pct, 2),
+    se_pct       = round(se_pct, 2),
+    pval         = signif(pval, 3),
+    fs_f         = round(fs_f, 1)
+  ) %>%
+  select(-sig) %>%
+  kbl(
+    format = "latex", booktabs = TRUE, longtable = TRUE,
+    col.names = c("Payer", "Service Group", "Category", "N", "First-Stage F",
+                  "Estimate (pp)", "SE (pp)", "p-value"),
+    caption = "Service-level IV estimates by payer class, CT Other excluded",
+    label = "tab:service_by_payer_no_ctother"
+  ) %>%
+  kable_styling(latex_options = c("repeat_header"))
+
+writeLines(as.character(latex_table), "tab_service_by_payer_no_ctother.tex")
+
+fig_service_by_payer_forest <- ggplot(full_breakdown,
+                                      aes(x = estimate_pct,
+                                          y = reorder(SERVICE_GROUP, estimate_pct),
+                                          color = category)) +
+  geom_vline(xintercept = 0, color = "grey50", linewidth = 0.4, linetype = "dashed") +
+  geom_errorbarh(
+    aes(xmin = estimate_pct - 1.96 * se_pct,
+        xmax = estimate_pct + 1.96 * se_pct),
+    height = 0, linewidth = 0.5
+  ) +
+  geom_point(aes(shape = sig), size = 2) +
+  scale_color_manual(values = c(
+    "Shoppable"      = FSU_GARNET,
+    "Intermediate"   = "grey40",
+    "Non-Shoppable"  = FSU_GOLD
+  )) +
+  scale_shape_manual(values = c("TRUE" = 16, "FALSE" = 1), guide = "none") +
+  facet_wrap(~ payer_bucket, ncol = 3) +
+  labs(
+    x = "IV Estimate (% per additional prior poster)",
+    y = NULL,
+    color = NULL,
+    title = "Service-Level IV Estimates by Payer Class",
+    subtitle = "CT Other excluded | Filled point = p < 0.05 | Theory V2 shoppability classification"
+  ) +
+  theme_bw(base_size = 9) +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold"),
+    axis.text.y = element_text(size = 6.5)
+  )
+
+print(fig_service_by_payer_forest)
+
+ggsave("fig_service_by_payer_forest_no_ctother.pdf", fig_service_by_payer_forest,
+       width = 12, height = 9)
+
+# ---------------------------------------------------------------------
+# 8. Sanity check: mean of service-level estimates vs pooled IV
+# ---------------------------------------------------------------------
+cat("\n=== Sanity check: mean(service-level) vs pooled IV, CT Other excluded ===\n")
+for (pb in payer_buckets) {
+  mean_svc_est <- full_breakdown %>%
+    filter(payer_bucket == pb) %>%
+    summarise(mean_est = mean(estimate_pct, na.rm = TRUE)) %>%
+    pull(mean_est)
+  pooled_est <- coef(iv_pooled_by_payer[[pb]])["fit_n_prior_posters"] * 100
+  cat(sprintf("  %-12s mean(service-level) = %.3f pp | pooled IV = %.3f pp\n",
+              pb, mean_svc_est, pooled_est))
+}
+
+# ---------------------------------------------------------------------
+# 9. Side-by-side comparison: gradient WITH vs WITHOUT CT Other
+#    (requires having already run the original all-services version;
+#    paste in the original shop_gradient_summary values here, or
+#    re-load from EXPORT_CSV_shop_gradient_by_payer.csv if saved)
+# ---------------------------------------------------------------------
+tryCatch({
+  original <- fread("EXPORT_CSV_shop_gradient_by_payer.csv") %>%
+    rename(gradient_pct_with_ctother = gradient_pct,
+           se_pct_with_ctother = se_pct)
+  comparison <- shop_gradient_summary %>%
+    select(payer_bucket, gradient_pct_no_ctother = gradient_pct,
+           se_pct_no_ctother = se_pct) %>%
+    left_join(original %>% select(payer_bucket, gradient_pct_with_ctother,
+                                  se_pct_with_ctother),
+              by = "payer_bucket")
+  cat("\n=== Gradient comparison: with vs without CT Other ===\n")
+  comparison %>% as.data.frame() %>% print()
+}, error = function(e) {
+  cat("\n(Skipping with/without comparison -- original EXPORT_CSV_shop_gradient_by_payer.csv not found in working directory)\n")
+})
 
