@@ -117,7 +117,7 @@
 #  table, figure, or exported CSV.
 #
 # OUTPUT INDEX — TABLES / CONSOLE TABLES
-#   OUTPUT_TABLE_01_SUMSTATS                Summary statistics (LaTeX; Section 19)
+#   OUTPUT_TABLE_01_SUMSTATS                Summary statistics (LaTeX; Section 20)
 #   OUTPUT_TABLE_02_FIRST_STAGE             County first stage (etable; Section 6)
 #   OUTPUT_TABLE_03_POOLED_OLS_IV           County pooled OLS vs IV, all outcomes
 #   OUTPUT_TABLE_05B_SERVICE_OLS_IV         Service-level OLS vs IV comparison
@@ -147,13 +147,24 @@
 # OUTPUT INDEX — CSV EXPORTS
 #   Search for EXPORT_CSV_ to jump to each saved results file.
 # ============================================================
+#
+# SCRIPT SECTION NUMBERING (added for navigation):
+#   Every main section below is marked with a bold, hash-bordered header:
+#     ######## Section N: Title ###########
+#   Each of these lines ends in 4+ "#" characters, which RStudio's editor
+#   recognizes as a foldable section break — use Edit > Folding > Collapse
+#   All, or the folding arrows in the gutter, to collapse the whole script
+#   down to just this list of section titles.
+#   Sections run 0-23. Two sections were added relative to earlier drafts
+#   of this script: Section 18 (additional exclusion-restriction
+#   diagnostics — system x month FE, Lee et al. tF, enforcement controls,
+#   Conley-Hansen-Rossi bounds) and Sections 22-23 (within-system price
+#   dispersion check and the payer-conditional robustness pipeline), which
+#   pushed the former Sections 18-20 to 19-21.
+# ============================================================
 
 
-# ============================================================
-# SECTION 0: LIBRARIES, SETUP, AND CONSTANTS
-# ============================================================
-# ----------------------------------------------------------------------------
-# SECTION 0 GUIDE
+######## Section 0: Libraries, Setup, and Constants ###########
 # ----------------------------------------------------------------------------
 # Loads packages, defines FSU colors, creates helper constants, and defines 
 # the service grouping function used by both county and city panels.
@@ -254,12 +265,7 @@ add_service_groups <- function(df) {
 }
 
 
-# ============================================================
-# SECTION 1: LOAD AND PREPARE COUNTY DATA (PRIMARY)
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 1 GUIDE
+######## Section 1: Load and Prepare County Data (Primary) ###########
 # ----------------------------------------------------------------------------
 # Reads the county-level cleaned national price file and constructs the 
 # primary county entrant-month analysis panel with log price outcomes.
@@ -293,18 +299,13 @@ cat("County: rows =",   nrow(df_iv_county),
 print(summary(df_iv_county$n_prior_posters))
 
 
-# ============================================================
-# SECTION 2: COUNTY INSTRUMENT — CORRECTED + ALL VARIANTS
-# ============================================================
+######## Section 2: County Instrument — Corrected + All Variants ###########
+# ----------------------------------------------------------------------------
 # KEY FIX applied throughout: only systems WITH hospitals in the
 # focal county can exert peer pressure on that county.
-# ----------------------------------------------------------------------------
-# SECTION 2 GUIDE
-# ----------------------------------------------------------------------------
 # Constructs corrected county instruments for 3m, 6m, 9m, and 12m trailing 
 # windows using only health systems present in the focal county.
-# This eliminates cross-system contamination (99% of old rows
-# were spurious) that inflated the original instrument to F=197.
+# This eliminates cross-system contamination
 
 # Step 1: Systems spanning >1 county
 system_geo_county <- df_iv_county %>%
@@ -410,12 +411,7 @@ for (iv in ivs_county) {
 }
 
 
-# ============================================================
-# SECTION 3: LOAD AND PREPARE CITY DATA (ROBUSTNESS)
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 3 GUIDE
+######## Section 3: Load and Prepare City Data (Robustness) ###########
 # ----------------------------------------------------------------------------
 # Reads the city-level cleaned national price file and constructs the city 
 # entrant-month robustness panel.
@@ -449,18 +445,14 @@ cat("City: rows =",  nrow(df_iv_city),
 print(summary(df_iv_city$n_prior_posters))
 
 
-# ============================================================
-# SECTION 4: CITY INSTRUMENT — CORRECTED + ALL VARIANTS
-# ============================================================
-
-# Step 1: Systems spanning >1 city
-system_geo_city <- df_iv_city %>%
-  # ----------------------------------------------------------------------------
-# SECTION 4 GUIDE
+######## Section 4: City Instrument — Corrected + All Variants ###########
 # ----------------------------------------------------------------------------
 # Constructs corrected city instruments for 6m, 9m, and 12m trailing windows 
 # using only health systems present in the focal city.
-distinct(HOSPITAL_ID, city_state, HEALTH_SYSTEM_NAME) %>%
+
+# Step 1: Systems spanning >1 city
+system_geo_city <- df_iv_city %>%
+  distinct(HOSPITAL_ID, city_state, HEALTH_SYSTEM_NAME) %>%
   filter(!is.na(HEALTH_SYSTEM_NAME), HEALTH_SYSTEM_NAME != "") %>%
   group_by(HEALTH_SYSTEM_NAME) %>%
   summarise(n_cities = n_distinct(city_state), .groups = "drop") %>%
@@ -554,15 +546,11 @@ for (iv in ivs_city) {
 }
 
 
-# ============================================================
-# SECTION 5: SHARED ESTIMATION FUNCTIONS
-# ============================================================
-# cluster_var accepts a character vector for two-way clustering.
-# ----------------------------------------------------------------------------
-# SECTION 5 GUIDE
+######## Section 5: Shared Estimation Functions ###########
 # ----------------------------------------------------------------------------
 # Reusable estimation and table-building helpers. These functions run pooled 
 # OLS/IV, service-level IV, outcome-by-service IV, and meta-regressions.
+# cluster_var accepts a character vector for two-way clustering,
 # e.g. c("County_State", "post_month") → ~County_State + post_month
 
 # ----------------------------------------------------------------------------
@@ -858,15 +846,10 @@ print_meta_results <- function(meta_list, label = "") {
 }
 
 
-# ============================================================
-# SECTION 6: COUNTY — PRIMARY RESULTS
+######## Section 6: County — Primary Results ###########
+# ----------------------------------------------------------------------------
 # Primary instrument: system_peer_pressure_county_9m
 # Clustering: County_State + post_month (two-way)
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 6 GUIDE
-# ----------------------------------------------------------------------------
 # Main county results: first stage, Wu-Hausman test, pooled OLS/IV outcomes, 
 # service-level IV results, OLS-vs-IV comparison, and county meta-regressions.
 # ---------------------------------------------------------------------------
@@ -1170,15 +1153,10 @@ tmp <- res_county_outcomes %>%
 write.csv(tmp, "county_outcomes_detail.csv", row.names = FALSE)
 cat("Saved to county_outcomes_detail.csv\n")
 
-# ============================================================
-# SECTION 7: CITY — ROBUSTNESS CHECK
+######## Section 7: City — Robustness Check ###########
+# ----------------------------------------------------------------------------
 # Primary city instrument: system_peer_pressure_city_12m
 # Clustering: city_state + post_month (two-way)
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 7 GUIDE
-# ----------------------------------------------------------------------------
 # City robustness analysis using system_peer_pressure_city_12m with city_state
 #  + post_month clustering.
 # First stage
@@ -1263,15 +1241,11 @@ res_city_outcomes %>%
   arrange(desc(n_sig)) %>% as.data.frame() %>% print()
 
 
-# ============================================================
-# SECTION 8: TWO-WAY GEOGRAPHIC COMPARISON (TABLE 14)
-# County (primary) vs City (robustness)
-# ============================================================
+######## Section 8: Two-Way Geographic Comparison (Table 14) ###########
 # ----------------------------------------------------------------------------
-# SECTION 8 GUIDE
-# ----------------------------------------------------------------------------
-# Builds county-vs-city comparison tables and the shoppability-gradient 
-# comparison across geographic definitions.
+# County (primary) vs City (robustness). Builds county-vs-city comparison
+# tables and the shoppability-gradient comparison across geographic
+# definitions.
 
 two_way_compare <- res_county %>%
   mutate(SERVICE_GROUP = as.character(SERVICE_GROUP)) %>%
@@ -1321,12 +1295,7 @@ for (nm in c("County", "City")) {
 }
 
 
-# ============================================================
-# SECTION 9: FIGURES
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 9 GUIDE
+######## Section 9: Figures ###########
 # ----------------------------------------------------------------------------
 # Creates the first set of paper figures: county IV forest, meta-regression 
 # scatter, OLS-vs-IV forest/scatter, heatmap, and county/city figure.
@@ -1667,17 +1636,13 @@ print(fig_two_way)
 
 
 
-# ============================================================
-# SECTION 10: SATURATION ANALYSIS — DIMINISHING RETURNS
-# ============================================================
-
-cat("=== SATURATION DISTRIBUTION ===\n")
-print(summary(df_iv_county$n_prior_posters))
-# ----------------------------------------------------------------------------
-# SECTION 10 GUIDE
+######## Section 10: Saturation Analysis — Diminishing Returns ###########
 # ----------------------------------------------------------------------------
 # Saturation analysis: bins prior posters into exposure ranges and checks 
 # whether disclosure effects attenuate as markets become more saturated.
+
+cat("=== SATURATION DISTRIBUTION ===\n")
+print(summary(df_iv_county$n_prior_posters))
 print(quantile(df_iv_county$n_prior_posters,
                probs = c(0.05,0.10,0.25,0.50,0.75,0.90,0.95,0.99), na.rm=TRUE))
 
@@ -2139,18 +2104,13 @@ modelsummary(
 
 
 
-# ============================================================
-# SECTION 11: HETEROGENEITY — MARKET CHARACTERISTICS
-# ============================================================
-
-merged_final <- fread("../Data/data_clean/HHI_CBSA_health_insurance_market_competition.csv")
-
-# ----------------------------------------------------------------------------
-# SECTION 11 GUIDE
+######## Section 11: Heterogeneity — Market Characteristics ###########
 # ----------------------------------------------------------------------------
 # Market-characteristic heterogeneity: splits markets by ownership, payer mix,
 #  poverty, education, insurer concentration, market size, race/ethnicity, and
 #  related dimensions.
+
+merged_final <- fread("../Data/data_clean/HHI_CBSA_health_insurance_market_competition.csv")
 
 df_het <- df_iv_county %>%
   left_join(merged_final, by = "cbsacode") %>%
@@ -2846,12 +2806,7 @@ fig_race_2x2 <- ggplot(equity_data,
 print(fig_race_2x2)
 
 
-# ============================================================
-# SECTION 12: HOSPITAL TYPE HETEROGENEITY
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 12 GUIDE
+######## Section 12: Hospital Type Heterogeneity ###########
 # ----------------------------------------------------------------------------
 # Hospital-type heterogeneity: compares short-term acute care and critical 
 # access hospitals, then runs service-level and meta-regression versions.
@@ -2950,12 +2905,7 @@ etable(mod_iv_shortterm, mod_iv_cah, fitstat=c("ivwald","n"),
        headers=c("Short Term Acute Care","Critical Access"))
 
 
-# ============================================================
-# SECTION 13: GEOGRAPHIC PROXIMITY HETEROGENEITY
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 13 GUIDE
+######## Section 13: Geographic Proximity Heterogeneity ###########
 # ----------------------------------------------------------------------------
 # Geographic-proximity heterogeneity: computes nearest-hospital distances and 
 # compares close vs far hospitals within CBSAs.
@@ -3058,12 +3008,7 @@ cat("\n=== TABLE: Geographic Proximity IV (etable) ===\n")
 etable(mod_iv_close, mod_iv_far, fitstat=c("ivwald","n"), headers=c(label_close, label_far))
 
 
-# ============================================================
-# SECTION 14: SERVICE-LEVEL HETEROGENEITY (PART B & C)
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 14 GUIDE
+######## Section 14: Service-Level Heterogeneity (Part B & C) ###########
 # ----------------------------------------------------------------------------
 # Service-level heterogeneity extensions: meta-regression interactions and 
 # city-vs-county biopsy amplification check.
@@ -3111,16 +3056,11 @@ cat(sprintf("\nMean city-county difference: %.3f%%\n",
             mean(biopsy_wide$city_minus_county,na.rm=TRUE)))
 
 
-# ============================================================
-# SECTION 15: ROBUSTNESS — INSTRUMENT VARIANTS
-# ============================================================
+######## Section 15: Robustness — Instrument Variants ###########
+# ----------------------------------------------------------------------------
 # County: 9m is primary; 6m and 12m are window robustness
 # Additional: lag (6-12m), large-system exclusion
 # City: 12m is primary; 9m and 6m are window robustness
-
-# ----------------------------------------------------------------------------
-# SECTION 15 GUIDE
-# ----------------------------------------------------------------------------
 # Instrument-variant robustness: alternative county windows, lagged peer 
 # pressure, excluding large systems, and city variants.
 # --- County: build lag and large-system-exclusion variants ---
@@ -3219,14 +3159,9 @@ for (nm in names(variants_city)) {
 }
 
 
-# ============================================================
-# SECTION 16: ROBUSTNESS — LEAVE-ONE-SYSTEM-OUT
+######## Section 16: Robustness — Leave-One-System-Out ###########
+# ----------------------------------------------------------------------------
 # Primary instrument: 9m; focal county fix applied to each LOO
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 16 GUIDE
-# ----------------------------------------------------------------------------
 # Leave-one-system-out robustness: iteratively drops top systems and re-
 # estimates the shoppability gradient.
 top_systems_county <- df_iv_county %>%
@@ -3296,12 +3231,7 @@ loo_results_county %>%
   as.data.frame() %>% print()
 
 
-# ============================================================
-# SECTION 17: PLACEBO TESTING
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 17 GUIDE
+######## Section 17: Placebo Testing ###########
 # ----------------------------------------------------------------------------
 # Placebo testing: instrument leads/pre-trends and randomization inference for
 #  first-stage strength.
@@ -3561,17 +3491,14 @@ print(fig_rand_inference)
 
 
 
-# ============================================================
-# ROBUSTNESS SECTION: EXCLUSION RESTRICTION TESTS
-# ============================================================
-
+######## Section 18: Exclusion-Restriction Diagnostics ###########
 # ----------------------------------------------------------------------------
-# ROBUSTNESS SECTION GUIDE
-# ----------------------------------------------------------------------------
-# Exclusion-restriction stress tests: system-month fixed effects, system-
-# specific trends, enforcement controls, Conley-Hansen-Rossi sensitivity, and 
-# robustness summary.
-# ---- 0. Helper: print a compact IV diagnostic row ----
+# Additional exclusion-restriction stress tests and robustness diagnostics,
+# in four parts: (A) system x month fixed effects and system-specific linear
+# trends, (B) Lee et al. (2022) tF diagnostics, (C) CMS enforcement-exposure
+# controls, and (D) Conley-Hansen-Rossi sensitivity bounds on the
+# meta-regression gradient, ending in a robustness summary table.
+# ---- Part A helper: print a compact IV diagnostic row ----
 # ----------------------------------------------------------------------------
 # FUNCTION iv_row()
 # ----------------------------------------------------------------------------
@@ -3602,8 +3529,8 @@ iv_row <- function(fit, label, instrument = "system_peer_pressure_county_9m") {
 INSTR <- "system_peer_pressure_county_9m"
 CL    <- ~County_State + post_month
 
-# ============================================================
-# TEST 1: System × Month Fixed Effects
+# ----------------------------------------------------------------------------
+# Part A: System × Month Fixed Effects
 # 
 # Purpose: Absorbs system-wide pricing shocks, corporate policy
 # changes, and any unobservable correlated with system-level 
@@ -3644,7 +3571,7 @@ iv_baseline <- feols(
 # system-month interaction FE. Note: single-county systems
 # will be absorbed into this FE and drop out of identification.
 iv_sys_month <- feols(
-  ln_median_price ~ ln_total_beds | market_id + post_month + HEALTH_SYSTEM_NAME^post_month |
+  ln_median_price ~ ln_total_beds | market_id + HEALTH_SYSTEM_NAME^post_month |
     n_prior_posters ~ system_peer_pressure_county_9m,
   data    = df_iv_county %>% filter(!is.na(HEALTH_SYSTEM_NAME)),
   cluster = CL
@@ -3687,15 +3614,57 @@ cat("\n  Sys Trends    Wald F:",
 
 
 
+# ----------------------------------------------------------------------------
+# Standalone robustness variant: service-level IV with System x Month FE
+# Mirrors run_iv_by_service() exactly, but replaces post_month with
+# HEALTH_SYSTEM_NAME^post_month in the FE slot. Kept separate so the
+# original run_iv_by_service() definition used elsewhere is untouched.
+# ----------------------------------------------------------------------------
+run_iv_by_service_sysmth <- function(data, outcome_var = "ln_median_price",
+                                     instrument, cluster_var, min_obs = 100) {
+  service_groups <- unique(data$SERVICE_GROUP)
+  results <- do.call(rbind, lapply(service_groups, function(sg) {
+    df_sub <- data[data$SERVICE_GROUP == sg, ]
+    if (nrow(df_sub) < min_obs) return(NULL)
+    fit <- tryCatch(
+      feols(as.formula(paste0(outcome_var,
+                              " ~ ln_total_beds | market_id + HEALTH_SYSTEM_NAME^post_month | n_prior_posters ~ ",
+                              instrument)),
+            data    = df_sub,
+            cluster = as.formula(paste0("~", paste(cluster_var, collapse = " + ")))),
+      error = function(e) NULL)
+    if (is.null(fit)) return(NULL)
+    fs   <- extract_first_stage(fit, instrument)
+    est  <- tryCatch(coef(fit)["fit_n_prior_posters"],   error = function(e) NA_real_)
+    se_v <- tryCatch(se(fit)["fit_n_prior_posters"],     error = function(e) NA_real_)
+    pval <- tryCatch(pvalue(fit)["fit_n_prior_posters"], error = function(e) NA_real_)
+    data.frame(SERVICE_GROUP = sg,
+               n_obs        = nrow(df_sub),
+               n_used       = nobs(fit),
+               estimate = est, se = se_v, pval = pval,
+               estimate_pct = est * 100, se_pct = se_v * 100,
+               ci_lo = est - 1.96 * se_v, ci_hi = est + 1.96 * se_v,
+               ci_lo_pct = (est - 1.96 * se_v) * 100,
+               ci_hi_pct = (est + 1.96 * se_v) * 100,
+               significant = !is.na(est) & !is.na(se_v) &
+                 sign(est - 1.96*se_v) == sign(est + 1.96*se_v),
+               fs_coef = fs$fs_coef, fs_se = fs$fs_se,
+               fs_t = fs$fs_t, fs_f = fs$fs_f,
+               row.names = NULL)
+  }))
+  results <- results[order(results$estimate_pct), ]
+  results$SERVICE_GROUP <- factor(results$SERVICE_GROUP, levels = results$SERVICE_GROUP)
+  results
+}
+
 # Service-level IV with system x month FEs
-res_county_sysmth <- run_iv_by_service(
+res_county_sysmth <- run_iv_by_service_sysmth(
   df_iv_county %>% filter(!is.na(HEALTH_SYSTEM_NAME)),
   outcome_var  = "ln_median_price",
   instrument   = "system_peer_pressure_county_9m",
   cluster_var  = c("County_State", "post_month"),
   min_obs      = 100
 )
-
 print(res_county_sysmth)
 
 # Build meta data and run meta-regression
@@ -3703,26 +3672,25 @@ meta_sysmth <- build_meta_data(res_county_sysmth)
 meta_results_sysmth <- run_meta_regressions(meta_sysmth)
 print_meta_results(meta_results_sysmth, "System x Month FE")
 
-# Compare gradient directly
+# Compare gradient directly (same weighting scheme in both)
 baseline_grad <- coef(
-  lm(estimate_pct ~ is_shoppable, data = build_meta_data(res_county), 
+  lm(estimate_pct ~ is_shoppable, data = build_meta_data(res_county),
      weights = weight)
 )["is_shoppableTRUE"]
 
 sysmth_grad <- coef(
   lm(estimate_pct ~ is_shoppable, data = meta_sysmth,
-     weights = 1/se_pct^2)
+     weights = weight)
 )["is_shoppableTRUE"]
 
 cat(sprintf("\nBaseline gradient    : %.3f pp\n", baseline_grad))
 cat(sprintf("Sys x Month gradient : %.3f pp\n", sysmth_grad))
 
 
-# ============================================================
-# LEE ET AL. (2022) tF DIAGNOSTICS
+# ----------------------------------------------------------------------------
+# Part B: Lee et al. (2022) tF Diagnostics
 # Instrument: system_peer_pressure_county_9m
 # Clustering: County_State + post_month (two-way)
-# ============================================================
 # Reference: Lee, McCrary, Moreira & Porter (2022), Journal of
 # Econometrics. "Valid t-ratio Inference for IV"
 #
@@ -3732,9 +3700,8 @@ cat(sprintf("Sys x Month gradient : %.3f pp\n", sysmth_grad))
 # observed first-stage F. As F → ∞, c(F) → 1.96.
 # The correct F to use is the CLUSTERED Wald F (ivwald1),
 # not the unclustered ivf reported by fixest.
-# ============================================================
 # ------------------------------------------------------------
-# SECTION 1: Lee et al. critical value interpolation function
+# Part B.1: Lee et al. critical value interpolation function
 # ------------------------------------------------------------
 # Source: Lee et al. (2022), Table 1 (5% significance level,
 # one endogenous variable, one instrument)
@@ -3764,7 +3731,7 @@ data.frame(
 ) %>% print(row.names = FALSE)
 
 # ------------------------------------------------------------
-# SECTION 2: Extract clustered Wald F from primary specs
+# Part B.2: Extract clustered Wald F from primary specs
 # ------------------------------------------------------------
 # These are the correct F statistics for Lee et al. purposes.
 # fixest's ivwald1 uses clustered SEs; ivf does not.
@@ -3829,7 +3796,7 @@ cat("      Clustered Wald F (ivwald1) is the correct statistic;\n")
 cat("      fixest's ivf (unclustered) is NOT appropriate here.\n")
 
 # ------------------------------------------------------------
-# SECTION 3: Service-level Lee et al. assessment
+# Part B.3: Service-level Lee et al. assessment
 # ------------------------------------------------------------
 # For each service group, check whether:
 # (a) First-stage F clears Stock-Yogo (16.38)
@@ -3886,7 +3853,7 @@ service_lee %>%
   print(row.names = FALSE)
 
 # ------------------------------------------------------------
-# SECTION 4: CT Lung deep dive
+# Part B.4: CT Lung deep dive
 # ------------------------------------------------------------
 # CT Lung is your only individually significant IV result.
 # Check it carefully against Lee et al.
@@ -3929,7 +3896,7 @@ cat(sprintf("  Passes tF?         : %s\n",
             ifelse(abs(ct_t_stat) > ct_lee_cv, "YES", "NO")))
 
 # ------------------------------------------------------------
-# SECTION 5: Full spectrum — Wald F vs Lee CV plot
+# Part B.5: Full spectrum — Wald F vs Lee CV plot
 # ------------------------------------------------------------
 
 library(ggplot2)
@@ -4001,7 +3968,7 @@ ggplot() +
 
 
 # ------------------------------------------------------------
-# SECTION 6: Summary table for paper
+# Part B.6: Summary table for paper
 # ------------------------------------------------------------
 
 cat("\n=== SECTION 6: Paper-Ready Summary Table ===\n")
@@ -4031,15 +3998,26 @@ service_lee %>%
 cat("\n=== DONE ===\n")
 
 
-# ============================================================
-# TEST 2: CMS Enforcement Exposure as Control
+
+
+cat("=== CURRENT PRIMARY SPEC — VERIFIED NUMBERS ===\n")
+cat(sprintf("Coefficient : %.4f\n", coef(iv_county_pooled)["fit_n_prior_posters"]))
+cat(sprintf("SE          : %.4f\n", se(iv_county_pooled)["fit_n_prior_posters"]))
+cat(sprintf("t-stat      : %.3f\n", coef(iv_county_pooled)["fit_n_prior_posters"]/se(iv_county_pooled)["fit_n_prior_posters"]))
+cat(sprintf("p-value     : %.4f\n", pvalue(iv_county_pooled)["fit_n_prior_posters"]))
+cat(sprintf("Wald F      : %.2f\n", fitstat(iv_county_pooled,"ivwald")[["ivwald1::n_prior_posters"]]$stat))
+cat(sprintf("N obs       : %d\n", nobs(iv_county_pooled)))
+
+
+# ----------------------------------------------------------------------------
+# Part C: CMS Enforcement Exposure as Control
 #
 # Purpose: If CMS enforcement drives compliance *and* directly
 # affects prices (risk aversion channel), controlling for
 # enforcement exposure isolates the peer-cascade mechanism.
 # Uses your existing enforcement columns — fine_roll_9m_lag
 # is the closest analogue to the 9m trailing instrument window.
-# ============================================================
+# ----------------------------------------------------------------------------
 
 # Control for same-hospital enforcement exposure
 iv_enf_control <- feols(
@@ -4084,9 +4062,9 @@ etable(
 )
 
 
-# ============================================================
-# CONLEY-HANSEN-ROSSI BOUNDS ON THE META-REGRESSION GRADIENT
-# ============================================================
+# ----------------------------------------------------------------------------
+# Part D: Conley-Hansen-Rossi Bounds on the Meta-Regression Gradient
+# ----------------------------------------------------------------------------
 # 
 # The meta-regression estimates: iv_g = alpha + beta * shoppable_g + e_g
 # 
@@ -4784,9 +4762,9 @@ fig_chr_final <- fig_chr +
 # Prints fig_chr_final: three-panel CHR sensitivity figure.
 print(fig_chr_final)
 
-# ============================================================
-# TEST 4: Summary comparison table — all robustness specs
-# ============================================================
+# ----------------------------------------------------------------------------
+# Part E: Summary Comparison Table — All Robustness Specs
+# ----------------------------------------------------------------------------
 
 robustness_summary <- bind_rows(
   iv_row(iv_baseline,   "1. Baseline (market_id + month FE)"),
@@ -4814,14 +4792,9 @@ robustness_summary %>%
 
 
 
-# ============================================================
-# SECTION 18: ML EXTENSION — POST-DOUBLE-SELECTION LASSO
+######## Section 19: ML Extension — Post-Double-Selection Lasso ###########
+# ----------------------------------------------------------------------------
 # Now uses county data (df_iv_county) with 9m instrument
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 18 GUIDE
-# ----------------------------------------------------------------------------
 # Machine-learning extension: post-double-selection LASSO IV using county data
 #  and the 9m instrument.
 library(hdm)
@@ -4856,12 +4829,7 @@ if (!is.null(pds_result)) {
 }
 
 
-# ============================================================
-# SECTION 19: LATEX TABLES FOR PAPER
-# ============================================================
-
-# ----------------------------------------------------------------------------
-# SECTION 19 GUIDE
+######## Section 20: LaTeX Tables for Paper ###########
 # ----------------------------------------------------------------------------
 # LaTeX and CSV export section. This is the main place to find paper-ready 
 # table output and machine-readable result files.
@@ -5982,10 +5950,9 @@ cat(strrep("=", 60), "\n")
 cat(sprintf("Total files: %d\n", length(saved_files)))
 
 
-# ============================================================
-# SECTION 20: ML EXTENSION — RESIDUALIZED INSTRUMENTAL FOREST
+######## Section 21: ML Extension — Residualized Instrumental Forest ###########
+# ----------------------------------------------------------------------------
 # Fixed version: keeps X, Y, W, and Z aligned after FE residualization
-# ============================================================
 
 library(dplyr)
 library(fixest)
@@ -6292,7 +6259,9 @@ print(heterogeneity_diff, row.names = FALSE)
 
 
 # ============================================================
-# END OF SCRIPT
+# SCRIPT SUMMARY — PRIMARY AND ROBUSTNESS SPECIFICATIONS
+# (Two more sections follow this summary: within-system price
+# dispersion, and the payer-conditional robustness pipeline.)
 # ============================================================
 # Primary specification:   County + system_peer_pressure_county_9m
 #   Wald F = 27.1 (two-way: County_State + post_month)
@@ -6308,19 +6277,18 @@ print(heterogeneity_diff, row.names = FALSE)
 # Robustness check 9:      One-way vs two-way clustering (Section 6)
 # Placebo tests:           Pre-trend leads (Section 17)
 #                          Randomization inference (Section 17)
-# ML extensions:           PDS-LASSO (Section 18)
-#                          Causal Forest (Section 20)
+# ML extensions:           PDS-LASSO (Section 19)
+#                          Causal Forest (Section 21)
 # CBSA dropped:            All variants fail F < 10 under two-way clustering
 # ============================================================
 
-# ─────────────────────────────────────────────────────────────
-# WITHIN-SYSTEM PRICE DISPERSION CHECK
+######## Section 22: Within-System Price Dispersion Check ###########
+# ----------------------------------------------------------------------------
 # Purpose: Test whether hospitals in the same system price
 # uniformly across counties. Low dispersion would support the
 # centralized contracting concern raised by the referee;
 # high dispersion supports local contracting and the exclusion
 # restriction of the system peer pressure instrument.
-# ─────────────────────────────────────────────────────────────
 
 # Step 1: Identify multi-county systems
 # Only systems with hospitals in more than one county can
@@ -6376,8 +6344,8 @@ dispersion %>%
 
 
 
-# =====================================================================
-# Payer-conditional robustness check (FULL PIPELINE)
+######## Section 23: Payer-Conditional Robustness Check (Full Pipeline) ###########
+# ----------------------------------------------------------------------------
 # Excludes "CT Other" -- a residual/catch-all CT category that was
 # found to be the single largest driver of the Medicaid and
 # MedicareAdv shoppability-gradient sign patterns. Excluded here
@@ -6386,10 +6354,9 @@ dispersion %>%
 # document this exclusion explicitly in the paper/appendix.
 #
 # Reuses run_iv_pooled(), run_iv_by_service(), build_meta_data(),
-# run_meta_regressions(), print_meta_results() exactly as defined in
-# NationalRegressions_System_Peer_Pressure_Commented.R -- run this
-# AFTER sourcing that script.
-# =====================================================================
+# run_meta_regressions(), print_meta_results() exactly as defined
+# earlier in this script -- run this section after sourcing the rest
+# of the script (Sections 0-22).
 
 # ---------------------------------------------------------------------
 # 0. Load payer-split price panel (from payer_split_prices.sql)
@@ -6698,4 +6665,5 @@ tryCatch({
 }, error = function(e) {
   cat("\n(Skipping with/without comparison -- original EXPORT_CSV_shop_gradient_by_payer.csv not found in working directory)\n")
 })
+
 
