@@ -1774,7 +1774,7 @@ print(sat_shop2_all %>%
         select(bin, group, estimate_pct, se_pct, pval, fs_f, significant) %>%
         mutate(across(where(is.numeric), ~round(.x, 3))) %>% arrange(bin, estimate_pct))
 
-# Saturation meta-regression across 10 schemes
+# Saturation meta-regression across classification schemes (18, see n_shop_schemes below)
 shoppability_schemes <- list(
   scheme_cms = list(label = "CMS Rule Definition",
                     shoppable = c("Ultrasound","CT Lung","Mammography"), nonshoppable = NULL),
@@ -1810,8 +1810,143 @@ shoppability_schemes <- list(
                                   shoppable = c("Ultrasound","CT Lung","CT Brain/Head","CT Spine",
                                                 "CT Neck","CT Extremity","CT Abdomen","CT Chest",
                                                 "CT Pelvis","CT Other","Mammography"),
-                                  nonshoppable = c("Biopsy","Colonoscopy","Endoscopy","MRI","CT Angio"))
+                                  nonshoppable = c("Biopsy","Colonoscopy","Endoscopy","MRI","CT Angio")),
+  
+  # --------------------------------------------------------------------------
+  # ADDITIONAL SCHEMES 11-18: Eight alternative shoppability frameworks
+  # --------------------------------------------------------------------------
+  # Added at Danny's request to extend the specification sensitivity analysis
+  # beyond the original ten schemes. Each framework classifies the same 46
+  # service groups on a different conceptual dimension (clinical invasiveness,
+  # CMS legal status, upfront cash-market availability, geography, urgency,
+  # staffing, liability exposure, No Surprises Act exposure) rather than
+  # re-deriving Theory V2. Services not named in either the shoppable or
+  # nonshoppable vector for a given scheme fall into the omitted/baseline
+  # category, which the existing modeling functions (build_meta_data_scheme,
+  # run_meta_scheme) already treat as "Intermediate" -- consistent with how
+  # scheme_theory, scheme_broad, etc. leave MRI/X-Ray unclassified above.
+  #
+  # NOTE ON SOURCE MATERIAL: these eight frameworks were drafted externally
+  # (not derived from this project's own CMS filings or market data), and the
+  # source document's own tallies contained several off-by-one arithmetic
+  # errors and one substantive inconsistency, corrected here:
+  #   1) The source document works from a 45-service total; this project's
+  #      locked results (and the SERVICE_GROUP levels actually in the data,
+  #      including "X-Ray Spine") use 46. All eight schemes below are coded
+  #      against the real 46-group universe, not the source's 45-group count.
+  #   2) Several of the source's per-division subtotals (e.g., "24", "31",
+  #      "26", "10") did not match the number of items actually itemized
+  #      under that heading. Where this happened, the itemized list was
+  #      used as the source of truth over the stated count.
+  #   3) scheme_div1_operations follows the source document's own
+  #      itemization, which -- despite its prose claiming "all 7 X-Rays" --
+  #      omits "X-Ray Spine" from the shoppable list for that framework
+  #      specifically. That's preserved here rather than silently corrected,
+  #      since it's unclear whether the omission was an intended edge case
+  #      or a copy-paste error; it leaves "X-Ray Spine" in the baseline
+  #      category for this scheme only. Worth a second look before use.
+  #   4) The CMS-specific service assignments in scheme_div2_cms_legal
+  #      (which services fall in the 70 CMS-specified vs. 230 hospital-
+  #      selected list) reflect the source document's assertions and have
+  #      NOT been checked against CMS's actual published list of the 70
+  #      specified services. The overall 70/230/300 structure is confirmed
+  #      accurate against CMS documentation, but the service-level mapping
+  #      should be verified against the real CMS table before this scheme
+  #      is cited as "CMS-derived" in the paper.
+  #   5) scheme_div4_geographic and scheme_alt8_no_surprises produce an
+  #      IDENTICAL partition of services (Mammography/Ultrasound/X-Ray
+  #      shoppable; Biopsy/Colonoscopy/Endoscopy nonshoppable; CT/MRI
+  #      intermediate), despite being framed around different mechanisms
+  #      (facility access vs. balance-billing exposure). They are kept as
+  #      separate entries below for narrative completeness, but they will
+  #      produce numerically identical coefficients -- not independent
+  #      robustness checks.
+  # --------------------------------------------------------------------------
+  
+  scheme_div1_operations = list(
+    label = "Alt: Core Operations Framework (clinical invasiveness)",
+    shoppable = c("Mammography","Ultrasound","CT",
+                  "X-Ray Other","X-Ray Skull/Head","X-Ray Chest",
+                  "X-Ray Abdomen","X-Ray Pelvis","X-Ray Extremity"),
+    # X-Ray Spine deliberately excluded -- see note (3) above. Baseline
+    # (Intermediate) = all 10 MRI + X-Ray Spine.
+    nonshoppable = c("Biopsy","Colonoscopy","Endoscopy")
+  ),
+  
+  scheme_div2_cms_legal = list(
+    label = "Alt: CMS Legal/Regulatory Framework (70 vs 230 vs non-listed)",
+    shoppable = c("Mammography","Ultrasound",
+                  "X-Ray Other","X-Ray Skull/Head","X-Ray Chest","X-Ray Abdomen",
+                  "X-Ray Pelvis","X-Ray Extremity",
+                  "CT Brain/Head","CT Abdomen","MRI Brain/Head","MRI Spine",
+                  "Colonoscopy","Endoscopy"),
+    # Baseline (Intermediate) = CT Lung/Spine/Neck/Extremity/Chest/Pelvis/Other,
+    # MRI Other/Pelvis/Chest/Extremity/Breast/Abdomen/Neck, Biopsy Thyroid,
+    # Biopsy Breast, Biopsy Lymph Node, X-Ray Spine. See note (4): service-
+    # level CMS-list membership unverified against the actual CMS table.
+    nonshoppable = c("Biopsy Other","Biopsy Pancreas","Biopsy Kidney","Biopsy Bone",
+                     "Biopsy Liver","Biopsy Lung","CT Angio","MRI Angio")
+  ),
+  
+  scheme_div3_mdsave = list(
+    label = "Alt: Upfront Cash-Market Framework (MDsave-style voucher availability)",
+    shoppable = c("CT","MRI","X-Ray","Ultrasound","Mammography"),
+    # Baseline (Intermediate) = Biopsy Thyroid, Biopsy Breast,
+    # Biopsy Lymph Node, Colonoscopy, Endoscopy.
+    nonshoppable = c("Biopsy Other","Biopsy Pancreas","Biopsy Kidney",
+                     "Biopsy Bone","Biopsy Liver","Biopsy Lung")
+  ),
+  
+  scheme_div4_geographic = list(
+    label = "Alt: Geographic/Facility Access Framework (retail vs freestanding vs hospital-locked)",
+    shoppable = c("Mammography","Ultrasound","X-Ray"),
+    # Baseline (Intermediate) = all 10 CT + all 10 MRI.
+    nonshoppable = c("Biopsy","Colonoscopy","Endoscopy")
+  ),
+  
+  scheme_div5_urgency = list(
+    label = "Alt: Diagnostic Urgency/Lead-Time Framework",
+    shoppable = c("Mammography","Ultrasound OB","X-Ray Spine","Colonoscopy"),
+    # Baseline (Intermediate) = all CT, all MRI except Spine, all remaining
+    # Ultrasound/X-Ray, Endoscopy.
+    nonshoppable = c("Biopsy","MRI Spine")
+  ),
+  
+  scheme_alt6_staffing = list(
+    label = "Alt: Staffing/Specialist Framework (generalist vs sub-specialist)",
+    shoppable = c("CT Lung","CT Brain/Head","CT Spine","CT Neck","CT Extremity",
+                  "CT Abdomen","CT Chest","CT Pelvis","CT Other",
+                  "MRI Other","MRI Pelvis","MRI Chest","MRI Extremity",
+                  "MRI Brain/Head","MRI Abdomen","MRI Spine","MRI Neck",
+                  "Mammography","Ultrasound","X-Ray"),
+    # Baseline (Intermediate) = CT Angio, MRI Angio, MRI Breast,
+    # Biopsy Thyroid, Biopsy Breast, Biopsy Lymph Node.
+    nonshoppable = c("Biopsy Other","Biopsy Pancreas","Biopsy Kidney","Biopsy Bone",
+                     "Biopsy Liver","Biopsy Lung","Colonoscopy","Endoscopy")
+  ),
+  
+  scheme_alt7_liability = list(
+    label = "Alt: Incident Reporting/Liability Framework (risk-based)",
+    shoppable = c("Ultrasound","Mammography"),
+    # Baseline (Intermediate) = all CT, all MRI, all X-Ray.
+    nonshoppable = c("Biopsy","Colonoscopy","Endoscopy")
+  ),
+  
+  scheme_alt8_no_surprises = list(
+    label = "Alt: No Surprises Act Legal Framework (balance-billing exposure)",
+    # NOTE: identical partition to scheme_div4_geographic -- see note (5).
+    shoppable = c("Mammography","Ultrasound","X-Ray"),
+    nonshoppable = c("Biopsy","Colonoscopy","Endoscopy")
+  )
 )
+
+# Number of active classification schemes -- referenced below instead of
+# hardcoding "10"/"Ten" so titles/captions/logging stay correct if schemes are
+# ever added or removed again. Currently 18 (10 original + 8 added from
+# Danny's alternative-framework document).
+n_shop_schemes <- length(shoppability_schemes)
+
+
 
 # ----------------------------------------------------------------------------
 # FUNCTION build_meta_data_scheme()
@@ -1902,7 +2037,7 @@ for (nm in names(meta_scheme_results)) {
 }
 
 # Saturation meta-regression across bins and schemes
-cat("\n=== SATURATION META-REGRESSION ACROSS 10 SCHEMES ===\n")
+cat(sprintf("\n=== SATURATION META-REGRESSION ACROSS %d SCHEMES ===\n", n_shop_schemes))
 sat_meta_results <- list()
 for (bin_nm in c("low","mid","high")) {
   bin_data     <- switch(bin_nm, low = sat_service_low, mid = sat_service_mid, high = sat_service_high)
@@ -1989,7 +2124,7 @@ fig_saturation_shoppability <- ggplot(sat_plot_data,
         plot.title = element_text(face = "bold"))
 print(fig_saturation_shoppability)
 
-# Saturation robustness across all 10 schemes
+# Saturation robustness across all n_shop_schemes schemes (currently 18)
 sat_robust_data <- sat_meta_df %>%
   filter(term %in% c("is_shoppableTRUE","is_nonshoppableTRUE"),
          model %in% c("Simple shoppable (WLS)","Three-way (WLS)")) %>%
@@ -2044,6 +2179,16 @@ schemes_summary <- do.call(rbind, lapply(names(meta_scheme_results), function(nm
            grepl("High vs Low",    label) ~ "High vs Low (Within Modality)",
            grepl("Except Angio",   label) ~ "CT-Inclusive Ex. Angio",
            grepl("CT-Inclusive",   label) ~ "CT-Inclusive (All CT)",
+           # -- Short labels for the 8 alternative frameworks added from
+           # Danny's classification-scheme document --
+           grepl("Core Operations",     label) ~ "Alt: Core Operations",
+           grepl("CMS Legal",           label) ~ "Alt: CMS Legal",
+           grepl("Upfront Cash-Market", label) ~ "Alt: Cash-Market (MDsave)",
+           grepl("Geographic",          label) ~ "Alt: Geographic Access",
+           grepl("Urgency",             label) ~ "Alt: Diagnostic Urgency",
+           grepl("Staffing",            label) ~ "Alt: Staffing/Specialist",
+           grepl("Liability",           label) ~ "Alt: Liability/Risk",
+           grepl("No Surprises",        label) ~ "Alt: No Surprises Act",
            TRUE ~ label),
          label_short = factor(label_short, levels = label_short[order(coef)]))
 
@@ -2072,7 +2217,7 @@ ggplot(schemes_summary, aes(x = coef, y = label_short, color = sig)) +
                      labels = c("TRUE" = "p < 0.05", "FALSE" = "p \u2265 0.05"), name = NULL) +
   scale_x_continuous(labels = function(x) sprintf("%.1f%%", x)) +
   labs(x = "Shoppable Coefficient (pp)", y = NULL,
-       title = "Robustness Across Ten Classification Schemes",
+       title = paste0("Robustness Across ", n_shop_schemes, " Classification Schemes"),
        subtitle = "Simple WLS meta-regression; whiskers = 95% CIs; diamond = primary spec") +
   theme_bw(base_size = 10) +
   theme(legend.position = "bottom", panel.grid.major.y = element_blank())
@@ -2081,7 +2226,10 @@ ggplot(schemes_summary, aes(x = coef, y = label_short, color = sig)) +
 # ----------------------------------------------------------------------------
 # Saved PDF: fig_metareg_schemes.pdf. Shows meta-regression results across 
 # shoppability schemes.
-ggsave("fig_metareg_schemes.pdf", width = 8, height = 5, device = cairo_pdf)
+# NOTE: height increased from 5 to 8 -- with 18 rows (up from the original 10)
+# a height of 5 crowds the row labels/whiskers together. Re-check spacing
+# after running; adjust further if labels still overlap.
+ggsave("fig_metareg_schemes.pdf", width = 8, height = 8, device = cairo_pdf)
 
 # modelsummary for Table 6
 library(modelsummary)
@@ -2804,6 +2952,110 @@ fig_race_2x2 <- ggplot(equity_data,
 # ----------------------------------------------------------------------------
 # Prints fig_race_2x2.
 print(fig_race_2x2)
+
+
+######## Section 11b: Equity Finding — Robustness Across Classification Schemes #####
+# ----------------------------------------------------------------------------
+# Checks whether the core equity finding -- the shoppability gradient is
+# present in low-Medicaid/low-poverty markets and attenuates in high-
+# Medicaid/high-poverty markets -- holds across all n_shop_schemes
+# classification schemes, not just Theory V2. All of these per-scheme,
+# per-split meta-regressions were already computed inside
+# run_all_results_on_split() (called once per split in split_defs above) and
+# are sitting in full_meta_summary; this section only re-filters and plots
+# them, so it adds no new IV estimation.
+#
+# Local short-label lookup, self-contained on purpose: scheme_short (defined
+# later, in the standalone figure-rebuild block) doesn't exist yet at this
+# point in the script, so this duplicates the same abbreviations for
+# consistency rather than depending on a not-yet-defined object.
+scheme_short_local <- c(
+  "CMS Rule Definition"                                    = "CMS Rule",
+  "Theory-Based"                                           = "Theory-Based",
+  "Broad Shoppable"                                        = "Broad",
+  "Imaging vs Procedural"                                  = "Imaging vs Proc.",
+  "Theory-Based V2 (MRI as nonshoppable)"                  = "Theory V2 \u25C6",
+  "Split Non-Shoppable: MRI vs Procedural"                 = "Split Non-Shop.",
+  "CMS Statutory Shoppable List"                           = "CMS Statutory",
+  "High vs Low Shoppability Within Modality"               = "High vs Low",
+  "CT-Inclusive (all CT modalities shoppable)"             = "CT-Inclusive (All CT)",
+  "CT-Inclusive Except Angio (acute vascular CT excluded)" = "CT-Inclusive Ex. Angio",
+  "Alt: Core Operations Framework (clinical invasiveness)"                    = "Alt: Core Ops.",
+  "Alt: CMS Legal/Regulatory Framework (70 vs 230 vs non-listed)"             = "Alt: CMS Legal",
+  "Alt: Upfront Cash-Market Framework (MDsave-style voucher availability)"    = "Alt: Cash-Market",
+  "Alt: Geographic/Facility Access Framework (retail vs freestanding vs hospital-locked)" = "Alt: Geographic",
+  "Alt: Diagnostic Urgency/Lead-Time Framework"                               = "Alt: Urgency",
+  "Alt: Staffing/Specialist Framework (generalist vs sub-specialist)"        = "Alt: Staffing",
+  "Alt: Incident Reporting/Liability Framework (risk-based)"                 = "Alt: Liability",
+  "Alt: No Surprises Act Legal Framework (balance-billing exposure)"         = "Alt: No Surprises"
+)
+
+equity_scheme_data <- full_meta_summary %>%
+  filter(dimension %in% c("Medicaid Share", "Poverty Rate")) %>%
+  mutate(
+    disadvantage_level = case_when(
+      grepl("^Low",  split) ~ "Low",
+      grepl("^High", split) ~ "High",
+      TRUE ~ NA_character_
+    ),
+    scheme_short_lbl = ifelse(is.na(scheme_short_local[scheme]), scheme, scheme_short_local[scheme]),
+    ci_lo      = estimate - 1.96 * se,
+    ci_hi      = estimate + 1.96 * se,
+    is_primary = scheme == "Theory-Based V2 (MRI as nonshoppable)"
+  ) %>%
+  filter(!is.na(disadvantage_level))
+
+cat("\n=== EQUITY FINDING ROBUSTNESS: Shoppable Coefficient by Medicaid/Poverty Level, All Schemes ===\n")
+equity_scheme_data %>%
+  arrange(dimension, disadvantage_level, scheme) %>%
+  select(dimension, disadvantage_level, scheme_short_lbl, estimate, se, p_value, sig) %>%
+  as.data.frame() %>% print()
+
+# ----------------------------------------------------------------------------
+# EXPORT_CSV_equity_scheme_robustness
+# ----------------------------------------------------------------------------
+# Exports the equity-finding-by-scheme comparison to
+# equity_scheme_robustness.csv.
+write.csv(equity_scheme_data %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+          "equity_scheme_robustness.csv", row.names = FALSE)
+
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_EQUITY_SCHEME_ROBUSTNESS
+# ----------------------------------------------------------------------------
+# Figure object fig_equity_scheme_robust: checks whether the shoppability
+# gradient's attenuation in high-Medicaid/high-poverty markets (the equity
+# finding) holds across all n_shop_schemes classification schemes. If the
+# finding is robust, within each scheme the Low-share point should sit
+# further from zero (more negative) than the High-share point.
+fig_equity_scheme_robust <- ggplot(
+  equity_scheme_data,
+  aes(x = estimate, y = reorder(scheme_short_lbl, estimate),
+      color = disadvantage_level, shape = is_primary)
+) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40", linewidth = 0.4) +
+  geom_errorbarh(aes(xmin = ci_lo, xmax = ci_hi), height = 0.2, linewidth = 0.6,
+                 position = position_dodge(width = 0.6)) +
+  geom_point(size = 2.8, position = position_dodge(width = 0.6)) +
+  facet_wrap(~dimension, ncol = 1, scales = "free_y") +
+  scale_color_manual(values = c("Low" = FSU_GARNET, "High" = FSU_GOLD), name = NULL,
+                     labels = c("Low"  = "Low share (less disadvantaged)",
+                                "High" = "High share (more disadvantaged)")) +
+  scale_shape_manual(values = c("TRUE" = 18, "FALSE" = 16), guide = "none") +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  labs(x = "Shoppable coefficient (pp)", y = NULL,
+       title = "Equity Finding Robustness Across Classification Schemes",
+       subtitle = paste0("Shoppability gradient by Medicaid/poverty level, all ", n_shop_schemes,
+                         " schemes. Diamond = Theory V2 (primary)."),
+       caption = "Whiskers = 95% CI. Low-share points sitting further from zero than High-share points, within a scheme, supports the equity finding.") +
+  theme_bw(base_size = 10) +
+  theme(legend.position = "bottom", strip.text = element_text(face = "bold"),
+        panel.grid.major.y = element_blank())
+print(fig_equity_scheme_robust)
+# ----------------------------------------------------------------------------
+# OUTPUT_FIGURE_EQUITY_SCHEME_ROBUSTNESS_SAVE
+# ----------------------------------------------------------------------------
+# Saved PDF: fig_equity_scheme_robustness.pdf.
+ggsave("fig_equity_scheme_robustness.pdf", width = 8, height = 10, device = cairo_pdf)
 
 
 ######## Section 12: Hospital Type Heterogeneity ###########
@@ -5329,7 +5581,17 @@ scheme_short <- c(
   "CMS Statutory Shoppable List"                           = "CMS Statutory",
   "High vs Low Shoppability Within Modality"               = "High vs Low",
   "CT-Inclusive (all CT modalities shoppable)"             = "CT-Inclusive (All CT)",
-  "CT-Inclusive Except Angio (acute vascular CT excluded)" = "CT-Inclusive Ex. Angio"
+  "CT-Inclusive Except Angio (acute vascular CT excluded)" = "CT-Inclusive Ex. Angio",
+  # -- 8 alternative frameworks added from Danny's classification-scheme
+  # document; keys must match the `label` field of each scheme exactly --
+  "Alt: Core Operations Framework (clinical invasiveness)"                    = "Alt: Core Ops.",
+  "Alt: CMS Legal/Regulatory Framework (70 vs 230 vs non-listed)"             = "Alt: CMS Legal",
+  "Alt: Upfront Cash-Market Framework (MDsave-style voucher availability)"    = "Alt: Cash-Market",
+  "Alt: Geographic/Facility Access Framework (retail vs freestanding vs hospital-locked)" = "Alt: Geographic",
+  "Alt: Diagnostic Urgency/Lead-Time Framework"                               = "Alt: Urgency",
+  "Alt: Staffing/Specialist Framework (generalist vs sub-specialist)"        = "Alt: Staffing",
+  "Alt: Incident Reporting/Liability Framework (risk-based)"                 = "Alt: Liability",
+  "Alt: No Surprises Act Legal Framework (balance-billing exposure)"         = "Alt: No Surprises"
 )
 
 schemes <- read.csv("results_meta_regression_all_schemes.csv") %>%
@@ -5367,7 +5629,7 @@ panel_b <- ggplot(schemes) +
   scale_shape_manual(values = c("TRUE" = 18, "FALSE" = 16), guide = "none") +
   labs(x     = "Shoppability Gradient (pp per additional prior poster)",
        y     = NULL,
-       title = "B  Robustness Across Ten Classification Schemes",
+       title = paste0("B  Robustness Across ", n_shop_schemes, " Classification Schemes"),
        subtitle = "Diamond = primary spec (Theory V2)  |  whiskers = 95% CI") +
   theme_minimal(base_size = 10) +
   theme(
@@ -5379,6 +5641,10 @@ panel_b <- ggplot(schemes) +
   )
 
 # ── Combine and save ──────────────────────────────────────────────
+# NOTE: panel_b now has n_shop_schemes (18) rows instead of 10. Whatever
+# device/dimensions render this combined figure to PDF/PNG elsewhere in your
+# pipeline will likely need more vertical room than before, or panel_b's row
+# labels will crowd together -- check the rendered output before finalizing.
 fig_metareg_combined <- panel_a + panel_b +
   plot_layout(widths = c(1, 1.4)) &
   theme(plot.background = element_rect(fill = "white", color = NA))
@@ -5405,7 +5671,7 @@ cat("Saved: results_shop2_estimates.csv\n")
 
 
 # -----------------------------------------------------------
-# 6. META-REGRESSION: SHOPPABLE COEFFICIENT ACROSS ALL 10 SCHEMES
+# 6. META-REGRESSION: SHOPPABLE COEFFICIENT ACROSS ALL SCHEMES (n_shop_schemes)
 # -----------------------------------------------------------
 meta_schemes_export <- do.call(rbind, lapply(names(meta_scheme_results), function(nm) {
   res <- meta_scheme_results[[nm]]
@@ -5484,7 +5750,7 @@ cat("Saved: results_saturation_shop2.csv\n")
 
 
 # -----------------------------------------------------------
-# 10. SATURATION — META-REGRESSION ACROSS 10 SCHEMES BY BIN
+# 10. SATURATION — META-REGRESSION ACROSS ALL SCHEMES BY BIN (n_shop_schemes)
 # -----------------------------------------------------------
 # ----------------------------------------------------------------------------
 # EXPORT_CSV_results_saturation_meta_schemes
@@ -6667,3 +6933,86 @@ tryCatch({
 })
 
 
+
+
+# ----------------------------------------------------------------------------
+# Section 22b: Within-System Price Dispersion, split by payer bucket
+# Reuses the same multi_county_systems object and identical logic as Section 22,
+# but runs it separately on each payer-split panel from Section 23.
+# ----------------------------------------------------------------------------
+
+compute_dispersion <- function(df, multi_county_systems) {
+  df %>%
+    filter(HEALTH_SYSTEM_NAME %in% multi_county_systems) %>%
+    group_by(HEALTH_SYSTEM_NAME, SERVICE_GROUP) %>%
+    summarise(
+      n_hospitals     = n(),
+      mean_lnprice    = mean(ln_median_price, na.rm = TRUE),
+      sd_across_hosps = sd(ln_median_price, na.rm = TRUE),
+      .groups         = "drop"
+    ) %>%
+    filter(n_hospitals > 1)
+}
+
+dispersion_commercial <- compute_dispersion(df_payer_panels[["Commercial"]], multi_county_systems)
+dispersion_medicaid    <- compute_dispersion(df_payer_panels[["Medicaid"]],   multi_county_systems)
+
+# Service-group-level medians, same as your existing Step 3 output
+cat("\n=== Commercial: Within-System Dispersion by Service Group ===\n")
+dispersion_commercial %>%
+  group_by(SERVICE_GROUP) %>%
+  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE),
+            mean_sd   = mean(sd_across_hosps, na.rm = TRUE)) %>%
+  as.data.frame() %>% print()
+
+cat("\n=== Managed Medicaid: Within-System Dispersion by Service Group ===\n")
+dispersion_medicaid %>%
+  group_by(SERVICE_GROUP) %>%
+  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE),
+            mean_sd   = mean(sd_across_hosps, na.rm = TRUE)) %>%
+  as.data.frame() %>% print()
+
+# ----------------------------------------------------------------------------
+# Aggregate to shoppability tier (Theory V2), matching the classification
+# already used in build_meta_data() / shop_gradient_by_payer
+# ----------------------------------------------------------------------------
+
+assign_tier <- function(df) {
+  df %>%
+    mutate(tier = case_when(
+      SERVICE_GROUP %in% c("CT Lung", "Mammography") |
+        grepl("Ultrasound", SERVICE_GROUP) ~ "Shoppable",
+      SERVICE_GROUP == "CT Other"          ~ "Intermediate",   # matches Section 23 exclusion note
+      grepl("^CT|^X-Ray", SERVICE_GROUP)   ~ "Intermediate",
+      TRUE                                  ~ "Non-Shoppable"
+    ))
+}
+
+tier_summary_commercial <- assign_tier(dispersion_commercial) %>%
+  group_by(tier) %>%
+  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE), n_cells = n(), .groups = "drop")
+
+tier_summary_medicaid <- assign_tier(dispersion_medicaid) %>%
+  group_by(tier) %>%
+  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE), n_cells = n(), .groups = "drop")
+
+cat("\n=== Tier-Level Median Dispersion: Commercial ===\n")
+print(as.data.frame(tier_summary_commercial))
+
+cat("\n=== Tier-Level Median Dispersion: Managed Medicaid ===\n")
+print(as.data.frame(tier_summary_medicaid))
+
+# Pooled "All Payers" figure for the table's bottom row, using the
+# already-existing pooled dispersion object from Section 22
+tier_summary_pooled <- assign_tier(dispersion) %>%
+  group_by(tier) %>%
+  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE), n_cells = n(), .groups = "drop")
+
+cat("\n=== Tier-Level Median Dispersion: All Payers (pooled, from Section 22) ===\n")
+print(as.data.frame(tier_summary_pooled))
+
+
+cat(sprintf("Commercial all-service median: %.4f\n",
+            median(dispersion_commercial$sd_across_hosps, na.rm = TRUE)))
+cat(sprintf("Medicaid all-service median: %.4f\n",
+            median(dispersion_medicaid$sd_across_hosps, na.rm = TRUE)))
