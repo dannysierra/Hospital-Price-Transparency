@@ -1,6 +1,6 @@
 # When Transparency Works: Service Shoppability, Market Structure, and the Price Effects of Hospital Disclosure
 
-**Danny [Last Name] | PhD Candidate, Health Economics & Public Policy | [University]**
+**Danny Sierra | PhD Candidate, Health Economics & Public Policy | Florida State University**
 
 ---
 
@@ -20,7 +20,7 @@ Rather than testing for a uniform price effect, the paper asks: *when* does tran
 ## Paper
 
 > **"When Transparency Works: Service Shoppability, Market Structure, and the Price Effects of Hospital Disclosure"**
-> Danny [Last Name], [University], [Year]
+> Danny Sierra, Florida State University, 2026
 
 *Job market paper. Draft available upon request.*
 
@@ -246,19 +246,19 @@ library(modelsummary)
 library(geosphere)
 ```
 
-R version: [version]. Package versions available upon request.
+R version: 2026.06.0+242. Package versions available upon request.
 
 ---
 
 ## Contact
 
-**Danny [Last Name]**
-PhD Candidate, [Department]
-[University]
-[email]
+**Danny Sierra**
+PhD Candidate, Department of Economics
+Florida State University
+Ds22c@fsu.edu
 
 ---
 
 ## Citation
 
-> [Last Name], Danny. "When Transparency Works: Service Shoppability, Market Structure, and the Price Effects of Hospital Disclosure." Working Paper, [Year].
+> Sierra, Danny. "When Transparency Works: Service Shoppability, Market Structure, and the Price Effects of Hospital Disclosure." Working Paper, 2026.
