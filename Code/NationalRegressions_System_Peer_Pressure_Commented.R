@@ -5559,7 +5559,7 @@ panel_a <- ggplot(svc) +
   labs(x     = NULL,
        y     = "IV Estimate (% per additional prior poster)",
        title = "A  Service-Level Estimates by Category",
-       subtitle = "Horizontal bar = precision-weighted mean  |  filled point = p < 0.05") +
+       subtitle = "Horizontal bar = precision-weighted mean") +
   theme_minimal(base_size = 10) +
   theme(
     legend.position    = "none",
