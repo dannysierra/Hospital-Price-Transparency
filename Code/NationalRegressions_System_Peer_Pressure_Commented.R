@@ -3782,31 +3782,62 @@ INSTR <- "system_peer_pressure_county_9m"
 CL    <- ~County_State + post_month
 
 # ----------------------------------------------------------------------------
-# Part A: System × Month Fixed Effects
-# 
+# Part A: System x Month Fixed Effects
+#
 # Purpose: Absorbs system-wide pricing shocks, corporate policy
-# changes, and any unobservable correlated with system-level 
+# changes, and any unobservable correlated with system-level
 # timing (threats 2, 3, 4). Identification then comes purely
 # from within-system, cross-county timing variation.
 #
 # Feasibility note: This requires within-system, cross-county
-# variation in the instrument CONDITIONAL on system×month.
-# If systems are small (few counties each), the first 
-# stage may weaken substantially — check Wald F carefully.
+# variation in the instrument CONDITIONAL on system x month.
+# If systems are small (few counties each), the first
+# stage may weaken substantially -- check Wald F carefully.
+#
+# Unaffiliated-hospital note: hospitals with no HEALTH_SYSTEM_NAME
+# are given their own synthetic singleton system id (system_id) below,
+# rather than being dropped via filter(!is.na(HEALTH_SYSTEM_NAME)).
+# This matters because fixest's default singleton removal operates
+# per fixed-effect dimension, not per observation: an unaffiliated
+# hospital that discloses multiple services in the same month shares
+# one system_id^post_month cell across those rows and is correctly
+# RETAINED (there's no system-wide confound to worry about for a lone
+# hospital). Only hospitals with a single service disclosed, ever,
+# are singletons in that dimension and get dropped automatically --
+# which is the appropriate behavior, not a filtering artifact.
 # ============================================================
 
+# Build the synthetic system id once, up front, and reuse it everywhere
+# below so every system x month specification is internally consistent.
+df_iv_sysmonth <- df_iv_county %>%
+  mutate(system_id = if_else(is.na(HEALTH_SYSTEM_NAME),
+                             paste0("INDEP_", HOSPITAL_ID),
+                             HEALTH_SYSTEM_NAME))
+
 # Check how many systems have multi-county presence
+# (kept on HEALTH_SYSTEM_NAME/system-affiliated hospitals only, since this
+# diagnostic is specifically about system rollout breadth; independent
+# hospitals are reported separately alongside it for transparency)
 cat("\n=== System Size Distribution ===\n")
-df_iv_county %>%
+df_iv_sysmonth %>%
   distinct(HEALTH_SYSTEM_NAME, COUNTY_STATE) %>%
-  count(HEALTH_SYSTEM_NAME, name = "n_counties") %>%
   filter(!is.na(HEALTH_SYSTEM_NAME)) %>%
+  count(HEALTH_SYSTEM_NAME, name = "n_counties") %>%
   summarise(
     systems_total      = n(),
     systems_1county    = sum(n_counties == 1),
     systems_multi      = sum(n_counties > 1),
     median_counties    = median(n_counties),
     p90_counties       = quantile(n_counties, 0.9)
+  ) %>%
+  print()
+
+cat("\n=== Independent (Unaffiliated) Hospitals ===\n")
+df_iv_sysmonth %>%
+  filter(is.na(HEALTH_SYSTEM_NAME)) %>%
+  summarise(
+    n_indep_hospitals = n_distinct(HOSPITAL_ID),
+    n_indep_rows      = n()
   ) %>%
   print()
 
@@ -3818,20 +3849,26 @@ iv_baseline <- feols(
   cluster = CL
 )
 
-# System × month FE specification
-# fixest syntax: HEALTH_SYSTEM_NAME^post_month creates a 
-# system-month interaction FE. Note: single-county systems
-# will be absorbed into this FE and drop out of identification.
+# System x month FE specification
+# fixest syntax: system_id^post_month creates a system-month interaction FE.
+# Single-county systems, and any hospital (system-affiliated or not) whose
+# system_id^post_month cell is a true singleton, are absorbed and drop out
+# of identification automatically.
 iv_sys_month <- feols(
-  ln_median_price ~ ln_total_beds | market_id + HEALTH_SYSTEM_NAME^post_month |
+  ln_median_price ~ ln_total_beds | market_id + system_id^post_month |
     n_prior_posters ~ system_peer_pressure_county_9m,
-  data    = df_iv_county %>% filter(!is.na(HEALTH_SYSTEM_NAME)),
+  data    = df_iv_sysmonth,
   cluster = CL
 )
 
 # System-specific linear trends
-# Creates system × linear-time-trend controls.
+# Creates system x linear-time-trend controls.
 # Absorbs differential compliance trajectories by system sophistication.
+# NOTE: unaffiliated hospitals are excluded here deliberately, not as a
+# leftover filtering artifact -- a linear trend for a system of one
+# hospital is not identified (it takes at least two observations per
+# system to fit a slope), so there is no synthetic-id analogue of the
+# system_id fix above that would apply to this specification.
 df_iv_county <- df_iv_county %>%
   mutate(month_index = as.integer(factor(post_month, levels = sort(unique(post_month)))))
 
@@ -3846,30 +3883,35 @@ iv_sys_trends <- feols(
 # ----------------------------------------------------------------------------
 # OUTPUT_TABLE_R1_SYSTEM_FE_TRENDS
 # ----------------------------------------------------------------------------
-# Exclusion-restriction robustness: baseline, system-month FE, and system 
+# Exclusion-restriction robustness: baseline, system-month FE, and system
 # trend specifications.
-cat("\n=== TABLE R1: System × Month FE and System Trends ===\n")
+cat("\n=== TABLE R1: System x Month FE and System Trends ===\n")
 etable(
   iv_baseline, iv_sys_month, iv_sys_trends,
   keep    = "%fit_n_prior_posters",
-  headers = c("Baseline", "System×Month FE", "System Linear Trends"),
+  headers = c("Baseline", "System x Month FE", "System Linear Trends"),
   fitstat = ~ n + ivwald1
 )
 
 # Wald F comparison
-cat("\n  Baseline      Wald F:", 
+cat("\n  Baseline      Wald F:",
     round(fitstat(iv_baseline,  "ivwald")[["ivwald1::n_prior_posters"]]$stat, 1))
-cat("\n  Sys×Month FE  Wald F:", 
+cat("\n  Sys x Month FE  Wald F:",
     round(fitstat(iv_sys_month, "ivwald")[["ivwald1::n_prior_posters"]]$stat, 1))
-cat("\n  Sys Trends    Wald F:", 
+cat("\n  Sys Trends    Wald F:",
     round(fitstat(iv_sys_trends,"ivwald")[["ivwald1::n_prior_posters"]]$stat, 1), "\n")
 
+# Sanity check: confirm N moved in the direction expected from retaining
+# multi-service independent hospitals (should be >= the old filtered N,
+# which excluded every unaffiliated hospital regardless of service count)
+cat("\n  Baseline       N used:", nobs(iv_baseline))
+cat("\n  Sys x Month FE N used:", nobs(iv_sys_month), "\n")
 
 
 # ----------------------------------------------------------------------------
 # Standalone robustness variant: service-level IV with System x Month FE
 # Mirrors run_iv_by_service() exactly, but replaces post_month with
-# HEALTH_SYSTEM_NAME^post_month in the FE slot. Kept separate so the
+# system_id^post_month in the FE slot. Kept separate so the
 # original run_iv_by_service() definition used elsewhere is untouched.
 # ----------------------------------------------------------------------------
 run_iv_by_service_sysmth <- function(data, outcome_var = "ln_median_price",
@@ -3880,7 +3922,7 @@ run_iv_by_service_sysmth <- function(data, outcome_var = "ln_median_price",
     if (nrow(df_sub) < min_obs) return(NULL)
     fit <- tryCatch(
       feols(as.formula(paste0(outcome_var,
-                              " ~ ln_total_beds | market_id + HEALTH_SYSTEM_NAME^post_month | n_prior_posters ~ ",
+                              " ~ ln_total_beds | market_id + system_id^post_month | n_prior_posters ~ ",
                               instrument)),
             data    = df_sub,
             cluster = as.formula(paste0("~", paste(cluster_var, collapse = " + ")))),
@@ -3910,8 +3952,12 @@ run_iv_by_service_sysmth <- function(data, outcome_var = "ln_median_price",
 }
 
 # Service-level IV with system x month FEs
+# NOTE: no !is.na(HEALTH_SYSTEM_NAME) filter here -- df_iv_sysmonth already
+# carries a synthetic system_id for unaffiliated hospitals, so they are
+# retained and let fixest's singleton-removal handle exclusion correctly
+# on a per-cell basis (see note at top of script).
 res_county_sysmth <- run_iv_by_service_sysmth(
-  df_iv_county %>% filter(!is.na(HEALTH_SYSTEM_NAME)),
+  df_iv_sysmonth,
   outcome_var  = "ln_median_price",
   instrument   = "system_peer_pressure_county_9m",
   cluster_var  = c("County_State", "post_month"),
