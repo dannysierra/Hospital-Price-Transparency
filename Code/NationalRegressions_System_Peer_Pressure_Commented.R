@@ -846,6 +846,69 @@ print_meta_results <- function(meta_list, label = "") {
 }
 
 
+
+
+
+
+# =====================================================================
+# Diagnostic: did the HOSPITAL_CHARACTERISTICS_US join bug (Step 3C)
+# actually strip hospital_type / lat / long from independent hospitals
+# in the df_iv_county you already have?
+#
+# Logic: if the bug is present, every independent hospital (NA/blank
+# HEALTH_SYSTEM_NAME) will ALSO be NA for HOSPITAL_TYPE and LATITUDE --
+# not because that data is genuinely missing, but because the join
+# never matched them at all. If n_indep_missing_type is close to
+# n_independent, that's the signature of the bug. If it's much
+# smaller, the join is behaving fine and no SQL fix/re-pull is needed.
+# =====================================================================
+
+check <- df_iv_county %>%
+  distinct(HOSPITAL_ID, HEALTH_SYSTEM_NAME, HOSPITAL_TYPE, LATITUDE, LONGITUDE) %>%
+  summarise(
+    n_hospitals             = n(),
+    n_independent           = sum(is.na(HEALTH_SYSTEM_NAME) | HEALTH_SYSTEM_NAME == ""),
+    n_indep_missing_type    = sum((is.na(HEALTH_SYSTEM_NAME) | HEALTH_SYSTEM_NAME == "") &
+                                    is.na(HOSPITAL_TYPE)),
+    n_indep_missing_coords  = sum((is.na(HEALTH_SYSTEM_NAME) | HEALTH_SYSTEM_NAME == "") &
+                                    is.na(LATITUDE)),
+    n_affiliated_missing_type = sum(!is.na(HEALTH_SYSTEM_NAME) & HEALTH_SYSTEM_NAME != "" &
+                                      is.na(HOSPITAL_TYPE))
+  )
+
+print(as.data.frame(check))
+
+cat(sprintf(
+  "\nOf %d independent hospitals: %d (%.1f%%) are missing HOSPITAL_TYPE and %d (%.1f%%) missing coordinates.\n",
+  check$n_independent,
+  check$n_indep_missing_type,
+  100 * check$n_indep_missing_type / check$n_independent,
+  check$n_indep_missing_coords,
+  100 * check$n_indep_missing_coords / check$n_independent
+))
+
+cat(sprintf(
+  "%d system-affiliated hospitals are ALSO missing HOSPITAL_TYPE (these would NOT be caught by is.na(HEALTH_SYSTEM_NAME) checks -- worth a manual look if > 0).\n",
+  check$n_affiliated_missing_type
+))
+
+# Interpretation:
+#   - If n_indep_missing_type / n_indep_missing_coords are close to
+#     n_independent (e.g. >80-90%), the join bug is live in your current
+#     data: the Hospital Type / Geographic Proximity heterogeneity split
+#     (Section 8.2 of the paper) is silently dropping or misclassifying
+#     independent hospitals, and you should fix Step 3C in SQL and
+#     re-pull before trusting that section's numbers.
+#   - If those percentages are small, the bug either isn't manifesting
+#     in practice (e.g. independent hospitals in this data happen to
+#     still have hospital_type/coords from some other source/join) or
+#     was already patched downstream -- no action needed.
+#   - n_affiliated_missing_type > 0 would mean some genuinely
+#     system-affiliated hospitals are ALSO losing their characteristics
+#     due to the AND-chained NOT NULL filter -- rarer, but worth flagging
+#     to whoever built the pipeline if it shows up.
+
+
 ######## Section 6: County — Primary Results ###########
 # ----------------------------------------------------------------------------
 # Primary instrument: system_peer_pressure_county_9m
@@ -3156,6 +3219,13 @@ cat("\n=== TABLE: Hospital Type IV (etable) ===\n")
 etable(mod_iv_shortterm, mod_iv_cah, fitstat=c("ivwald","n"),
        headers=c("Short Term Acute Care","Critical Access"))
 
+cat("\n", strrep("=",70), "\n HOSPITAL TYPE META-REGRESSION: ALL 18 SCHEMES\n", strrep("=",70), "\n")
+hosp_type_meta_df %>%
+  arrange(hospital_type, scheme) %>%
+  rowwise() %>%
+  do({cat(sprintf("%-25s  %-55s  %8.3f  %8.3f  %8.4f  %4s\n",
+                  .$hospital_type, .$scheme, .$coef, .$se, .$p_value, .$sig)); data.frame()})
+
 
 ######## Section 13: Geographic Proximity Heterogeneity ###########
 # ----------------------------------------------------------------------------
@@ -3258,6 +3328,13 @@ mod_iv_far   <- feols(ln_median_price ~ 1 | market_id + post_month |
 # Supplemental etable comparing close vs far hospital proximity estimates.
 cat("\n=== TABLE: Geographic Proximity IV (etable) ===\n")
 etable(mod_iv_close, mod_iv_far, fitstat=c("ivwald","n"), headers=c(label_close, label_far))
+
+cat("\n", strrep("=",70), "\n GEOGRAPHIC PROXIMITY META-REGRESSION: ALL 18 SCHEMES\n", strrep("=",70), "\n")
+prox_meta_df %>%
+  arrange(proximity, scheme) %>%
+  rowwise() %>%
+  do({cat(sprintf("%-30s  %-55s  %8.3f  %8.3f  %8.4f  %4s\n",
+                  .$proximity, .$scheme, .$coef, .$se, .$p_value, .$sig)); data.frame()})
 
 
 ######## Section 14: Service-Level Heterogeneity (Part B & C) ###########
@@ -3663,6 +3740,44 @@ fig_pretrend_leads <- ggplot(pretrend_plot_df, aes(x = lead, y = estimate_pp)) +
 # Prints fig_pretrend_leads.
 print(fig_pretrend_leads)
 
+# Individual lead models (already fit above as pt_lead1/2/3)
+cat("\n=== Individual Lead Coefficients ===\n")
+for (lead_var in c("spp_lead1", "spp_lead2", "spp_lead3")) {
+  mod <- switch(lead_var,
+                spp_lead1 = pt_lead1,
+                spp_lead2 = pt_lead2,
+                spp_lead3 = pt_lead3)
+  ct <- coeftable(mod)
+  est   <- ct[lead_var, "Estimate"]
+  se_v  <- ct[lead_var, "Std. Error"]
+  pval  <- ct[lead_var, "Pr(>|t|)"]
+  cat(sprintf("%-12s  coef=%8.5f  se=%8.5f  p=%8.5f  pct_effect=%6.3f%%  sig_5pct=%s\n",
+              lead_var, est, se_v, pval, 100*est, pval < 0.05))
+}
+
+# Joint model: same three leads estimated together (this is what pretrend_plot_df
+# actually pulls from via broom::tidy(pt_joint, ...) -- NOT from the three
+# separate univariate models above, so this is the version that matches the figure)
+cat("\n=== Joint Model: Same Three Leads, Estimated Together ===\n")
+ct_joint <- coeftable(pt_joint)
+for (lead_var in c("spp_lead1", "spp_lead2", "spp_lead3")) {
+  est  <- ct_joint[lead_var, "Estimate"]
+  se_v <- ct_joint[lead_var, "Std. Error"]
+  pval <- ct_joint[lead_var, "Pr(>|t|)"]
+  cat(sprintf("%-12s  coef=%8.5f  se=%8.5f  p=%8.5f  pct_effect=%6.3f%%  sig_5pct=%s\n",
+              lead_var, est, se_v, pval, 100*est, pval < 0.05))
+}
+
+# Joint F-test (already computed above, just reprinting cleanly)
+cat("\n=== Joint Wald F-Test on All Three Leads ===\n")
+cat(sprintf("F = %.3f, p = %.6f\n", wald_joint_leads$stat, wald_joint_leads$p))
+
+# Direct check against what the figure actually flags as significant
+cat("\n=== Confirm Which (If Any) Lead Triggers sig_5pct in the Figure ===\n")
+print(pretrend_plot_df %>% select(lead_label, estimate_pp, ci_low_pp, ci_high_pp, sig_5pct))
+
+
+
 # Randomization inference
 set.seed(42)
 N_PERMS <- 500
@@ -3983,6 +4098,87 @@ sysmth_grad <- coef(
 
 cat(sprintf("\nBaseline gradient    : %.3f pp\n", baseline_grad))
 cat(sprintf("Sys x Month gradient : %.3f pp\n", sysmth_grad))
+
+# ----------------------------------------------------------------------------
+# System x Month FE: shoppability gradient across all 18 classification
+# schemes
+# ----------------------------------------------------------------------------
+sysmth_scheme_meta <- lapply(names(shoppability_schemes), function(scheme_nm) {
+  scheme  <- shoppability_schemes[[scheme_nm]]
+  df_meta <- build_meta_data_scheme(res_county_sysmth, scheme)
+  if (nrow(df_meta) < 5) return(NULL)
+  
+  m_simple <- tryCatch(lm(estimate_pct ~ is_shoppable, data = df_meta, weights = weight),
+                       error = function(e) NULL)
+  m_three  <- if (any(df_meta$is_nonshoppable)) {
+    tryCatch(lm(estimate_pct ~ is_shoppable + is_nonshoppable, data = df_meta, weights = weight),
+             error = function(e) NULL)
+  } else NULL
+  
+  extract_row <- function(model, model_label) {
+    if (is.null(model)) return(NULL)
+    ct <- as.data.frame(coef(summary(model)))
+    ct$term  <- rownames(ct)
+    ct$model <- model_label
+    ct$scheme <- scheme$label
+    ct$r_squared <- summary(model)$r.squared
+    rownames(ct) <- NULL
+    ct %>% select(scheme, model, term,
+                  estimate = Estimate, se = `Std. Error`,
+                  t_stat = `t value`, p_value = `Pr(>|t|)`, r_squared)
+  }
+  
+  bind_rows(
+    extract_row(m_simple, "Simple shoppable (WLS)"),
+    extract_row(m_three,  "Three-way (WLS)")
+  )
+})
+
+sysmth_scheme_meta_df <- do.call(rbind, sysmth_scheme_meta) %>%
+  mutate(sig = ifelse(p_value < 0.01, "***", ifelse(p_value < 0.05, "**",
+                                                    ifelse(p_value < 0.10, "*", ""))),
+         across(where(is.numeric), ~round(.x, 4)))
+
+# ----------------------------------------------------------------------------
+# EXPORT_CSV_sysmth_scheme_meta
+# ----------------------------------------------------------------------------
+write.csv(sysmth_scheme_meta_df, "sysmth_scheme_meta.csv", row.names = FALSE)
+
+cat("\n=== SYSTEM x MONTH FE: Shoppable/Non-Shoppable Coefficients Across All 18 Schemes ===\n")
+sysmth_scheme_meta_df %>%
+  filter(model == "Three-way (WLS)") %>%
+  arrange(scheme, term) %>%
+  rowwise() %>%
+  do({cat(sprintf("%-55s  %-22s  %8.3f  %8.3f  %8.4f  %4s\n",
+                  .$scheme, .$term, .$estimate, .$se, .$p_value, .$sig)); data.frame()})
+
+cat("\n=== SYSTEM x MONTH FE: Simple Shoppable-Only Coefficient Across All 18 Schemes ===\n")
+sysmth_scheme_meta_df %>%
+  filter(model == "Simple shoppable (WLS)", term == "is_shoppableTRUE") %>%
+  arrange(p_value) %>%
+  rowwise() %>%
+  do({cat(sprintf("%-55s  %8.3f  %8.3f  %8.4f  %4s\n",
+                  .$scheme, .$estimate, .$se, .$p_value, .$sig)); data.frame()})
+
+
+
+# Theory V2 shoppable services are Ultrasound, CT Lung, Mammography.
+# Compare each one's estimate under baseline vs system x month FE to see
+# which one(s) actually moved enough to explain the aggregate attenuation.
+shoppable_compare <- build_meta_data_scheme(res_county, shoppability_schemes$scheme_theory_v2) %>%
+  filter(is_shoppable) %>%
+  select(SERVICE_GROUP, baseline_est = estimate_pct, baseline_se = se_pct) %>%
+  full_join(
+    build_meta_data_scheme(res_county_sysmth, shoppability_schemes$scheme_theory_v2) %>%
+      filter(is_shoppable) %>%
+      select(SERVICE_GROUP, sysmth_est = estimate_pct, sysmth_se = se_pct),
+    by = "SERVICE_GROUP"
+  ) %>%
+  mutate(delta = sysmth_est - baseline_est)
+
+print(shoppable_compare)
+
+
 
 
 # ----------------------------------------------------------------------------
@@ -6595,64 +6791,131 @@ print(heterogeneity_diff, row.names = FALSE)
 # ============================================================
 
 ######## Section 22: Within-System Price Dispersion Check ###########
-# ----------------------------------------------------------------------------
-# Purpose: Test whether hospitals in the same system price
-# uniformly across counties. Low dispersion would support the
-# centralized contracting concern raised by the referee;
-# high dispersion supports local contracting and the exclusion
-# restriction of the system peer pressure instrument.
+# =====================================================================
+# Franchisee vs. fully-integrated check: benchmarked dispersion +
+# variance decomposition
+#
+# Mirrors the SQL fixes:
+#   (1) Collapse to one price per system + county + service cell before
+#       computing cross-county SD, so within-system dispersion isn't
+#       contaminated by ordinary within-county, cross-hospital variation.
+#   (2) Add a within-market (same county), across-hospital benchmark
+#       dispersion measure computed the same way.
+#   (3) Add a variance-components model: how much residual price
+#       variance is attributable to system identity vs. county identity,
+#       holding service fixed.
+# =====================================================================
 
-# Step 1: Identify multi-county systems
-# Only systems with hospitals in more than one county can
-# generate meaningful within-system cross-county dispersion.
-# Drop unaffiliated hospitals (missing or blank system name).
-multi_county_systems <- df_iv_county %>%
+# ---- Step 1 (FIX): collapse to one price per system + county + service ----
+system_county_prices <- df_iv_county %>%
   filter(!is.na(HEALTH_SYSTEM_NAME), HEALTH_SYSTEM_NAME != "") %>%
+  group_by(HEALTH_SYSTEM_NAME, County_State, SERVICE_GROUP) %>%
+  summarise(
+    n_hospitals_in_cell = n_distinct(HOSPITAL_ID),
+    mean_lnprice_cell   = mean(ln_median_price, na.rm = TRUE),
+    .groups             = "drop"
+  )
+
+multi_county_systems <- system_county_prices %>%
   group_by(HEALTH_SYSTEM_NAME) %>%
-  summarise(n_counties = n_distinct(County_State)) %>%
+  summarise(n_counties = n_distinct(County_State), .groups = "drop") %>%
   filter(n_counties > 1) %>%
   pull(HEALTH_SYSTEM_NAME)
 
-# Step 2: Compute within-system price dispersion by service group
-# Each hospital contributes one observation per service group:
-# its ln_median_price (log of the median negotiated price across
-# payers and CPT codes within that service group). The SD of
-# log prices across hospitals within a system-service group cell
-# approximates the coefficient of variation and is interpretable
-# as approximate percent price variation. Filter to cells with
-# at least 2 hospitals since SD is undefined for n = 1.
-dispersion <- df_iv_county %>%
+dispersion_within_system <- system_county_prices %>%
   filter(HEALTH_SYSTEM_NAME %in% multi_county_systems) %>%
   group_by(HEALTH_SYSTEM_NAME, SERVICE_GROUP) %>%
   summarise(
-    n_hospitals      = n(),
-    mean_lnprice     = mean(ln_median_price, na.rm = TRUE),
-    sd_across_hosps  = sd(ln_median_price, na.rm = TRUE),
+    n_counties         = n_distinct(County_State),
+    sd_across_counties = sd(mean_lnprice_cell, na.rm = TRUE),
+    .groups            = "drop"
+  ) %>%
+  filter(n_counties > 1)
+
+summary_within_system <- dispersion_within_system %>%
+  group_by(SERVICE_GROUP) %>%
+  summarise(
+    median_sd_system = median(sd_across_counties, na.rm = TRUE),
+    mean_sd_system   = mean(sd_across_counties, na.rm = TRUE),
+    .groups          = "drop"
+  )
+
+# ---- Step 2 (ADDITION): within-market, across-hospital benchmark ----
+# Uses the full df_iv_county (all hospitals, any/no system), grouped by
+# county + service, regardless of system membership -- this is the
+# natural comparison point for "how much do prices vary across
+# competitors in the same local market."
+dispersion_within_market <- df_iv_county %>%
+  group_by(County_State, SERVICE_GROUP) %>%
+  summarise(
+    n_hospitals      = n_distinct(HOSPITAL_ID),
+    n_systems        = n_distinct(HEALTH_SYSTEM_NAME),
+    sd_within_market = sd(ln_median_price, na.rm = TRUE),
     .groups          = "drop"
   ) %>%
   filter(n_hospitals > 1)
 
-# Step 3: Summarize dispersion across systems by service group
-# Reports the median and mean within-system SD of log prices
-# for each service group. The median is preferred as the
-# summary statistic since the SD distribution is right-skewed.
-# An SD of ~0.20 implies roughly 20% price variation within
-# the same system across counties — inconsistent with
-# centralized uniform pricing.
-dispersion %>%
+summary_within_market <- dispersion_within_market %>%
   group_by(SERVICE_GROUP) %>%
   summarise(
-    median_sd = median(sd_across_hosps, na.rm = TRUE),
-    mean_sd   = mean(sd_across_hosps, na.rm = TRUE)
+    median_sd_market = median(sd_within_market, na.rm = TRUE),
+    mean_sd_market   = mean(sd_within_market, na.rm = TRUE),
+    .groups          = "drop"
+  )
+
+# ---- Side-by-side comparison table ----
+dispersion_comparison <- summary_within_system %>%
+  left_join(summary_within_market, by = "SERVICE_GROUP") %>%
+  mutate(
+    ratio_system_to_market = median_sd_system / median_sd_market
   ) %>%
-  as.data.frame() %>% print()
+  arrange(desc(ratio_system_to_market))
 
+cat("\n=== Within-System (Cross-County) vs. Within-Market (Cross-Hospital) Dispersion ===\n")
+print(as.data.frame(dispersion_comparison))
 
+cat(sprintf(
+  "\nMedian ratio across service groups: %.2f (ratio near/above 1 supports local pricing; well below 1 suggests some system centralization)\n",
+  median(dispersion_comparison$ratio_system_to_market, na.rm = TRUE)
+))
 
+# ---- Step 3 (ADDITION): variance decomposition ----
+# How much of residual price variance (after service fixed effects) is
+# attributable to system identity vs. county identity? If county
+# explains substantially more variance than system, that's a direct
+# "local market dominates" result -- the cleanest single number for
+# the franchisee-vs-integrated question.
+#
+# Requires lme4. Install once if needed: install.packages("lme4")
+library(lme4)
 
+vc_data <- df_iv_county %>%
+  filter(!is.na(HEALTH_SYSTEM_NAME), HEALTH_SYSTEM_NAME != "",
+         !is.na(County_State))
 
+vc_model <- lmer(
+  ln_median_price ~ SERVICE_GROUP + (1 | HEALTH_SYSTEM_NAME) + (1 | County_State),
+  data = vc_data
+)
 
+vc <- as.data.frame(VarCorr(vc_model))
+vc$pct_variance <- 100 * vc$vcov / sum(vc$vcov)
 
+cat("\n=== Variance Decomposition: System vs. County vs. Residual ===\n")
+print(vc[, c("grp", "vcov", "pct_variance")])
+
+cat(sprintf(
+  "\nCounty explains %.1f%% of residual price variance; system explains %.1f%%.\n",
+  vc$pct_variance[vc$grp == "County_State"],
+  vc$pct_variance[vc$grp == "HEALTH_SYSTEM_NAME"]
+))
+
+# Note on interpretation: this is a pooled model (service entered as a
+# fixed effect, not interacted with system/county). If you want the
+# decomposition separately by service group -- e.g. to check whether
+# shoppable services show a different system/county split than
+# non-shoppable ones -- refit vc_model within each SERVICE_GROUP subset
+# and compare the resulting pct_variance rows across service groups.
 
 
 
@@ -6981,84 +7244,409 @@ tryCatch({
 
 
 
-# ----------------------------------------------------------------------------
-# Section 22b: Within-System Price Dispersion, split by payer bucket
-# Reuses the same multi_county_systems object and identical logic as Section 22,
-# but runs it separately on each payer-split panel from Section 23.
-# ----------------------------------------------------------------------------
+######## Section 22b: Within-System Price Dispersion, ###########
+######## split by payer bucket, benchmarked against within-market ###########
+# =====================================================================
+# Fixes vs. the original Section 22b:
+#   (1) compute_dispersion() now collapses to one price per
+#       system + county + service cell BEFORE computing cross-county
+#       SD -- same fix as Section 22 Step 1, just applied per payer
+#       bucket. Without this, the payer-split numbers below suffer the
+#       exact within-county/cross-hospital contamination that Section
+#       22 was built to correct.
+#   (2) Adds MedicareAdv, which was missing entirely from the original
+#       Section 22b despite already being built in Section 23.
+#   (3) Adds a within-market (across-hospital, same county) benchmark
+#       for each payer bucket, mirroring the SQL side, so these are
+#       ratios rather than unbenchmarked raw SDs.
+#   (4) Replaces the stale, uncorrected `dispersion` object in the
+#       pooled "All Payers" baseline with Section 22's own corrected
+#       `dispersion_within_system`, and excludes CT Other from it so
+#       the baseline is comparable (same 45 services) to the
+#       payer-specific rows below, instead of silently mixing 46 vs. 45
+#       services in one table.
+#   (5) RESTORES assign_tier(), which lived only in the original
+#       Section 22b -- deleting that section also deleted this function,
+#       and everything below depends on it. Now self-contained.
+# =====================================================================
 
-compute_dispersion <- function(df, multi_county_systems) {
-  df %>%
-    filter(HEALTH_SYSTEM_NAME %in% multi_county_systems) %>%
-    group_by(HEALTH_SYSTEM_NAME, SERVICE_GROUP) %>%
-    summarise(
-      n_hospitals     = n(),
-      mean_lnprice    = mean(ln_median_price, na.rm = TRUE),
-      sd_across_hosps = sd(ln_median_price, na.rm = TRUE),
-      .groups         = "drop"
-    ) %>%
-    filter(n_hospitals > 1)
-}
-
-dispersion_commercial <- compute_dispersion(df_payer_panels[["Commercial"]], multi_county_systems)
-dispersion_medicaid    <- compute_dispersion(df_payer_panels[["Medicaid"]],   multi_county_systems)
-
-# Service-group-level medians, same as your existing Step 3 output
-cat("\n=== Commercial: Within-System Dispersion by Service Group ===\n")
-dispersion_commercial %>%
-  group_by(SERVICE_GROUP) %>%
-  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE),
-            mean_sd   = mean(sd_across_hosps, na.rm = TRUE)) %>%
-  as.data.frame() %>% print()
-
-cat("\n=== Managed Medicaid: Within-System Dispersion by Service Group ===\n")
-dispersion_medicaid %>%
-  group_by(SERVICE_GROUP) %>%
-  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE),
-            mean_sd   = mean(sd_across_hosps, na.rm = TRUE)) %>%
-  as.data.frame() %>% print()
-
-# ----------------------------------------------------------------------------
-# Aggregate to shoppability tier (Theory V2), matching the classification
-# already used in build_meta_data() / shop_gradient_by_payer
-# ----------------------------------------------------------------------------
-
+# ---- Theory V2 tier classification (same scheme used throughout the
+# paper's specification curve; restored here since removing the old
+# Section 22b removed this function along with it) ----
 assign_tier <- function(df) {
   df %>%
     mutate(tier = case_when(
       SERVICE_GROUP %in% c("CT Lung", "Mammography") |
         grepl("Ultrasound", SERVICE_GROUP) ~ "Shoppable",
-      SERVICE_GROUP == "CT Other"          ~ "Intermediate",   # matches Section 23 exclusion note
       grepl("^CT|^X-Ray", SERVICE_GROUP)   ~ "Intermediate",
       TRUE                                  ~ "Non-Shoppable"
     ))
 }
 
-tier_summary_commercial <- assign_tier(dispersion_commercial) %>%
+# ---- Fixed dispersion + benchmark, applied per payer bucket ----
+compute_dispersion_fixed <- function(df, multi_county_systems) {
+  # Step 1: collapse to one price per system + county + service cell
+  sys_county <- df %>%
+    filter(HEALTH_SYSTEM_NAME %in% multi_county_systems) %>%
+    group_by(HEALTH_SYSTEM_NAME, County_State, SERVICE_GROUP) %>%
+    summarise(mean_lnprice_cell = mean(ln_median_price, na.rm = TRUE),
+              .groups = "drop")
+  
+  # Step 2: SD across counties within system + service
+  sys_county %>%
+    group_by(HEALTH_SYSTEM_NAME, SERVICE_GROUP) %>%
+    summarise(
+      n_counties         = n_distinct(County_State),
+      sd_across_counties  = sd(mean_lnprice_cell, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(n_counties > 1)
+}
+
+compute_within_market_fixed <- function(df) {
+  df %>%
+    group_by(County_State, SERVICE_GROUP) %>%
+    summarise(
+      n_hospitals      = n_distinct(HOSPITAL_ID),
+      sd_within_market = sd(ln_median_price, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(n_hospitals > 1)
+}
+
+payer_dispersion_results <- lapply(payer_buckets, function(pb) {
+  df_pb <- df_payer_panels[[pb]]   # already excludes CT Other, per Section 23
+  
+  within_sys <- compute_dispersion_fixed(df_pb, multi_county_systems) %>%
+    group_by(SERVICE_GROUP) %>%
+    summarise(median_sd_system = median(sd_across_counties, na.rm = TRUE),
+              .groups = "drop")
+  
+  within_mkt <- compute_within_market_fixed(df_pb) %>%
+    group_by(SERVICE_GROUP) %>%
+    summarise(median_sd_market = median(sd_within_market, na.rm = TRUE),
+              .groups = "drop")
+  
+  within_sys %>%
+    left_join(within_mkt, by = "SERVICE_GROUP") %>%
+    mutate(payer_bucket = pb,
+           ratio_system_to_market = median_sd_system / median_sd_market)
+})
+names(payer_dispersion_results) <- payer_buckets
+
+for (pb in payer_buckets) {
+  cat(sprintf("\n=== %s: Within-System (Cross-County) vs. Within-Market Dispersion ===\n", pb))
+  payer_dispersion_results[[pb]] %>% as.data.frame() %>% print()
+  cat(sprintf("Median ratio (%s): %.3f\n", pb,
+              median(payer_dispersion_results[[pb]]$ratio_system_to_market, na.rm = TRUE)))
+}
+
+# ---- Tier-level summary by payer bucket (using the FIXED objects) ----
+tier_summary_by_payer <- lapply(payer_buckets, function(pb) {
+  assign_tier(payer_dispersion_results[[pb]]) %>%
+    group_by(tier) %>%
+    summarise(
+      median_ratio = median(ratio_system_to_market, na.rm = TRUE),
+      n_cells      = n(),
+      .groups      = "drop"
+    ) %>%
+    mutate(payer_bucket = pb)
+})
+names(tier_summary_by_payer) <- payer_buckets
+
+for (pb in payer_buckets) {
+  cat(sprintf("\n=== Tier-Level Median System/Market Ratio: %s ===\n", pb))
+  print(as.data.frame(tier_summary_by_payer[[pb]]))
+}
+
+# ---- Pooled "All Payers" baseline: reuse Section 22's CORRECTED objects,
+#      excluding CT Other so the comparison is apples-to-apples with the
+#      45-service payer-specific panels above (not the stale `dispersion`
+#      object, and not the full 46-service set). ----
+dispersion_within_system_no_ctother <- dispersion_within_system %>%
+  filter(SERVICE_GROUP != "CT Other")
+
+within_market_no_ctother <- dispersion_within_market %>%   # from Section 22 Step 2
+  filter(SERVICE_GROUP != "CT Other") %>%
+  group_by(SERVICE_GROUP) %>%
+  summarise(median_sd_market = median(sd_within_market, na.rm = TRUE), .groups = "drop")
+
+pooled_comparison_no_ctother <- summary_within_system %>%   # from Section 22
+  filter(SERVICE_GROUP != "CT Other") %>%
+  left_join(within_market_no_ctother, by = "SERVICE_GROUP") %>%
+  mutate(ratio_system_to_market = median_sd_system / median_sd_market)
+
+tier_summary_pooled <- assign_tier(pooled_comparison_no_ctother) %>%
   group_by(tier) %>%
-  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE), n_cells = n(), .groups = "drop")
+  summarise(median_ratio = median(ratio_system_to_market, na.rm = TRUE),
+            n_cells = n(), .groups = "drop") %>%
+  mutate(payer_bucket = "All Payers")
 
-tier_summary_medicaid <- assign_tier(dispersion_medicaid) %>%
-  group_by(tier) %>%
-  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE), n_cells = n(), .groups = "drop")
-
-cat("\n=== Tier-Level Median Dispersion: Commercial ===\n")
-print(as.data.frame(tier_summary_commercial))
-
-cat("\n=== Tier-Level Median Dispersion: Managed Medicaid ===\n")
-print(as.data.frame(tier_summary_medicaid))
-
-# Pooled "All Payers" figure for the table's bottom row, using the
-# already-existing pooled dispersion object from Section 22
-tier_summary_pooled <- assign_tier(dispersion) %>%
-  group_by(tier) %>%
-  summarise(median_sd = median(sd_across_hosps, na.rm = TRUE), n_cells = n(), .groups = "drop")
-
-cat("\n=== Tier-Level Median Dispersion: All Payers (pooled, from Section 22) ===\n")
+cat("\n=== Tier-Level Median System/Market Ratio: All Payers (pooled, CT Other excluded) ===\n")
 print(as.data.frame(tier_summary_pooled))
 
+# ---- Combined table for the paper/appendix ----
+tier_summary_all <- bind_rows(tier_summary_pooled, do.call(bind_rows, tier_summary_by_payer)) %>%
+  select(payer_bucket, tier, median_ratio, n_cells) %>%
+  arrange(factor(payer_bucket, levels = c("All Payers", "Commercial", "Medicaid", "MedicareAdv")),
+          factor(tier, levels = c("Shoppable", "Intermediate", "Non-Shoppable")))
 
-cat(sprintf("Commercial all-service median: %.4f\n",
-            median(dispersion_commercial$sd_across_hosps, na.rm = TRUE)))
-cat(sprintf("Medicaid all-service median: %.4f\n",
-            median(dispersion_medicaid$sd_across_hosps, na.rm = TRUE)))
+cat("\n=== Combined System/Market Ratio Table (CT Other excluded throughout) ===\n")
+print(as.data.frame(tier_summary_all))
+
+for (pb in payer_buckets) {
+  cat(sprintf("Median ratio (%s): %.3f\n", pb,
+              median(payer_dispersion_results[[pb]]$ratio_system_to_market, na.rm = TRUE)))
+}
+
+write.csv(tier_summary_all, "EXPORT_CSV_dispersion_ratio_by_payer_and_tier.csv", row.names = FALSE)
+
+# Note: these ratios will not exactly match the SQL-side payer-split ratios
+# (Commercial 0.66, Managed Medicaid 0.78, Medicare Advantage 0.95) since R
+# works from df_iv_county's already-aggregated ln_median_price while the SQL
+# query computes SD directly on raw contract-level NEGOTIATED_DOLLAR. Agreement
+# in direction and rough magnitude is the right bar, not numeric equality.
+
+# ----------------------------------------------------------------------------
+# Payer-conditional robustness, re-verified fresh
+# ----------------------------------------------------------------------------
+
+payer_iv_results <- lapply(payer_buckets, function(pb) {
+  df_pb <- df_payer_panels[[pb]]
+  
+  # Pooled IV
+  pooled <- run_iv_sub(df_pb, pb, "system_peer_pressure_county_9m",
+                       c("County_State","post_month"))
+  
+  # Service-level IV, feeding the meta-regression
+  res_svc <- run_iv_by_service(df_pb, "ln_median_price",
+                               "system_peer_pressure_county_9m",
+                               c("County_State","post_month"))
+  
+  # Theory V2 shoppability gradient (simple WLS)
+  grad <- NULL
+  if (!is.null(res_svc) && nrow(res_svc) >= 5) {
+    df_meta <- build_meta_data_scheme(res_svc, shoppability_schemes$scheme_theory_v2)
+    if (nrow(df_meta) >= 5) {
+      m <- tryCatch(lm(estimate_pct ~ is_shoppable, data = df_meta, weights = weight),
+                    error = function(e) NULL)
+      if (!is.null(m)) {
+        ct <- coef(summary(m))
+        if ("is_shoppableTRUE" %in% rownames(ct)) {
+          grad <- data.frame(
+            payer_bucket = pb,
+            grad_coef = ct["is_shoppableTRUE","Estimate"],
+            grad_se   = ct["is_shoppableTRUE","Std. Error"],
+            grad_p    = ct["is_shoppableTRUE","Pr(>|t|)"]
+          )
+        }
+      }
+    }
+  }
+  
+  list(pooled = pooled, gradient = grad)
+})
+names(payer_iv_results) <- payer_buckets
+
+# Print pooled IV side (coefficient + Wald F) for each payer class
+cat("\n=== PAYER-CONDITIONAL: Pooled IV (fresh re-check) ===\n")
+bind_rows(lapply(payer_iv_results, `[[`, "pooled")) %>%
+  select(group, estimate, se, pvalue, wald_f, n_obs) %>%
+  mutate(across(where(is.numeric), ~round(.x, 4))) %>%
+  print()
+
+# Print Theory V2 shoppability gradient for each payer class
+cat("\n=== PAYER-CONDITIONAL: Theory V2 Shoppability Gradient (fresh re-check) ===\n")
+bind_rows(lapply(payer_iv_results, `[[`, "gradient")) %>%
+  mutate(sig = ifelse(grad_p<0.01,"***",ifelse(grad_p<0.05,"**",ifelse(grad_p<0.10,"*",""))),
+         across(where(is.numeric), ~round(.x, 4))) %>%
+  print()
+
+
+
+# =====================================================================
+# Same-state vs. different-state decomposition of system_peer_pressure_county_9m
+#
+# Built as a direct extension of build_county_instrument()
+# logic (Section 2), not an independent reconstruction, this
+# guarantees the same-state + diff-state components sum exactly to
+# actual instrument.
+#
+# Assumes Section 2 has already been run, so hosp_system_county,
+# focal_county_systems, and panel_county_months already exist.
+# =====================================================================
+
+# ---- Extract state from County_State ("City, ST" format) ----
+# e.g. "Sacramento, CA" -> "CA"
+extract_state <- function(county_state_str) {
+  trimws(sub(".*,\\s*", "", county_state_str))
+}
+
+hosp_system_county_st <- hosp_system_county %>%
+  mutate(peer_state_lookup = extract_state(County_State))
+
+panel_county_months_st <- panel_county_months %>%
+  mutate(focal_state = extract_state(County_State))
+
+# ---- Mirror build_county_instrument() exactly, adding same_state ----
+build_county_instrument_by_state <- function(hosp_data, panel_months, focal_systems,
+                                             window_months = 9) {
+  hosp_data %>%
+    rename(peer_hosp        = HOSPITAL_ID,
+           peer_county      = County_State,
+           peer_post_month  = post_month,
+           peer_state       = peer_state_lookup) %>%
+    cross_join(panel_months) %>%              # panel_months carries focal_state
+    filter(
+      peer_county     != County_State,        # out-of-county, exactly as in the original
+      peer_post_month <= post_month,
+      peer_post_month >= post_month - months(window_months)
+    ) %>%
+    inner_join(focal_systems, by = c("HEALTH_SYSTEM_NAME", "County_State")) %>%
+    mutate(same_state = peer_state == focal_state) %>%
+    group_by(HEALTH_SYSTEM_NAME, County_State, post_month, same_state) %>%
+    summarise(n_peers = n_distinct(peer_hosp), .groups = "drop") %>%
+    group_by(County_State, post_month, same_state) %>%
+    summarise(n_peers_total = sum(n_peers), .groups = "drop") %>%
+    tidyr::pivot_wider(
+      names_from  = same_state,
+      values_from = n_peers_total,
+      values_fill = 0,
+      names_prefix = "state_match_"
+    )
+}
+
+cat("Building state-split 9-month instrument...\n")
+county_iv_9m_by_state <- build_county_instrument_by_state(
+  hosp_system_county_st, panel_county_months_st, focal_county_systems,
+  window_months = 9
+)
+
+# state_match_TRUE = same-state peers, state_match_FALSE = different-state peers
+county_iv_9m_by_state <- county_iv_9m_by_state %>%
+  mutate(
+    same_state_n = coalesce(state_match_TRUE, 0),
+    diff_state_n = coalesce(state_match_FALSE, 0),
+    total_n      = same_state_n + diff_state_n
+  )
+
+# ---- Validation: does same_state_n + diff_state_n equal the original instrument? ----
+validation <- county_iv_9m_by_state %>%
+  select(County_State, post_month, total_n) %>%
+  inner_join(county_iv_9m, by = c("County_State", "post_month"))
+
+cat("\n=== Validation: state-split total vs. original system_peer_pressure_county_9m ===\n")
+cat(sprintf("Correlation: %.4f\n",
+            cor(validation$total_n, validation$system_peer_pressure_county_9m)))
+mismatch <- validation %>% filter(total_n != system_peer_pressure_county_9m)
+cat(sprintf("County-months with exact mismatch: %d of %d\n",
+            nrow(mismatch), nrow(validation)))
+
+# ---- The actual answer, once validation confirms an exact (or near-exact) match ----
+cat("\n=== Same-state vs. different-state share of system_peer_pressure_county_9m ===\n")
+cat(sprintf("Same-state share:      %.1f%%\n",
+            100 * sum(county_iv_9m_by_state$same_state_n) / sum(county_iv_9m_by_state$total_n)))
+cat(sprintf("Different-state share: %.1f%%\n",
+            100 * sum(county_iv_9m_by_state$diff_state_n) / sum(county_iv_9m_by_state$total_n)))
+
+cat(sprintf("Same-state peer disclosures:      %d\n", sum(county_iv_9m_by_state$same_state_n)))
+cat(sprintf("Different-state peer disclosures: %d\n", sum(county_iv_9m_by_state$diff_state_n)))
+cat(sprintf("Total peer disclosures:           %d\n", sum(county_iv_9m_by_state$total_n)))
+cat(sprintf("County-months (N):                %d\n", nrow(county_iv_9m_by_state)))
+
+
+
+
+
+# =====================================================================
+# Market-share-weighted payer overlap check (top-3 by county)
+#
+# Stricter version of the presence-based check: does the focal county's
+# top-3 payer (by contract-row share) set overlap AT ALL with the peer
+# county's top-3 set? This is a much harder bar than mere presence, and
+# should actually discriminate rather than saturate near 100%.
+#
+# Reuses county_pairs_9m from instrument_payer_overlap_check.R -- no
+# need to rebuild the pair-level instrument reconstruction, just swap
+# in a stricter payer lookup.
+#
+# NOTE: quoted the County_State alias in SQL this time (see
+# county_top3_payers.sql) to avoid the Snowflake case issue -- but the
+# rename() below is included defensively in case it still comes back
+# uppercase, since that's bitten us twice already.
+# =====================================================================
+
+# ---- Step 1: load top-3 payer shares, defensively fix casing ----
+county_top3_raw <- fread("../Data/data_clean/county_top3_payers.csv")
+
+if ("COUNTY_STATE" %in% names(county_top3_raw)) {
+  county_top3_raw <- county_top3_raw %>% rename(County_State = COUNTY_STATE)
+}
+
+cat(sprintf("Top-3 payer data loaded: %d counties\n",
+            n_distinct(county_top3_raw$County_State)))
+
+# Sanity check: every county should have <= 3 rows (some very thin
+# counties may have fewer than 3 distinct payers at all)
+county_top3_raw %>%
+  count(County_State) %>%
+  count(n, name = "n_counties_with_this_many_top_payers") %>%
+  print()
+
+# ---- Step 2: build county -> top-3 payer set lookup ----
+county_top3_list <- county_top3_raw %>%
+  group_by(County_State) %>%
+  summarise(top3_payers = list(unique(PARENT_PAYER_NAME)), .groups = "drop")
+
+# ---- Step 3: reuse the already-validated county_pairs_9m, swap in the ----
+# stricter overlap definition
+top3_overlap_check <- function(focal_c, peer_c, lookup) {
+  focal_top3 <- lookup$top3_payers[[match(focal_c, lookup$County_State)]]
+  peer_top3  <- lookup$top3_payers[[match(peer_c,  lookup$County_State)]]
+  if (is.null(focal_top3) || is.null(peer_top3)) return(NA)
+  length(intersect(focal_top3, peer_top3)) > 0
+}
+
+county_pairs_9m <- county_pairs_9m %>%
+  rowwise() %>%
+  mutate(has_top3_overlap = top3_overlap_check(focal_county, peer_county, county_top3_list)) %>%
+  ungroup()
+
+cat(sprintf("\nPairs with missing top-3 data (NA overlap): %d of %d\n",
+            sum(is.na(county_pairs_9m$has_top3_overlap)), nrow(county_pairs_9m)))
+
+# ---- Step 4: the actual answer ----
+cat("\n=== Share of instrument's counted peer disclosures, by top-3 payer overlap ===\n")
+county_pairs_9m %>%
+  filter(!is.na(has_top3_overlap)) %>%
+  group_by(has_top3_overlap) %>%
+  summarise(n_peer_disclosures = sum(n_peers), .groups = "drop") %>%
+  mutate(pct = 100 * n_peer_disclosures / sum(n_peer_disclosures)) %>%
+  as.data.frame() %>%
+  print()
+
+# ---- Step 5: cross-tab against the earlier (presence-based) result, ----
+# to see how much the stricter bar actually changes the picture
+cat("\n=== Cross-tab: presence-based overlap vs. top-3 overlap ===\n")
+county_pairs_9m %>%
+  filter(!is.na(has_payer_overlap), !is.na(has_top3_overlap)) %>%
+  group_by(has_payer_overlap, has_top3_overlap) %>%
+  summarise(n_peer_disclosures = sum(n_peers), .groups = "drop") %>%
+  mutate(pct = 100 * n_peer_disclosures / sum(n_peer_disclosures)) %>%
+  as.data.frame() %>%
+  print()
+
+# Interpretation:
+#   - If has_top3_overlap = FALSE now makes up a meaningful share (e.g.
+#     >20-30%), the stricter test discriminates as intended: for that
+#     share, not only is there no obviously dominant common negotiating
+#     counterparty, Threat (i) is materially less plausible.
+#   - If this ALSO saturates near 100%, the same national payers simply
+#     dominate nearly every U.S. county's contract volume (plausible
+#     given how concentrated commercial insurance is), and no
+#     presence/dominance-based measure from this data will discriminate
+#     further -- at that point, drop the direct-measurement approach
+#     and rest the argument on the CBO/Trilliant local-negotiation
+#     evidence plus the instrument-leads and CHR robustness checks,
+#     which test the actual behavioral question rather than a
+#     structural proxy for it.
