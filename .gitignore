@@ -1,18 +1,54 @@
-# 1. Ignore everything in the project by default 
-* 
+# =============================================================================
+# ALLOWLIST .gitignore
+#
+# Nothing in this repository is tracked unless it is named explicitly below.
+# Data, results, caches, credentials, and scratch files are excluded by
+# default and do not need their own rules.
+#
+# HOW TO ADD A FILE
+#   1. If it lives in a folder, un-ignore the folder chain first (see the
+#      FOLDERS block). Git will not look inside an ignored folder, so a rule
+#      for a file inside one never fires.
+#   2. Add one "!path/to/file" line to the FILES block.
+#   3. Verify before committing:  git status --porcelain
+#
+# Add nothing below the FILES block. Later rules override earlier ones, so a
+# pattern placed after the allowlist would silently re-ignore your files.
+# =============================================================================
 
-# 2. Keep essential RStudio settings and documentation
-!.gitignore 
-!*.Rproj 
+
+# --- 1. Ignore everything ----------------------------------------------------
+
+*
+
+
+# --- 2. FOLDERS: open the path to each tracked file --------------------------
+# Each folder needs two lines: un-ignore the folder, then re-ignore its
+# contents. Copy the pair for any new folder.
+
+!Code/
+Code/*
+
+# Uncomment as needed:
+# !Code/SQL/
+# Code/SQL/*
+# !Code/Python/
+# Code/Python/*
+
+
+# --- 3. FILES: the complete list of what gets committed ----------------------
+# One line per file. This is the only place to add anything.
+
+!.gitignore
 !README.md
+!LICENSE
 
-# 3. Allow Git to look inside the Code folder 
-!Code/ 
+!Code/HPT_Analysis_Pipeline.R
 
-# 4. Explicitly ignore everything INSIDE Code by default 
-Code/* 
+# Examples, uncomment and edit:
+# !Code/HPT_Phase1_Snowflake.sql
+# !Code/SQL/build_codebook.sql
+# !Code/Python/build_controls.py
+# !HPT_Project.Rproj
 
-# 5. Make the absolute exception for your ONE file 
-!Code/NationalRegressions_System_Peer_Pressure_Commented.R
-
-
+# --- end of allowlist. Do not add patterns below this line. ---
