@@ -29,11 +29,12 @@
 !Code/
 Code/*
 
+!Notebooks/
+Notebooks/*
+
 # Uncomment as needed:
-# !Code/SQL/
-# Code/SQL/*
-# !Code/Python/
-# Code/Python/*
+# !SQL/
+# SQL/*
 
 
 # --- 3. FILES: the complete list of what gets committed ----------------------
@@ -44,11 +45,11 @@ Code/*
 !LICENSE
 
 !Code/HPT_Analysis_Pipeline.R
+!Notebooks/HPT_Python_Pipeline.ipynb
 
 # Examples, uncomment and edit:
-# !Code/HPT_Phase1_Snowflake.sql
-# !Code/SQL/build_codebook.sql
-# !Code/Python/build_controls.py
+# !SQL/HPT_Phase1_Rebuilt.sql
+# !SQL/HPT_Phase2to4_Rebuilt.sql
 # !HPT_Project.Rproj
 
 # --- end of allowlist. Do not add patterns below this line. ---
