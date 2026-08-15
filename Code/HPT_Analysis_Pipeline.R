@@ -650,22 +650,22 @@ read_panel <- function(path, label, columns = ANALYSIS_COLUMNS) {
 
 prepare_panel <- function(data, label, sample_flag = NULL) {
   d <- copy(as.data.table(data))
-
+  
   if (!("N_PAYER_CELLS" %in% names(d)) && "N_CODE_PAYER_CELLS_TOTAL" %in% names(d)) {
     d[, N_PAYER_CELLS := safe_numeric(N_CODE_PAYER_CELLS_TOTAL)]
   }
   if (!("N_DISTINCT_PAYERS" %in% names(d)) && "SUM_CODE_DISTINCT_PAYERS" %in% names(d)) {
     d[, N_DISTINCT_PAYERS := safe_numeric(SUM_CODE_DISTINCT_PAYERS)]
   }
-
+  
   assert_columns(d, c("HOSPITAL_ID", "POST_MONTH", "ANALYSIS_MARKET",
                       "ANALYSIS_SERVICE_ID", "MARKET_ID", ENDOGENOUS_VARIABLE,
                       "MEDIAN_PRICE", "P25_PRICE", "P75_PRICE", "TOTAL_BEDS"), label)
-
+  
   if (!("IQR_PRICE" %in% names(d))) {
     d[, IQR_PRICE := pmax(safe_numeric(P75_PRICE) - safe_numeric(P25_PRICE), 0)]
   }
-
+  
   d[, POST_MONTH := as.Date(POST_MONTH)]
   for (col in c("HOSPITAL_ID", "ANALYSIS_MARKET", "ANALYSIS_SERVICE_ID", "MARKET_ID",
                 "FINAL_FAMILY_ID", "FINAL_CONCEPT_ID", "BILLING_CODE_TYPE",
@@ -673,27 +673,27 @@ prepare_panel <- function(data, label, sample_flag = NULL) {
     if (col %in% names(d)) set(d, j = col, value = as.character(d[[col]]))
   }
   d[, (ENDOGENOUS_VARIABLE) := safe_numeric(get(ENDOGENOUS_VARIABLE))]
-
+  
   d[, LN_MEDIAN_PRICE := safe_log_positive(MEDIAN_PRICE)]
   d[, LN_MEAN_PRICE   := safe_log_positive(MEAN_PRICE)]
   d[, LN_P25_PRICE    := safe_log_positive(P25_PRICE)]
   d[, LN_P75_PRICE    := safe_log_positive(P75_PRICE)]
   d[, LN_IQR_PRICE    := safe_log1p_nonneg(IQR_PRICE)]
   d[, LOG_TOTAL_BEDS  := log(pmax(safe_numeric(TOTAL_BEDS), 1))]
-
+  
   d[, SERVICE_NAME := if ("FINAL_CONCEPT_NAME" %in% names(d)) as.character(FINAL_CONCEPT_NAME)
     else as.character(ANALYSIS_SERVICE_ID)]
   d[, SERVICE_LABEL := fifelse(is.na(SERVICE_NAME) | SERVICE_NAME == "",
                                ANALYSIS_SERVICE_ID, SERVICE_NAME)]
-
+  
   if (!is.null(sample_flag) && sample_flag %in% names(d)) d <- d[get(sample_flag) == 1]
-
+  
   d <- d[!is.na(ANALYSIS_MARKET) & ANALYSIS_MARKET != "" &
            !is.na(MARKET_ID) & MARKET_ID != "" &
            is.finite(LN_MEDIAN_PRICE) & is.finite(get(ENDOGENOUS_VARIABLE))]
-
+  
   setorder(d, ANALYSIS_MARKET, ANALYSIS_SERVICE_ID, POST_MONTH, HOSPITAL_ID)
-
+  
   cat("Prepared", label, "\n  Rows:", format(nrow(d), big.mark = ","),
       "| hospitals:", format(uniqueN(d$HOSPITAL_ID), big.mark = ","),
       "| counties:", format(uniqueN(d$ANALYSIS_MARKET), big.mark = ","),
@@ -744,22 +744,7 @@ audit_estimation_sample <- function(panel, instrument = PRIMARY_INSTRUMENT,
 cat("Section 2 loaded\n")
 
 
-# --- Interactive checkpoint ---------------------------------------------------
-# Forces a panel rebuild by clearing the cache, then rebuilds it. This is a
-# convenience for re-running the panel alone after a codebook or merge-group
-# change, and duplicates what the BUILD block does further down.
-#
-# It depends on schemes_long and on functions defined in Section 3, so it only
-# runs once those are already in memory. On a cold source() of the whole file,
-# skip it -- the BUILD block builds the same object from the same call chain.
 
-file.remove(file.path(CACHE_DIR, "outpatient_panel.rds"))
-
-outpatient <- cache_or_run("outpatient_panel", {
-  p <- load_outpatient()
-  p <- apply_concept_merges(p)
-  attach_scheme_columns(p, schemes_long)
-})
 ######## Section 3: Shoppability scheme construction ##########################
 #
 # Builds the eighteen shoppability classification schemes from the codebook.
@@ -811,14 +796,14 @@ TERM_RULES <- list(
   `X-Ray`     = list(family = c("XRAY_FLUOROSCOPY", "BONE_DENSITY")),
   MRI         = list(family = "MRI_MRA"),
   CT          = list(family = "CT_CTA"),
-
+  
   `Ultrasound OB`      = list(family = "DIAGNOSTIC_ULTRASOUND",
                               keyword = "OB|OBSTETR|PREGNAN|FETAL", exclude = US_EXCLUDE),
   `Ultrasound Breast`  = list(family = "DIAGNOSTIC_ULTRASOUND",
                               keyword = "BREAST", exclude = US_EXCLUDE),
   `Ultrasound Abdomen` = list(family = "DIAGNOSTIC_ULTRASOUND",
                               keyword = "ABDOM", exclude = US_EXCLUDE),
-
+  
   `X-Ray Chest`      = list(family = "XRAY_FLUOROSCOPY", keyword = "CHEST|THORAX|RIB",
                             exclude = "SPINE|SPINAL|VERTEBR"),
   `X-Ray Extremity`  = list(family = "XRAY_FLUOROSCOPY", keyword = "ARM|LEG|HAND|FOOT|WRIST|ANKLE|KNEE|ELBOW|SHOULDER|FEMUR|TIBIA|FIBULA|HUMERUS|EXTREMIT"),
@@ -827,7 +812,7 @@ TERM_RULES <- list(
   `X-Ray Pelvis`     = list(family = "XRAY_FLUOROSCOPY", keyword = "PELVI|HIP"),
   `X-Ray Spine`      = list(family = "XRAY_FLUOROSCOPY", keyword = "SPINE|SPINAL|VERTEBR|LUMBAR|CERVICAL|SACRUM|COCCYX"),
   `X-Ray Other`      = list(family = "XRAY_FLUOROSCOPY", keyword = "."),
-
+  
   # Excludes thoracic spine studies and CT angiography, which the CHEST
   # keyword would otherwise pull into the shoppable group.
   `CT Lung`       = list(family = "CT_CTA", keyword = "CHEST|LUNG|THORAX",
@@ -842,7 +827,7 @@ TERM_RULES <- list(
   `CT Pelvis`     = list(family = "CT_CTA", keyword = "PELVI"),
   `CT Angio`      = list(family = "CT_CTA", keyword = "ANGIO|ANGIOGRAM|CTA\\b|VASCULAR"),
   `CT Other`      = list(family = "CT_CTA", keyword = "."),
-
+  
   `MRI Brain/Head` = list(family = "MRI_MRA", keyword = "BRAIN|HEAD|SKULL|FACIAL|SINUS|ORBIT"),
   `MRI Spine`      = list(family = "MRI_MRA", keyword = "SPINE|SPINAL|VERTEBR|LUMBAR|CERVICAL|SACRUM"),
   `MRI Pelvis`     = list(family = "MRI_MRA", keyword = "PELVI"),
@@ -853,7 +838,7 @@ TERM_RULES <- list(
   `MRI Angio`      = list(family = "MRI_MRA", keyword = "ANGIO|ANGIOGRAM|MRA\\b|VASCULAR"),
   `MRI Breast`     = list(family = "MRI_MRA", keyword = "BREAST"),
   `MRI Other`      = list(family = "MRI_MRA", keyword = "."),
-
+  
   `Biopsy Thyroid`    = list(family = "BIOPSY", keyword = "THYROID"),
   `Biopsy Breast`     = list(family = "BIOPSY", keyword = "BREAST"),
   `Biopsy Lymph Node` = list(family = "BIOPSY", keyword = "LYMPH"),
@@ -939,7 +924,7 @@ classify_scheme <- function(scheme, universe) {
   named <- c(Filter(Negate(is_residual_term), scheme$shoppable),
              Filter(Negate(is_residual_term), scheme$nonshoppable))
   claimed <- Reduce(`|`, lapply(named, resolve_term, universe = universe), init = rep(FALSE, n))
-
+  
   apply_terms <- function(terms) {
     if (is.null(terms) || length(terms) == 0L) return(rep(FALSE, n))
     m <- rep(FALSE, n)
@@ -947,12 +932,12 @@ classify_scheme <- function(scheme, universe) {
     for (t in terms[is_residual_term(terms)])  m <- m | (resolve_term(t, universe) & !claimed)
     m
   }
-
+  
   shop <- apply_terms(scheme$shoppable); nons <- apply_terms(scheme$nonshoppable)
   always <- (universe$BILLING_CODE_TYPE == "MS_DRG") |
     (universe$ANALYSIS_FAMILY_ID %chin% ALWAYS_NONSHOPPABLE_FAMILIES)
   shop[always] <- FALSE; nons[always] <- TRUE
-
+  
   cat <- rep("INTERMEDIATE", n); cat[shop] <- "HIGH"; cat[nons & !shop] <- "LOW"
   cat
 }
@@ -963,7 +948,7 @@ build_schemes <- function() {
                        "ANALYSIS_FAMILY_ID", "ANALYSIS_CONCEPT_ID"), "codebook")
   universe <- unique(cb[, .(BILLING_CODE_TYPE, ANALYSIS_FAMILY_ID,
                             ANALYSIS_CONCEPT_ID, OFFICIAL_DESCRIPTION)])
-
+  
   long <- rbindlist(lapply(names(SHOPPABILITY_SCHEMES), function(id) {
     s <- SHOPPABILITY_SCHEMES[[id]]
     cbind(universe, SCHEME_ID = id, SCHEME_NAME = s$label,
@@ -972,12 +957,12 @@ build_schemes <- function() {
   long[, SHOPPABILITY_ORDINAL := fcase(SHOPPABILITY_CATEGORY == "LOW", 1,
                                        SHOPPABILITY_CATEGORY == "INTERMEDIATE", 2,
                                        SHOPPABILITY_CATEGORY == "HIGH", 3, default = NA_real_)]
-
+  
   save_qa_csv(long[, .(N = .N, SAMPLE = paste(head(unique(OFFICIAL_DESCRIPTION), 8),
                                               collapse = " | ")),
                    by = .(SCHEME_NAME, SHOPPABILITY_CATEGORY)][order(SCHEME_NAME)],
               "QA02_scheme_classification_crosswalk.csv")
-
+  
   # Guards. Emergency and MS-DRG concepts must be LOW in every scheme; a
   # failure here means a family identifier changed upstream.
   ed <- long[ANALYSIS_FAMILY_ID == "EMERGENCY_DEPARTMENT",
@@ -986,7 +971,7 @@ build_schemes <- function() {
   dg <- long[BILLING_CODE_TYPE == "MS_DRG",
              .(N = .N, L = sum(SHOPPABILITY_CATEGORY == "LOW")), by = SCHEME_ID]
   if (nrow(dg) > 0L && !all(dg$N == dg$L)) stop("MS-DRG concepts not LOW in every scheme.", call. = FALSE)
-
+  
   # Guard on the keyword exclusions, stated as a test: no CT spine or
   # angiography concept may sit in the HIGH group of the primary scheme.
   bad_ct <- long[SCHEME_ID == "scheme_theory_v2" & SHOPPABILITY_CATEGORY == "HIGH" &
@@ -998,7 +983,7 @@ build_schemes <- function() {
   } else {
     cat("Keyword guard passed: no CT spine/angio in Theory V2 HIGH.\n")
   }
-
+  
   cat("Schemes built:", uniqueN(long$SCHEME_ID), "x",
       format(nrow(universe), big.mark = ","), "concepts\n")
   long
@@ -1043,12 +1028,12 @@ export_scheme1_assignments <- function(panel) {
                         SCHEME_1_CERTAINTY)])
   setorder(a, SCHEME_1_CERTAINTY, FINAL_FAMILY_ID, SERVICE_NAME)
   save_qa_csv(a, "QA03_scheme1_concept_assignments.csv")
-
+  
   cat("\n", strrep("=", 84), "\nSCHEME 1 (PRIMARY) — CONCEPTS PER FAMILY\n",
       strrep("=", 84), "\n", sep = "")
   print(a[, .N, by = .(SCHEME_1_CERTAINTY, FINAL_FAMILY_ID)][
     order(SCHEME_1_CERTAINTY, -N)])
-
+  
   flagged <- a[SCHEME_1_CERTAINTY == "Shoppable" &
                  grepl(PROCEDURAL_CONCEPT_PATTERN, FINAL_CONCEPT_ID, ignore.case = TRUE)]
   cat("\nProcedural-looking concepts inside the SHOPPABLE group:", nrow(flagged), "\n")
@@ -1132,7 +1117,7 @@ CANONICAL_SCHEME_DONOR <- c(
 
 extend_schemes_for_merged <- function(schemes_long, donors = CANONICAL_SCHEME_DONOR) {
   s <- copy(schemes_long)
-
+  
   for (canon in names(donors)) {
     grp <- Filter(function(g) g$canonical_id == canon, MERGE_GROUPS)
     if (length(grp) == 0L) { warning("No merge group for ", canon, call. = FALSE); next }
@@ -1148,7 +1133,7 @@ extend_schemes_for_merged <- function(schemes_long, donors = CANONICAL_SCHEME_DO
       cat("  ", canon, ": constituents agree under all ", nrow(chk), " schemes.\n", sep = "")
     }
   }
-
+  
   add <- rbindlist(lapply(names(donors), function(canon) {
     srcrows <- s[ANALYSIS_CONCEPT_ID == donors[[canon]]]
     if (nrow(srcrows) == 0L) {
@@ -1157,9 +1142,9 @@ extend_schemes_for_merged <- function(schemes_long, donors = CANONICAL_SCHEME_DO
     }
     copy(srcrows)[, ANALYSIS_CONCEPT_ID := canon]
   }), fill = TRUE)
-
+  
   if (nrow(add) == 0L) return(s)
-
+  
   out <- rbind(s[!(ANALYSIS_CONCEPT_ID %chin% names(donors))], add, fill = TRUE)
   cat("Extended schemes_long with", uniqueN(add$ANALYSIS_CONCEPT_ID),
       "merged canonical concepts.\n")
@@ -1169,26 +1154,26 @@ extend_schemes_for_merged <- function(schemes_long, donors = CANONICAL_SCHEME_DO
 
 apply_concept_merges <- function(panel, merge_groups = MERGE_GROUPS) {
   all_constituents <- unique(unlist(lapply(merge_groups, `[[`, "constituents")))
-
+  
   exact_raw <- read_panel(FILES$outpatient_exact, "exact-code panel (for merge)",
                           columns = unique(c(ANALYSIS_COLUMNS, "BILLING_CODE")))
   exact <- prepare_panel(exact_raw, "exact-code panel (for merge)",
                          choose_sample_flag(exact_raw))
   rm(exact_raw); invisible(gc())
-
+  
   exact <- exact[FINAL_CONCEPT_ID %chin% all_constituents]
   if (nrow(exact) == 0L) {
     stop("No exact-code rows match the constituent concept IDs.", call. = FALSE)
   }
-
+  
   map <- rbindlist(lapply(merge_groups, function(g)
     data.table(FINAL_CONCEPT_ID = g$constituents, CANON_ID = g$canonical_id,
                CANON_FAMILY = g$canonical_family)))
   exact <- merge(exact, map, by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
-
+  
   cat("\nExact-code rows found per canonical concept:\n")
   print(exact[, .N, by = CANON_ID])
-
+  
   # Equal-weighted median of the exact-code medians within each hospital-month,
   # matching the aggregation convention used upstream in SQL.
   merged <- exact[, .(
@@ -1200,7 +1185,7 @@ apply_concept_merges <- function(panel, merge_groups = MERGE_GROUPS) {
     ANALYSIS_MARKET = first(ANALYSIS_MARKET),
     SERVICE_NAME = first(SERVICE_NAME), SERVICE_LABEL = first(SERVICE_LABEL)
   ), by = .(HOSPITAL_ID, POST_MONTH, CANON_ID, CANON_FAMILY)]
-
+  
   setnames(merged, c("CANON_ID", "CANON_FAMILY"), c("FINAL_CONCEPT_ID", "FINAL_FAMILY_ID"))
   merged[, `:=`(
     ANALYSIS_SERVICE_ID = FINAL_CONCEPT_ID,
@@ -1216,19 +1201,19 @@ apply_concept_merges <- function(panel, merge_groups = MERGE_GROUPS) {
     LN_P75_PRICE    = safe_log_positive(P75_PRICE),
     LN_IQR_PRICE    = safe_log1p_nonneg(IQR_PRICE)
   )]
-
+  
   inst_cols <- available_columns(panel, unname(ALL_CANDIDATE_INSTRUMENTS))
   lookup <- unique(panel[, c("HOSPITAL_ID", "POST_MONTH", inst_cols), with = FALSE])
   merged <- merge(merged, lookup, by = c("HOSPITAL_ID", "POST_MONTH"),
                   all.x = TRUE, sort = FALSE)
-
+  
   out <- rbind(panel[!(FINAL_CONCEPT_ID %chin% all_constituents)], merged, fill = TRUE)
-
+  
   cat("\nConcept merge complete: dropped", length(all_constituents),
       "raw concepts, added", length(merge_groups), "canonical.\n",
       "Panel concepts: ", uniqueN(panel$ANALYSIS_SERVICE_ID), " -> ",
       uniqueN(out$ANALYSIS_SERVICE_ID), "\n", sep = "")
-
+  
   rm(exact, merged); invisible(gc())
   out
 }
@@ -1332,15 +1317,15 @@ estimate_interacted <- function(
     label = "", instrument_label = "", moderator_label = NULL,
     controls = BASELINE_CONTROLS, fixed_effects = BASELINE_FIXED_EFFECTS,
     clusters = BASELINE_CLUSTERS, center_moderator = TRUE) {
-
+  
   moderator_type <- match.arg(moderator_type)
   controls <- available_columns(data, controls)
   fe <- available_columns(data, fixed_effects); cl <- available_columns(data, clusters)
-
+  
   d <- data[!is.na(get(moderator))]
   d <- model_sample(d, c(outcome, endogenous, instrument, controls, fe, cl, moderator))
   if (nrow(d) < MIN_MODEL_OBS) return(NULL)
-
+  
   if (moderator_type == "categorical") {
     d[, MOD := droplevels(factor(get(moderator)))]
     keys <- levels(d$MOD); if (length(keys) < 2L) return(NULL)
@@ -1362,17 +1347,17 @@ estimate_interacted <- function(
     endo <- c("TREAT_MAIN", "TREAT_INTER"); ivs <- c("IV_MAIN", "IV_INTER")
     rfs <- c("RF_MAIN", "RF_INTER"); terms_label <- c("Main", "x Moderator")
   }
-
+  
   rf_fit <- tryCatch(feols(build_ols_formula(outcome, c(rfs, controls), fe), data = d,
                            cluster = build_cluster_formula(cl), warn = FALSE, notes = FALSE),
                      error = function(e) NULL)
   iv_fit <- tryCatch(feols(build_iv_formula(outcome, endo, ivs, controls, fe), data = d,
                            cluster = build_cluster_formula(cl), warn = FALSE, notes = FALSE),
                      error = function(e) NULL)
-
+  
   fsw <- first_stage_wald(iv_fit)
   fs_min <- if (nrow(fsw) > 0L) min(fsw$WALD, na.rm = TRUE) else NA_real_
-
+  
   resolve <- function(fit, tm) {
     if (is.null(fit)) return(NA_character_)
     cand <- c(paste0("fit_", tm), tm); hit <- cand[cand %in% names(coef(fit))]
@@ -1383,10 +1368,10 @@ estimate_interacted <- function(
     if (is.na(nm)) return(list(b = NA_real_, s = NA_real_))
     list(b = unname(coef(fit)[nm]), s = unname(sqrt(vcov(fit)[nm, nm])))
   }
-
+  
   sd_z <- sd(d[[instrument]], na.rm = TRUE)
   ml <- moderator_label %||% moderator
-
+  
   rows <- rbindlist(lapply(seq_along(endo), function(k) {
     rf <- pull(rf_fit, rfs[k]); iv <- pull(iv_fit, endo[k])
     data.table(
@@ -1404,7 +1389,7 @@ estimate_interacted <- function(
       N_OBSERVATIONS = if (is.null(iv_fit)) NA_integer_ else nobs(iv_fit),
       N_CONCEPTS = uniqueN(d$FINAL_CONCEPT_ID))
   }), fill = TRUE)
-
+  
   if (moderator_type == "categorical") {
     rf_test <- wald_equality(rf_fit, vapply(rfs,  resolve, character(1), fit = rf_fit))
     iv_test <- wald_equality(iv_fit, vapply(endo, resolve, character(1), fit = iv_fit))
@@ -1417,7 +1402,7 @@ estimate_interacted <- function(
     }
     rf_test <- grab(rf_fit, "RF_INTER"); iv_test <- grab(iv_fit, "TREAT_INTER")
   }
-
+  
   tests <- rbindlist(list(
     if (nrow(rf_test) > 0L) cbind(ESTIMATOR = "Reduced form", rf_test) else NULL,
     if (nrow(iv_test) > 0L) cbind(ESTIMATOR = "IV", iv_test) else NULL), fill = TRUE)
@@ -1426,7 +1411,7 @@ estimate_interacted <- function(
                  OUTCOME = outcome, FIRST_STAGE_WALD_MIN = fs_min,
                  N_OBSERVATIONS = if (is.null(iv_fit)) NA_integer_ else nobs(iv_fit))]
   }
-
+  
   rm(d); invisible(gc())
   list(rows = rows, tests = tests)
 }
@@ -1461,20 +1446,20 @@ run_instrument_screen <- function(panel) {
   cands <- ALL_CANDIDATE_INSTRUMENTS[unname(ALL_CANDIDATE_INSTRUMENTS) %in% names(panel)]
   cands <- cands[vapply(unname(cands), function(v) has_usable_variation(panel[[v]]), logical(1))]
   if (length(cands) == 0L) stop("No usable instruments.", call. = FALSE)
-
+  
   keep <- available_columns(panel, unique(c(ENDOGENOUS_VARIABLE, PRIMARY_OUTCOME,
                                             BASELINE_CONTROLS, BASELINE_FIXED_EFFECTS, BASELINE_CLUSTERS, unname(cands))))
   d0 <- panel[, ..keep]
-
+  
   fam <- function(z) fcase(
     z %chin% unname(ENFORCEMENT_ROBUSTNESS_INSTRUMENTS), "CMS enforcement (exploratory)",
     z %chin% unname(MAIN_INSTRUMENTS), "Main system",
     z %chin% unname(CANONICAL_SYSTEM_INSTRUMENTS), "Canonical system",
     default = "Supporting window")
-
+  
   cat("\n", strrep("=", 84), "\nFIRST-STAGE SCREEN: ", length(cands),
       " instruments\n", strrep("=", 84), "\n", sep = "")
-
+  
   out <- rbindlist(lapply(names(cands), function(lab) {
     z <- cands[[lab]]
     fs <- run_first_stage(d0, z); rf <- run_reduced_form(d0, PRIMARY_OUTCOME, z)
@@ -1498,7 +1483,7 @@ run_instrument_screen <- function(panel) {
                  "Competitor rollout excluding the focal hospital's own system.",
                  default = "County-month local exposure; does NOT exclude own system."))
   }), fill = TRUE)
-
+  
   setorder(out, -FIRST_STAGE_F)
   save_csv(out, "T02_instrument_first_stage_screen.csv")
   rm(d0); invisible(gc()); out
@@ -1586,36 +1571,36 @@ estimate_concept_level <- function(slim, instruments = MAIN_INSTRUMENTS,
                                    outcome = PRIMARY_OUTCOME, endogenous = ENDOGENOUS_VARIABLE,
                                    ols_instrument = names(instruments)[1L], drop_singletons = DROP_SINGLETON_MARKETS,
                                    max_concepts = Inf, save_stem = "T05_concept_level", save_every = 50L) {
-
+  
   if (!identical(key(slim), "ANALYSIS_SERVICE_ID")) setkey(slim, ANALYSIS_SERVICE_ID)
   ids <- sort(unique(slim$ANALYSIS_SERVICE_ID))
   if (is.finite(max_concepts)) ids <- head(ids, as.integer(max_concepts))
   cat("\nConcepts:", length(ids), "| instruments:", length(instruments), "\n\n")
-
+  
   rows <- vector("list", length(ids) * length(instruments))
   k <- 0L; skipped <- 0L; t0 <- Sys.time()
-
+  
   for (i in seq_along(ids)) {
     sid <- ids[i]; sub <- slim[.(sid)]
     if (drop_singletons) sub <- drop_singleton_markets(sub)
     n_mk <- uniqueN(sub$ANALYSIS_MARKET); n_mo <- uniqueN(sub$POST_MONTH)
     if (nrow(sub) < MIN_SERVICE_OBS || n_mk < MIN_SERVICE_MARKETS ||
         n_mo < MIN_SERVICE_MONTHS) { skipped <- skipped + 1L; next }
-
+    
     md <- sub[1L]; t1 <- Sys.time()
-
+    
     for (il in names(instruments)) {
       z <- instruments[[il]]
       if (!(z %in% names(sub)) || !has_usable_variation(sub[[z]])) next
-
+      
       rf <- run_reduced_form(sub, outcome, z); fs <- run_first_stage(sub, z, endogenous)
       iv <- run_iv(sub, outcome, z, endogenous)
       ols <- if (il == ols_instrument) run_ols(sub, outcome, endogenous) else NULL
-
+      
       c_rf <- extract_coefficient(rf, z); c_fs <- extract_coefficient(fs, z)
       c_iv <- extract_coefficient(iv, c(paste0("fit_", endogenous), endogenous))
       c_ol <- extract_coefficient(ols, endogenous)
-
+      
       res <- data.table(
         ANALYSIS_SERVICE_ID = sid, INSTRUMENT_LABEL = il, INSTRUMENT = z, OUTCOME = outcome,
         BILLING_CODE_TYPE = meta_chr(md, "BILLING_CODE_TYPE"),
@@ -1634,18 +1619,18 @@ estimate_concept_level <- function(slim, instruments = MAIN_INSTRUMENTS,
         N_MARKETS = n_mk, N_MONTHS = n_mo,
         N_OBSERVATIONS = if (is.null(iv)) NA_integer_ else nobs(iv),
         MEAN_PRIOR_POSTERS = mean(safe_numeric(sub[[ENDOGENOUS_VARIABLE]]), na.rm = TRUE))
-
+      
       if (nrow(res) != 1L) stop(sprintf("Malformed row for %s / %s.", sid, il), call. = FALSE)
       k <- k + 1L; rows[[k]] <- res
       rm(rf, fs, iv, ols)
     }
-
+    
     el <- as.numeric(difftime(Sys.time(), t0, units = "mins"))
     cat(sprintf("[%d/%d] n=%s | %.1fs | elapsed %.1fm | ETA %.1fm\n", i, length(ids),
                 format(nrow(sub), big.mark = ","),
                 as.numeric(difftime(Sys.time(), t1, units = "secs")),
                 el, (el / i) * (length(ids) - i)))
-
+    
     if (i %% save_every == 0L && k > 0L) {
       p <- rbindlist(rows[seq_len(k)], fill = TRUE)
       if (nrow(p) > 0L) save_csv(p, paste0(save_stem, "_PARTIAL.csv"))
@@ -1653,10 +1638,10 @@ estimate_concept_level <- function(slim, instruments = MAIN_INSTRUMENTS,
     }
     if (i %% 50L == 0L) { rm(sub); invisible(gc()) }
   }
-
+  
   cat("\nSkipped:", skipped, "of", length(ids), "| rows:", k, "\n")
   if (k == 0L) stop("No rows accumulated; check the _PARTIAL file.", call. = FALSE)
-
+  
   out <- rbindlist(rows[seq_len(k)], fill = TRUE)
   out[, RF_P_FDR := p.adjust(RF_P, method = "BH"), by = INSTRUMENT_LABEL]
   out[, IV_P_FDR := p.adjust(IV_P, method = "BH"), by = INSTRUMENT_LABEL]
@@ -1710,7 +1695,7 @@ run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
                              stem = "T06_main") {
   rows <- list(); tests <- list(); g <- 0L
   n <- length(schemes) * length(instruments); t0 <- Sys.time()
-
+  
   for (sl in names(schemes)) {
     sc <- schemes[[sl]]; if (!(sc %in% names(panel))) next
     for (il in names(instruments)) {
@@ -1723,14 +1708,14 @@ run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
                   substr(il, 1, 34), as.numeric(difftime(Sys.time(), t1, units = "secs"))))
     }
   }
-
+  
   mr <- rbindlist(rows, fill = TRUE); mt <- rbindlist(tests, fill = TRUE)
   if (nrow(mr) == 0L) stop("No main results.", call. = FALSE)
-
+  
   save_csv(mr, paste0(stem, "_interacted_RF_and_IV.csv"))
   save_csv(mt, paste0(stem, "B_heterogeneity_tests.csv"))
   cat("\nElapsed:", round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 1), "min\n")
-
+  
   cat("\n", strrep("=", 104),
       "\nPANEL A - REDUCED FORM (percent per SD of peer exposure). PRIMARY.\n",
       "Exactly identified, so these p-values ARE Anderson-Rubin robust p-values.\n",
@@ -1742,7 +1727,7 @@ run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
   print(mr[, .(N = .N, SIG_05 = sum(RF_P < 0.05, na.rm = TRUE),
                MEDIAN_P = round(median(RF_P, na.rm = TRUE), 4),
                MEDIAN_PCT = round(median(RF_PERCENT_PER_SD, na.rm = TRUE), 3)), by = TERM])
-
+  
   cat("\n", strrep("=", 104),
       "\nPANEL B - IV (percent per additional prior poster, linear treatment)\n",
       strrep("=", 104), "\n", sep = "")
@@ -1750,7 +1735,7 @@ run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
                IV_PCT = round(IV_PERCENT, 2), SE = round(100 * IV_SE, 2),
                P = round(IV_P, 4), MIN_WALD = round(FIRST_STAGE_WALD_MIN, 1))][
                  order(SPEC, INSTRUMENT_LABEL, TERM)])
-
+  
   # GAP, the percentage-point difference between the two categories, is the
   # quantity to report. RATIO divides by the non-shoppable estimate, which is a
   # precise zero by design and therefore frequently near zero and occasionally
@@ -1767,7 +1752,7 @@ run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
                     GAP = round(GAP, 2), RATIO = round(RESPONSE_RATIO, 2))])
     save_csv(ratio, paste0(stem, "C_response_gap.csv"))
   }
-
+  
   cat("\n", strrep("=", 104), "\nHETEROGENEITY TEST\n", strrep("=", 104), "\n", sep = "")
   print(dcast(mt[, .(SPEC = substr(SPEC, 1, 26), INSTRUMENT_LABEL, ESTIMATOR,
                      P = round(P_VALUE, 4))],
@@ -1775,7 +1760,7 @@ run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
   print(mt[, .(N = .N, SIG_05 = sum(P_VALUE < 0.05, na.rm = TRUE),
                SHARE = round(mean(P_VALUE < 0.05, na.rm = TRUE), 3),
                MEDIAN_P = round(median(P_VALUE, na.rm = TRUE), 4)), by = ESTIMATOR])
-
+  
   list(rows = mr, tests = mt)
 }
 
@@ -1801,7 +1786,7 @@ run_transform_ladder <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
   lr <- rbindlist(rows, fill = TRUE); lt <- rbindlist(tests, fill = TRUE)
   save_csv(lr, "T07_transform_ladder_estimates.csv")
   save_csv(lt, "T07B_transform_ladder_heterogeneity.csv")
-
+  
   cat("\nMAGNITUDES MOVE:\n")
   print(dcast(lr[, .(TRANSFORM, INSTRUMENT_LABEL, TERM, E = round(IV_PERCENT, 2))],
               INSTRUMENT_LABEL + TERM ~ TRANSFORM, value.var = "E"))
@@ -1817,22 +1802,6 @@ run_transform_ladder <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
 
 cat("Section 7 loaded\n")
 
-
-# --- Interactive checkpoint ---------------------------------------------------
-# Confirms the two objects the stage blocks depend on are in memory, then loads
-# the concept-level results from cache. Duplicates the stage 6 loader below and
-# is here so stages 8-10 can be run without stepping through stage 6's block.
-# Skip on a cold source() of the whole file.
-
-exists("outpatient")
-exists("schemes_long")
-
-
-CONCEPT_INSTRUMENTS <- c(MAIN_INSTRUMENTS, SUPPORTING_INSTRUMENTS)
-concept_results <- cache_or_run("concept_level_6inst",
-                                estimate_concept_level(
-                                  build_concept_panel(outpatient, instruments = CONCEPT_INSTRUMENTS),
-                                  instruments = CONCEPT_INSTRUMENTS))
 
 
 
@@ -1865,10 +1834,10 @@ prepare_meta_input <- function(cr, schemes_long) {
   d[, INSTRUMENT_LABEL := fifelse(INSTRUMENT %chin% names(INSTRUMENT_LABEL_MAP),
                                   INSTRUMENT_LABEL_MAP[INSTRUMENT], INSTRUMENT_LABEL)]
   stopifnot(all(d[, uniqueN(INSTRUMENT_LABEL), by = INSTRUMENT]$V1 == 1L))
-
+  
   d <- d[(is.finite(RF_COEF) & is.finite(RF_SE) & RF_SE > 0) |
            (is.finite(IV_COEF) & is.finite(IV_SE) & IV_SE > 0)]
-
+  
   d[, CLUSTER_FAMILY := FINAL_FAMILY_ID]
   d[, SHOP_CERTAINTY := factor(fifelse(FINAL_FAMILY_ID %chin% DIAGNOSTIC_FAMILIES,
                                        "Shoppable", "Non_shoppable"),
@@ -1880,7 +1849,7 @@ prepare_meta_input <- function(cr, schemes_long) {
     d <- merge(d, a, by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
   }
   setDT(d)
-
+  
   n_unmatched <- d[is.na(get(paste0("CAT_", unique(schemes_long$SCHEME_ID)[1L]))), .N]
   if (n_unmatched > 0L) {
     warning(n_unmatched, " concept-instrument rows have no scheme classification.",
@@ -2126,7 +2095,7 @@ verify_loo_sd <- function(panel, n_check = 5L) {
                        .(FINAL_CONCEPT_ID, ANALYSIS_MARKET, LN_MED = log(MEDIAN_PRICE))])
   fast <- loo_sd(hosp, "LN_MED")
   if (nrow(fast) == 0L) { warning("loo_sd returned nothing."); return(invisible(FALSE)) }
-
+  
   ids <- head(fast[order(-V)]$FINAL_CONCEPT_ID, n_check)
   slow <- rbindlist(lapply(ids, function(id) {
     d <- hosp[FINAL_CONCEPT_ID == id]
@@ -2138,7 +2107,7 @@ verify_loo_sd <- function(panel, n_check = 5L) {
   }))
   cmp <- merge(fast[FINAL_CONCEPT_ID %chin% ids], slow, by = "FINAL_CONCEPT_ID")
   cmp[, MATCH := abs(V - V_BRUTE) < 1e-8]
-
+  
   cat("\n", strrep("=", 84), "\nloo_sd VERIFICATION (closed form vs brute force)\n",
       strrep("=", 84), "\n", sep = "")
   print(cmp[, .(FINAL_CONCEPT_ID = substr(FINAL_CONCEPT_ID, 1, 40),
@@ -2176,7 +2145,7 @@ load_payer_dispersion <- function() {
     stop("Package 'R.utils' is required to read gzipped payer dispersion files. ",
          "Install with install.packages('R.utils').", call. = FALSE)
   }
-
+  
   files <- list.files(PAYER_DISPERSION_DIR, pattern = PAYER_DISPERSION_PATTERN,
                       full.names = TRUE)
   if (length(files) == 0L) {
@@ -2185,56 +2154,56 @@ load_payer_dispersion <- function() {
     return(data.table(FINAL_CONCEPT_ID = character(0), PD_PAYER_V2 = numeric(0),
                       N_PAYERS_V2 = numeric(0)))
   }
-
+  
   cat("\nPayer dispersion: found", length(files), "file(s):\n")
   for (f in files) cat("  ", basename(f), "\n")
-
+  
   raw <- rbindlist(lapply(files, function(f) {
     tryCatch(fread(f), error = function(e) {
       warning("Failed to read ", basename(f), ": ", e$message, call. = FALSE)
       data.table()
     })
   }), fill = TRUE)
-
+  
   if (nrow(raw) == 0L) {
     warning("Payer dispersion files read but produced zero rows.", call. = FALSE)
     return(data.table(FINAL_CONCEPT_ID = character(0), PD_PAYER_V2 = numeric(0),
                       N_PAYERS_V2 = numeric(0)))
   }
-
+  
   cat("Combined:", format(nrow(raw), big.mark = ","), "rows |",
       uniqueN(raw$ANALYSIS_CONCEPT_ID), "concepts |",
       uniqueN(raw$HOSPITAL_ID), "hospitals\n")
-
+  
   assert_columns(raw, c("HOSPITAL_ID", "POST_MONTH", "ANALYSIS_CONCEPT_ID",
                         "N_DISTINCT_PAYERS", "N_PAYER_CELLS",
                         "CV_PAYER_NEGOTIATED"), "payer dispersion file")
-
+  
   n_before <- nrow(raw)
   raw <- unique(raw, by = c("HOSPITAL_ID", "POST_MONTH", "ANALYSIS_CONCEPT_ID"))
   if (nrow(raw) < n_before) {
     cat("Dropped", n_before - nrow(raw), "duplicate rows across shards.\n")
   }
-
+  
   raw[, POST_MONTH := as.Date(POST_MONTH)]
   raw[, HOSPITAL_ID := as.character(HOSPITAL_ID)]
   setnames(raw, "ANALYSIS_CONCEPT_ID", "FINAL_CONCEPT_ID")
-
+  
   hosp_county <- unique(outpatient[, .(HOSPITAL_ID, POST_MONTH, ANALYSIS_MARKET)])
   raw <- merge(raw, hosp_county, by = c("HOSPITAL_ID", "POST_MONTH"), all.x = FALSE)
-
+  
   cat("Matched to panel counties:", format(nrow(raw), big.mark = ","), "rows |",
       format(sum(is.na(raw$ANALYSIS_MARKET)), big.mark = ","), "unmatched (dropped)\n")
-
+  
   raw <- raw[!is.na(ANALYSIS_MARKET) & is.finite(CV_PAYER_NEGOTIATED) &
                CV_PAYER_NEGOTIATED >= 0]
-
+  
   if (nrow(raw) == 0L) {
     warning("No usable rows after county match / finiteness filter.", call. = FALSE)
     return(data.table(FINAL_CONCEPT_ID = character(0), PD_PAYER_V2 = numeric(0),
                       N_PAYERS_V2 = numeric(0)))
   }
-
+  
   # Winsorize the raw per-cell coefficient of variation BEFORE the leave-out
   # average. Cells with a near-zero denominator produce extreme values, and
   # because the leave-out average for every county includes all outside cells,
@@ -2246,14 +2215,14 @@ load_payer_dispersion <- function() {
       format(n_capped, big.mark = ","), "of", format(nrow(raw), big.mark = ","),
       "cells (", round(100 * n_capped / nrow(raw), 3), "%)\n")
   raw[, CV_PAYER_WINSOR := pmin(CV_PAYER_NEGOTIATED, cap)]
-
+  
   pd <- loo_mean(raw, "CV_PAYER_WINSOR"); setnames(pd, "V", "PD_PAYER_V2")
-
+  
   npay <- raw[, .(N_PAYERS_V2 = mean(N_DISTINCT_PAYERS, na.rm = TRUE)),
               by = FINAL_CONCEPT_ID]
-
+  
   out <- merge(pd, npay, by = "FINAL_CONCEPT_ID", all = TRUE)
-
+  
   cat("\nPD_PAYER_V2 (post-winsorize) for", nrow(out), "concepts:\n")
   print(data.table(
     MEAN = round(mean(out$PD_PAYER_V2, na.rm = TRUE), 4),
@@ -2263,7 +2232,7 @@ load_payer_dispersion <- function() {
     MAX = round(max(out$PD_PAYER_V2, na.rm = TRUE), 4),
     SHARE_ZERO = round(mean(out$PD_PAYER_V2 == 0, na.rm = TRUE), 4)
   ))
-
+  
   out
 }
 
@@ -2274,7 +2243,7 @@ load_payer_dispersion <- function() {
 screen_moderators <- function(measures, candidates) {
   candidates <- intersect(candidates, names(measures))
   if (length(candidates) == 0L) return(character(0))
-
+  
   diag <- rbindlist(lapply(candidates, function(m) {
     v <- safe_numeric(measures[[m]]); f <- v[is.finite(v)]
     data.table(MODERATOR = m, N_FINITE = length(f),
@@ -2283,15 +2252,15 @@ screen_moderators <- function(measures, candidates) {
                MIN = if (length(f)) min(f) else NA_real_,
                MAX = if (length(f)) max(f) else NA_real_)
   }))
-
+  
   diag[, FAIL_COVERAGE := as.integer(N_FINITE < MOD_MIN_FINITE)]
   diag[, FAIL_VARIANCE := as.integer(!is.finite(SD) | SD <= 0)]
   diag[, FAIL_ZERO_INFLATED := as.integer(is.finite(SHARE_ZERO) &
                                             SHARE_ZERO > MOD_MAX_SHARE_ZERO)]
-
+  
   keep <- diag[FAIL_COVERAGE == 0L & FAIL_VARIANCE == 0L &
                  FAIL_ZERO_INFLATED == 0L]$MODERATOR
-
+  
   dropped_collinear <- character(0)
   if (length(keep) > 1L) {
     survivors <- keep[1L]
@@ -2309,13 +2278,13 @@ screen_moderators <- function(measures, candidates) {
   }
   diag[, FAIL_COLLINEAR := as.integer(MODERATOR %chin% dropped_collinear)]
   diag[, USABLE := as.integer(MODERATOR %chin% keep)]
-
+  
   cat("\n", strrep("=", 104), "\nMODERATOR SCREEN\n", strrep("=", 104), "\n", sep = "")
   print(diag[, .(MODERATOR, N_FINITE, SHARE_ZERO = round(SHARE_ZERO, 3),
                  SD = signif(SD, 3), FAIL_COVERAGE, FAIL_VARIANCE,
                  FAIL_ZERO_INFLATED, FAIL_COLLINEAR, USABLE)])
   save_qa_csv(diag, "QA09_moderator_screen.csv")
-
+  
   if (length(dropped_collinear) > 0L) {
     cat("\nDropped for collinearity (|r| >", MOD_MAX_CORRELATION, "):",
         paste(dropped_collinear, collapse = ", "), "\n")
@@ -2334,12 +2303,12 @@ screen_moderators <- function(measures, candidates) {
 # ---------------------------------------------------------------------------
 build_comparability_measures <- function(panel) {
   assert_columns(panel, c("MEDIAN_PRICE", "P25_PRICE", "P75_PRICE"), "panel")
-
+  
   have_payers <- "N_DISTINCT_PAYERS" %in% names(panel)
   have_cov    <- "CODE_COVERAGE_RATIO" %in% names(panel)
   cat("\nSource columns: N_DISTINCT_PAYERS =", have_payers,
       "| CODE_COVERAGE_RATIO =", have_cov, "\n")
-
+  
   base <- panel[is.finite(MEDIAN_PRICE) & MEDIAN_PRICE > 0,
                 .(ANALYSIS_MARKET, FINAL_CONCEPT_ID, FINAL_FAMILY_ID, HOSPITAL_ID,
                   CV_PAYER = (P75_PRICE - P25_PRICE) / MEDIAN_PRICE,
@@ -2347,31 +2316,31 @@ build_comparability_measures <- function(panel) {
                   N_PAY    = if (have_payers) safe_numeric(N_DISTINCT_PAYERS)   else NA_real_,
                   CODE_COV = if (have_cov)    safe_numeric(CODE_COVERAGE_RATIO) else NA_real_)]
   base <- base[is.finite(CV_PAYER) & CV_PAYER >= 0]
-
+  
   # 1. PD_PAYER -- concept-panel percentiles. Retained for comparison only;
   #    degenerate in this panel (87% exact zeros, corr 0.984 with PD_CODE).
   #    See QA09.
   pd_payer <- loo_mean(base, "CV_PAYER"); setnames(pd_payer, "V", "PD_PAYER")
-
+  
   # 2. PD_HOSP -- across-hospital spread of the concept price.
   hosp <- unique(base[, .(FINAL_CONCEPT_ID, ANALYSIS_MARKET, LN_MED)])
   pd_hosp <- loo_sd(hosp, "LN_MED"); setnames(pd_hosp, "V", "PD_HOSP")
-
+  
   # 3-4. Contracting thinness and definitional standardisation. Both depend on
   #      source columns that may be absent from the parquet, in which case they
   #      come back all-NA and are dropped by the screen.
   thin <- base[, .(N_PAYERS = mean(N_PAY, na.rm = TRUE),
                    CODE_COV = mean(CODE_COV, na.rm = TRUE)), by = FINAL_CONCEPT_ID]
-
+  
   fam <- unique(base[, .(FINAL_CONCEPT_ID, CONCEPT_FAMILY = FINAL_FAMILY_ID)])
-
+  
   # 5-6. PD_CODE and N_CODES, from the exact-code panel.
   code_measures <- tryCatch({
     ex_raw <- read_panel(FILES$outpatient_exact, "exact-code panel",
                          columns = unique(c(ANALYSIS_COLUMNS, "BILLING_CODE")))
     ex <- prepare_panel(ex_raw, "exact-code panel", choose_sample_flag(ex_raw))
     rm(ex_raw); invisible(gc())
-
+    
     cell <- ex[is.finite(MEDIAN_PRICE) & MEDIAN_PRICE > 0,
                .(N_CODES = uniqueN(BILLING_CODE),
                  CV = {
@@ -2381,7 +2350,7 @@ build_comparability_measures <- function(panel) {
                  }),
                by = .(HOSPITAL_ID, POST_MONTH, ANALYSIS_MARKET, FINAL_CONCEPT_ID)]
     cell <- cell[is.finite(CV)]
-
+    
     pc <- loo_mean(cell, "CV");      setnames(pc, "V", "PD_CODE")
     nc <- loo_mean(cell, "N_CODES"); setnames(nc, "V", "N_CODES")
     rm(ex, cell); invisible(gc())
@@ -2391,15 +2360,15 @@ build_comparability_measures <- function(panel) {
     data.table(FINAL_CONCEPT_ID = character(0), PD_CODE = numeric(0),
                N_CODES = numeric(0))
   })
-
+  
   # 7-8. Payer-level dispersion and payer counts from the payer-cell export.
   payer_v2 <- load_payer_dispersion()
-
+  
   out <- Reduce(function(a, b) merge(a, b, by = "FINAL_CONCEPT_ID", all.x = TRUE),
                 list(pd_payer, pd_hosp, thin, fam, code_measures, payer_v2))
-
+  
   cat("\nComparability measures for", nrow(out), "concepts\n")
-
+  
   cat("\nWithin-family SD -- must be non-trivial, or the measure is another\n",
       "modality proxy and the within-family test has nothing to identify from:\n", sep = "")
   present <- intersect(c("PD_PAYER", "PD_HOSP", "PD_CODE", "N_CODES", "PD_PAYER_V2"),
@@ -2407,7 +2376,7 @@ build_comparability_measures <- function(panel) {
   print(out[, c(list(N = .N),
                 lapply(.SD, function(v) round(sd(v, na.rm = TRUE), 4))),
             by = CONCEPT_FAMILY, .SDcols = present][N >= 5L][1:min(.N, 14L)])
-
+  
   save_csv(out, "T09_comparability_measures.csv")
   out
 }
@@ -2419,14 +2388,14 @@ build_comparability_measures <- function(panel) {
 run_comparability_interaction <- function(panel, measures,
                                           moderators = COMPARABILITY_MODERATORS,
                                           instruments = MAIN_INSTRUMENTS, outcome = PRIMARY_OUTCOME) {
-
+  
   moderators <- screen_moderators(measures, moderators)
   if (length(moderators) == 0L) stop("No usable moderators.", call. = FALSE)
-
+  
   d <- merge(panel, measures[, c("FINAL_CONCEPT_ID", moderators), with = FALSE],
              by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
   setDT(d)
-
+  
   rows <- list(); tests <- list()
   for (m in moderators) {
     for (il in names(instruments)) {
@@ -2441,15 +2410,15 @@ run_comparability_interaction <- function(panel, measures,
   }
   cr <- rbindlist(rows, fill = TRUE); ct <- rbindlist(tests, fill = TRUE)
   if (nrow(cr) == 0L) stop("No comparability results.", call. = FALSE)
-
+  
   cr[, EXPECTED_SIGN := fifelse(MODERATOR %chin% DISPERSION_MEASURES, "positive", "negative")]
   cr[, SIGN_AS_PREDICTED := fifelse(MODERATOR %chin% DISPERSION_MEASURES,
                                     RF_COEF > 0, RF_COEF < 0)]
   cr[, WEAK_FIRST_STAGE := as.integer(FIRST_STAGE_WALD_MIN < 10)]
-
+  
   save_csv(cr, "T09B_comparability_interaction.csv")
   save_csv(ct, "T09C_comparability_interaction_tests.csv")
-
+  
   cat("\n", strrep("=", 112), "\nCOMPARABILITY GRADIENT (row-level interacted)\n",
       strrep("=", 112), "\n", sep = "")
   print(cr[TERM == "x Moderator", .(MODERATOR, INSTRUMENT_LABEL, EXPECTED_SIGN,
@@ -2457,17 +2426,17 @@ run_comparability_interaction <- function(panel, measures,
                                     IV = signif(IV_COEF, 3), IV_P = round(IV_P, 4),
                                     MIN_WALD = round(FIRST_STAGE_WALD_MIN, 1), WEAK = WEAK_FIRST_STAGE)][
                                       order(MODERATOR, RF_P)])
-
+  
   n_weak <- cr[TERM == "x Moderator" & WEAK_FIRST_STAGE == 1L, .N]
   if (n_weak > 0L) {
     cat("\nWARNING:", n_weak, "of", cr[TERM == "x Moderator", .N],
         "models have first-stage Wald below 10. Read the RF column, which\n",
         "needs no first stage.\n", sep = " ")
   }
-
+  
   cat("\nDispersion measures predict POSITIVE. N_PAYERS/N_PAYERS_V2/CODE_COV\n",
       "predict NEGATIVE. SIGN_OK applies the flip.\n", sep = "")
-
+  
   rm(d); invisible(gc()); list(rows = cr, tests = ct)
 }
 
@@ -2484,18 +2453,18 @@ run_comparability_interaction <- function(panel, measures,
 
 run_comparability_within_family <- function(cr, measures,
                                             moderators = COMPARABILITY_MODERATORS) {
-
+  
   moderators <- screen_moderators(measures, moderators)
   if (length(moderators) == 0L) { warning("No usable moderators."); return(data.table()) }
-
+  
   d <- merge(cr[is.finite(RF_COEF) & is.finite(RF_SE) & RF_SE > 0],
              measures, by = "FINAL_CONCEPT_ID")
   setDT(d); d[, W := 1 / (RF_SE^2)]
-
+  
   has_controls <- all(c("CODE_COV", "N_PAYERS") %in% names(d)) &&
     all(vapply(c("CODE_COV", "N_PAYERS"),
                function(v) sum(is.finite(d[[v]])) > MIN_CONCEPTS_META, logical(1)))
-
+  
   rows <- list()
   for (m in moderators) {
     d[, MODC := safe_numeric(get(m))]
@@ -2524,21 +2493,21 @@ run_comparability_within_family <- function(cr, measures,
   }
   out <- rbindlist(rows, fill = TRUE)
   if (nrow(out) == 0L) { warning("No within-family results."); return(out) }
-
+  
   out[, EXPECTED_SIGN := fifelse(MODERATOR %chin% DISPERSION_MEASURES, "positive", "negative")]
   out[term == "MODC", SIGN_AS_PREDICTED :=
         fifelse(MODERATOR %chin% DISPERSION_MEASURES, estimate > 0, estimate < 0)]
   save_csv(out, "T09D_comparability_within_family.csv")
-
+  
   cat("\n", strrep("=", 112), "\nWITHIN-FAMILY COMPARABILITY TEST\n",
       strrep("=", 112), "\n", sep = "")
   print(out[term == "MODC", .(MODERATOR, SPEC, TIER, INSTRUMENT_LABEL,
                               EST = signif(estimate, 3), SE = signif(std.error, 3), P = round(p.value, 4),
                               SIGN_OK = SIGN_AS_PREDICTED, N_CONCEPTS, N_FAMILIES)][order(MODERATOR, SPEC, P)])
-
+  
   cat("\nSpec (b) is decisive: family FE absorb modality entirely. Read the\n",
       "MAIN-tier rows first.\n", sep = "")
-
+  
   cat("\nSummary, spec (b), MAIN tier only:\n")
   print(out[term == "MODC" & grepl("^\\(b\\)", SPEC) & TIER == "MAIN",
             .(N = .N, N_SIGN_OK = sum(SIGN_AS_PREDICTED, na.rm = TRUE),
@@ -2584,19 +2553,19 @@ run_comparability_meta <- function(concept_results, measures,
                                    moderators = COMPARABILITY_MODERATORS,
                                    deps = list(list(dep = "RF_COEF", se = "RF_SE", label = "Reduced form"),
                                                list(dep = "IV_COEF", se = "IV_SE", label = "IV"))) {
-
+  
   # Same degeneracy gate Section 9 uses, so both stages estimate the same set
   # of measures and any exclusion is reported with its reason.
   moderators <- screen_moderators(measures, moderators)
   if (length(moderators) == 0L) stop("No usable moderators.", call. = FALSE)
-
+  
   d <- merge(concept_results, measures, by = "FINAL_CONCEPT_ID", all = FALSE)
   setDT(d)
-
+  
   d[, SHOP := factor(fifelse(FINAL_FAMILY_ID %chin% DIAGNOSTIC_FAMILIES,
                              "Shoppable", "Non_shoppable"),
                      levels = c("Non_shoppable", "Shoppable"))]
-
+  
   # Standardise so coefficients are per-SD and comparable across measures on
   # very different scales (PD_PAYER_V2 is a ratio near 0.2-1.4; N_PAYERS_V2 a
   # count from 1.6 to 8.1).
@@ -2605,7 +2574,7 @@ run_comparability_meta <- function(concept_results, measures,
       v <- safe_numeric(get(m)); (v - mean(v, na.rm = TRUE)) / sd(v, na.rm = TRUE)
     }]
   }
-
+  
   rows <- list()
   for (dd in deps) {
     dep <- dd$dep; se <- dd$se
@@ -2617,13 +2586,13 @@ run_comparability_meta <- function(concept_results, measures,
                  is.finite(get(se)) & get(se) > 0 & is.finite(get(mz))]
         if (nrow(s) < MIN_CONCEPTS_META) next
         s[, W := 1 / (get(se)^2)]
-
+        
         specs <- list(
           `(a) Comparability only` = sprintf("%s ~ %s", dep, mz),
           `(b) + family FE`        = sprintf("%s ~ %s | CONCEPT_FAMILY", dep, mz),
           `(d) Horse race vs shoppability` = sprintf("%s ~ %s + SHOP", dep, mz)
         )
-
+        
         # Spec (c) needs CODE_COV and N_PAYERS as controls. Both depend on
         # source columns that may be absent, so it is added only when they
         # actually carry data -- otherwise it would fail silently inside
@@ -2635,7 +2604,7 @@ run_comparability_meta <- function(concept_results, measures,
           specs[["(c) + family FE + coverage"]] <-
             sprintf("%s ~ %s + CODE_COV + N_PAYERS | CONCEPT_FAMILY", dep, mz)
         }
-
+        
         for (sn in names(specs)) {
           fit <- tryCatch(feols(as.formula(specs[[sn]]), data = s, weights = ~W,
                                 cluster = ~CONCEPT_FAMILY, warn = FALSE, notes = FALSE),
@@ -2650,26 +2619,26 @@ run_comparability_meta <- function(concept_results, measures,
       }
     }
   }
-
+  
   out <- rbindlist(rows, fill = TRUE)
   if (nrow(out) == 0L) stop("No comparability meta-regressions.", call. = FALSE)
-
+  
   # Sign convention, applied to the moderator term only.
   out[grepl("_Z$", term), EXPECTED_SIGN :=
         fifelse(MODERATOR %chin% DISPERSION_MEASURES, "positive", "negative")]
   out[grepl("_Z$", term), SIGN_AS_PREDICTED :=
         fifelse(MODERATOR %chin% DISPERSION_MEASURES, estimate > 0, estimate < 0)]
-
+  
   save_csv(out, "T10_comparability_meta_regression.csv")
-
+  
   grad <- out[grepl("_Z$", term)]
-
+  
   cat("\n", strrep("=", 112), "\nMODERATOR GRADIENT — REDUCED FORM (primary), p-values\n",
       strrep("=", 112), "\n", sep = "")
   print(dcast(grad[DEPENDENT == "Reduced form",
                    .(MODERATOR, SPEC, INSTRUMENT_LABEL, P = round(p.value, 4))],
               MODERATOR + SPEC ~ INSTRUMENT_LABEL, value.var = "P"))
-
+  
   cat("\n", strrep("=", 112),
       "\nSPEC (b), FAMILY FE — THE DECISIVE SPECIFICATION, MAIN TIER FIRST\n",
       strrep("=", 112), "\n", sep = "")
@@ -2678,13 +2647,13 @@ run_comparability_meta <- function(concept_results, measures,
                SE = signif(std.error, 3), P = round(p.value, 4),
                SIGN_OK = SIGN_AS_PREDICTED, N_CONCEPTS, N_FAMILIES)][
                  order(MODERATOR, TIER, P)])
-
+  
   cat("\n", strrep("=", 112), "\nSAME, IV DEPENDENT (robustness)\n",
       strrep("=", 112), "\n", sep = "")
   print(dcast(grad[DEPENDENT == "IV",
                    .(MODERATOR, SPEC, INSTRUMENT_LABEL, P = round(p.value, 4))],
               MODERATOR + SPEC ~ INSTRUMENT_LABEL, value.var = "P"))
-
+  
   cat("\n", strrep("=", 112),
       "\nHORSE RACE: each moderator vs the ex-ante shoppability label\n",
       strrep("=", 112), "\n", sep = "")
@@ -2698,7 +2667,7 @@ run_comparability_meta <- function(concept_results, measures,
     print(hr_wide[order(MODERATOR, TIER, INSTRUMENT_LABEL)])
     save_csv(hr_wide, "T10B_horse_race_summary.csv")
   }
-
+  
   cat("\n", strrep("=", 112), "\nSUMMARY BY MEASURE AND SPECIFICATION (reduced form)\n",
       strrep("=", 112), "\n", sep = "")
   print(grad[DEPENDENT == "Reduced form",
@@ -2707,7 +2676,7 @@ run_comparability_meta <- function(concept_results, measures,
                MEDIAN_P = round(median(p.value, na.rm = TRUE), 4),
                SHARE_EXPECTED_SIGN = round(mean(SIGN_AS_PREDICTED, na.rm = TRUE), 3)),
              by = .(MODERATOR, SPEC)][order(MODERATOR, SPEC)])
-
+  
   cat("\nMAIN tier only, spec (b) — the numbers to report:\n")
   print(grad[DEPENDENT == "Reduced form" & grepl("^\\(b\\)", SPEC) & TIER == "MAIN",
              .(N = .N, N_SIG_05 = sum(p.value < 0.05, na.rm = TRUE),
@@ -2715,7 +2684,7 @@ run_comparability_meta <- function(concept_results, measures,
                MEDIAN_P = round(median(p.value, na.rm = TRUE), 4),
                MEDIAN_EST = signif(median(estimate, na.rm = TRUE), 3)),
              by = MODERATOR][order(MEDIAN_P)])
-
+  
   cat("\n", strrep("=", 112), "\nHOW TO READ THIS\n", strrep("=", 112), "\n",
       "SIGNS. Dispersion measures (PD_PAYER_V2, PD_HOSP, N_CODES) predict\n",
       "POSITIVE: more dispersion = less comparable = smaller price response.\n",
@@ -2735,7 +2704,7 @@ run_comparability_meta <- function(concept_results, measures,
       "  Only SHOPPABLE     -> the moderator adds nothing beyond the label.\n",
       "  Neither -> collinear at this sample size. Report separately, say so.\n",
       sep = "")
-
+  
   out
 }
 
@@ -2777,18 +2746,18 @@ run_instrument_balance <- function(panel, instruments = MAIN_INSTRUMENTS) {
     "HEALTH_SYSTEM_ID", "SYSTEM_KEY", "HOSPITAL_TYPE", "PROVIDER_STATE",
     unname(instruments)))
   h <- unique(panel[, ..hosp_cols], by = "HOSPITAL_ID")
-
+  
   h[, IN_SYSTEM := as.integer(!is.na(SYSTEM_KEY) & SYSTEM_KEY != "")]
   if ("HOSPITAL_TYPE" %in% names(h)) {
     h[, IS_SHORT_TERM := as.integer(grepl("SHORT|ACUTE|GENERAL", HOSPITAL_TYPE, ignore.case = TRUE))]
   }
-
+  
   cat("\nBalance sample:", nrow(h), "hospitals |",
       uniqueN(h$ANALYSIS_MARKET), "counties |", uniqueN(h$POST_MONTH), "months\n")
-
+  
   chars <- available_columns(h, c("LOG_TOTAL_BEDS", "IN_SYSTEM", "IS_SHORT_TERM"))
   chars <- chars[vapply(chars, function(v) has_usable_variation(h[[v]]), logical(1))]
-
+  
   out <- rbindlist(lapply(names(instruments), function(il) {
     z <- instruments[[il]]; if (!(z %in% names(h))) return(data.table())
     sd_z <- sd(h[[z]], na.rm = TRUE)
@@ -2811,16 +2780,16 @@ run_instrument_balance <- function(panel, instruments = MAIN_INSTRUMENTS) {
                  N_HOSPITALS = nrow(d))
     }), fill = TRUE)
   }), fill = TRUE)
-
+  
   if (nrow(out) == 0L) { warning("No balance results."); return(out) }
   save_csv(out, "T11_instrument_balance.csv")
-
+  
   cat("\n", strrep("=", 100), "\nINSTRUMENT BALANCE\n", strrep("=", 100), "\n", sep = "")
   print(out[, .(INSTRUMENT_LABEL, CHARACTERISTIC, COEF = signif(COEF, 3),
                 SE = signif(SE, 3), P = round(P_VALUE, 4),
                 STD_EFFECT = round(STANDARDISED_EFFECT, 4), N_HOSPITALS)][
                   order(CHARACTERISTIC, P)])
-
+  
   cat("\nSTANDARDISED_EFFECT is the change in the characteristic, in its own SDs,\n",
       "per one-SD increase in peer exposure. Values under about 0.05 are\n",
       "negligible even when statistically significant at this sample size --\n",
@@ -2828,7 +2797,7 @@ run_instrument_balance <- function(panel, instruments = MAIN_INSTRUMENTS) {
       "Significant AND large would mean high-exposure hospitals differ\n",
       "systematically, which the county and month FE were supposed to absorb.\n",
       sep = "")
-
+  
   cat("\nSummary:", sum(out$P_VALUE < 0.05, na.rm = TRUE), "of", nrow(out),
       "balance tests significant at 5% |",
       sum(abs(out$STANDARDISED_EFFECT) > 0.05, na.rm = TRUE),
@@ -2847,7 +2816,7 @@ run_placebo_outcome <- function(panel, instruments = MAIN_INSTRUMENTS) {
                                           "POST_MONTH", "LOG_TOTAL_BEDS",
                                           unname(instruments)))
   h <- unique(panel[, ..hosp_cols], by = "HOSPITAL_ID")
-
+  
   out <- rbindlist(lapply(names(instruments), function(il) {
     z <- instruments[[il]]; if (!(z %in% names(h))) return(data.table())
     d <- h[is.finite(LOG_TOTAL_BEDS) & is.finite(get(z))]
@@ -2864,10 +2833,10 @@ run_placebo_outcome <- function(panel, instruments = MAIN_INSTRUMENTS) {
                EFFECT_PER_SD_OF_Z = co$estimate * sd_z,
                N_HOSPITALS = nrow(d))
   }), fill = TRUE)
-
+  
   if (nrow(out) == 0L) { warning("No placebo results."); return(out) }
   save_csv(out, "T11B_placebo_outcome.csv")
-
+  
   cat("\n", strrep("=", 100), "\nPLACEBO OUTCOME: PRE-DETERMINED BED COUNT\n",
       strrep("=", 100), "\n", sep = "")
   print(out[, .(INSTRUMENT_LABEL, COEF = signif(COEF, 4), SE = signif(SE, 4),
@@ -2902,13 +2871,13 @@ run_preflight <- function(panel, schemes_long) {
     cat(sprintf("  [%s] %-56s %s\n", if (isTRUE(ok)) "PASS" else "FAIL", label, detail))
     if (!isTRUE(ok)) fails <<- c(fails, label)
   }
-
+  
   # 1. Every panel concept has a scheme classification. A concept missing from
   #    schemes_long is dropped from every scheme-based model without warning.
   miss <- setdiff(unique(panel$FINAL_CONCEPT_ID), schemes_long$ANALYSIS_CONCEPT_ID)
   chk("All panel concepts appear in schemes_long", length(miss) == 0L,
       if (length(miss)) paste(head(miss, 3), collapse = ", ") else "")
-
+  
   # 2. No unexpected NA scheme columns. Scheme 6 legitimately has NAs, since
   #    the extremes rule drops INTERMEDIATE concepts by design.
   for (spec in PRIMARY_SCHEMES) {
@@ -2918,33 +2887,33 @@ run_preflight <- function(panel, schemes_long) {
     chk(paste("No unexpected NAs in", spec$col), allow_na || n_na == 0L,
         paste0(format(n_na, big.mark = ","), " NA", if (allow_na) " (expected)" else ""))
   }
-
+  
   # 3. Merge canonical concepts present.
   canon <- vapply(MERGE_GROUPS, `[[`, character(1), "canonical_id")
   present <- canon %in% unique(panel$FINAL_CONCEPT_ID)
   chk("Merge canonical concepts present in panel", all(present),
       if (all(present)) "" else paste(canon[!present], collapse = ", "))
-
+  
   # 4. Merge constituents GONE from the panel.
   consts <- setdiff(unique(unlist(lapply(MERGE_GROUPS, `[[`, "constituents"))), canon)
   leftover <- intersect(consts, unique(panel$FINAL_CONCEPT_ID))
   chk("Merge constituents removed from panel", length(leftover) == 0L,
       if (length(leftover)) paste(head(leftover, 3), collapse = ", ") else "")
-
+  
   # 5. Instruments present and varying.
   for (il in names(MAIN_INSTRUMENTS)) {
     z <- MAIN_INSTRUMENTS[[il]]
     chk(paste("Instrument usable:", il),
         z %in% names(panel) && has_usable_variation(panel[[z]]))
   }
-
+  
   # 6. Outcome and treatment finite.
   chk("Outcome finite for all rows", all(is.finite(panel[[PRIMARY_OUTCOME]])))
   chk("Treatment finite for all rows", all(is.finite(panel[[ENDOGENOUS_VARIABLE]])))
-
+  
   # 7. Exact-code panel reachable. PD_CODE and N_CODES in stage 9 need it.
   chk("Exact-code panel file exists", file.exists(FILES$outpatient_exact))
-
+  
   cat("\n", strrep("-", 84), "\n", sep = "")
   if (length(fails) == 0L) {
     cat("ALL CHECKS PASSED. Safe to run stage 6.\n")
@@ -3049,7 +3018,7 @@ if (6 %in% RUN_STAGES) {
                                     instruments = CONCEPT_INSTRUMENTS))
   save_csv(concept_results, "T05_concept_level_RF_FS_IV.csv")
   diagnose_size_gradient(concept_results)
-
+  
   cat("\nMerge canonical concepts estimated (expect 6 rows each, one per instrument):\n")
   print(concept_results[FINAL_CONCEPT_ID %chin%
                           vapply(MERGE_GROUPS, `[[`, character(1), "canonical_id"), .N, by = FINAL_CONCEPT_ID])
@@ -3189,7 +3158,7 @@ rm(d0); invisible(gc())
 
 sign_check <- rbindlist(lapply(names(CANDIDATE_INSTRUMENTS), function(lab) {
   z <- CANDIDATE_INSTRUMENTS[[lab]]
-
+  
   rbindlist(lapply(names(SCHEME_COLUMNS), function(sl) {
     sc <- SCHEME_COLUMNS[[sl]]
     r <- estimate_interacted(outpatient, sc, PRIMARY_OUTCOME, z,
@@ -3314,12 +3283,12 @@ cat("\n", strrep("=", 84), "\nINSTRUMENT AUDIT COMPLETE\n", strrep("=", 84), "\n
 #   7.6  Tier rerank across all six schemes, alongside first-stage F
 ###############################################################################
 if (7 %in% RUN_STAGES) {
-
+  
   # --- 7.1 HEADLINE: 3 MAIN instruments ---------------------------------------
   main   <- cache_or_run("main_results",
                          run_main_results(outpatient, stem = "T06_main"))
   ladder <- cache_or_run("transform_ladder", run_transform_ladder(outpatient))
-
+  
   if (EXCLUDE_PROCEDURAL_FROM_SCHEME1) {
     cat("\n", strrep("=", 84),
         "\nSENSITIVITY: Scheme 1 with 17 procedure-adjunct concepts reclassified\n",
@@ -3329,20 +3298,20 @@ if (7 %in% RUN_STAGES) {
                                   schemes = SCHEME_COLUMNS["1. Procedural certainty"],
                                   stem = "T06D_scheme1_procedural_excluded")
   }
-
+  
   # --- 7.2 CONFIRMING: 2 additional instruments -------------------------------
   cat("\n", strrep("=", 84), "\n7.2 CONFIRMING INSTRUMENTS (2)\n", strrep("=", 84), "\n", sep = "")
   confirming <- cache_or_run("confirming_results",
                              run_main_results(outpatient, instruments = CONFIRMING_INSTRUMENTS,
                                               stem = "T06J_confirming"))
-
+  
   # --- 7.3 DISCREPANT: reported on its own, never pooled ----------------------
   cat("\n", strrep("=", 84), "\n7.3 DISCREPANT INSTRUMENT (1) — reported, not pooled\n",
       strrep("=", 84), "\n", sep = "")
   discrepant <- cache_or_run("discrepant_results",
                              run_main_results(outpatient, instruments = DISCREPANT_INSTRUMENTS,
                                               stem = "T06K_discrepant"))
-
+  
   # --- 7.4 COMBINED TABLE: all three tiers, tagged, side by side -------------
   combined <- rbindlist(list(
     cbind(TIER = "MAIN",       main$rows),
@@ -3350,14 +3319,14 @@ if (7 %in% RUN_STAGES) {
     cbind(TIER = "DISCREPANT", discrepant$rows)
   ), fill = TRUE)
   save_csv(combined, "T06F_all_tiers_combined.csv")
-
+  
   combined_tests <- rbindlist(list(
     cbind(TIER = "MAIN",       main$tests),
     cbind(TIER = "CONFIRMING", confirming$tests),
     cbind(TIER = "DISCREPANT", discrepant$tests)
   ), fill = TRUE)
   save_csv(combined_tests, "T06G_all_tiers_heterogeneity_tests.csv")
-
+  
   cat("\n", strrep("=", 108), "\nHEADLINE TERM (Shoppable) BY TIER, SCHEME 1\n",
       strrep("=", 108), "\n", sep = "")
   print(combined[SPEC == "1. Procedural certainty" & TERM == "Shoppable",
@@ -3365,14 +3334,14 @@ if (7 %in% RUN_STAGES) {
                    RF_P = round(RF_P, 4), IV_PCT = round(IV_PERCENT, 2),
                    IV_P = round(IV_P, 4), MIN_WALD_F = round(FIRST_STAGE_WALD_MIN, 1))][
                      order(TIER, INSTRUMENT_LABEL)])
-
+  
   # --- 7.5 POOLED ROBUSTNESS CLAIM: MAIN + CONFIRMING, 5 instruments ---------
   cat("\n", strrep("=", 84), "\n7.5 POOLED: MAIN + CONFIRMING (5 instruments x 6 schemes = 30 models)\n",
       strrep("=", 84), "\n", sep = "")
   robustness_pool <- cache_or_run("robustness_pool_results",
                                   run_main_results(outpatient, instruments = ROBUSTNESS_INSTRUMENTS,
                                                    stem = "T06H_pooled_main_confirming"))
-
+  
   het_summary <- robustness_pool$tests[
     , .(N_TESTS = .N, N_SIG_05 = sum(P_VALUE < 0.05, na.rm = TRUE),
         SHARE_SIG = round(mean(P_VALUE < 0.05, na.rm = TRUE), 3),
@@ -3380,7 +3349,7 @@ if (7 %in% RUN_STAGES) {
     by = ESTIMATOR]
   cat("\nHeterogeneity significance, pooled across MAIN + CONFIRMING (30 models):\n")
   print(het_summary)
-
+  
   # --- 7.6 TIER RERANK: across ALL 6 SCHEMES, not Scheme 1 alone -------------
   # The tier assignment in QA07 and QA08 was made on Scheme 1 alone. This
   # checks whether it holds across the full set of schemes, and reports median
@@ -3395,18 +3364,18 @@ if (7 %in% RUN_STAGES) {
                              SHARE_SIG = round(mean(P_VALUE < 0.05, na.rm = TRUE), 3),
                              MEDIAN_P = round(median(P_VALUE, na.rm = TRUE), 4)),
                            by = .(TIER, INSTRUMENT_LABEL)][order(-SHARE_SIG, MEDIAN_P)]
-
+  
   fs_by_inst <- combined[, .(MEDIAN_FIRST_STAGE_F = round(median(FIRST_STAGE_WALD_MIN, na.rm = TRUE), 1)),
                          by = INSTRUMENT_LABEL]
   rerank <- merge(rerank, fs_by_inst, by = "INSTRUMENT_LABEL")[order(-SHARE_SIG, MEDIAN_P)]
-
+  
   cat("\n", strrep("=", 104),
       "\n7.6 TIER RERANK — heterogeneity significance across ALL 6 SCHEMES (RF),\n",
       "with first-stage F alongside to show they are INDEPENDENT axes\n",
       strrep("=", 104), "\n", sep = "")
   print(rerank)
   save_csv(rerank, "T06L_tier_rerank_all_schemes.csv")
-
+  
   cat("\nThe two STRONGEST first stages produce the two WEAKEST results. That is\n",
       "an argument against selecting instruments on first-stage F, and worth a\n",
       "sentence in the paper.\n\n",
@@ -3425,25 +3394,25 @@ if (7 %in% RUN_STAGES) {
 # STAGE 8 -- meta-regressions, partition deduplication, permutation inference
 ###############################################################################
 if (8 %in% RUN_STAGES) {
-
+  
   meta_input <- prepare_meta_input(concept_results, schemes_long)
   meta_input[, TIER := instrument_tier(INSTRUMENT_LABEL)]
   cat("\nConcept-instrument rows per tier in meta_input:\n")
   print(meta_input[, .(N_ROWS = .N), by = TIER])
-
+  
   meta_rf <- cache_or_run("meta_regressions_rf",
                           run_meta_regressions(meta_input, schemes_long, dep = "RF_COEF", se = "RF_SE"))
   meta_iv <- cache_or_run("meta_regressions_iv",
                           run_meta_regressions(meta_input, schemes_long, dep = "IV_COEF", se = "IV_SE"))
-
+  
   meta <- deduplicate_partitions(rbindlist(list(meta_rf, meta_iv), fill = TRUE))
   meta[, TIER := instrument_tier(INSTRUMENT_LABEL)]
   save_csv(meta, "T08_meta_regressions_with_partitions.csv")
   save_csv(meta[IS_REPRESENTATIVE == 1L], "T08C_meta_distinct_partitions.csv")
-
+  
   shop_terms <- meta[IS_REPRESENTATIVE == 1L & grepl("Shoppable", term) &
                        WEIGHTING == "Inverse variance"]
-
+  
   cat("\n", strrep("=", 100),
       "\nSHOPPABILITY GRADIENT BY TIER (distinct partitions only)\n",
       strrep("=", 100), "\n", sep = "")
@@ -3454,7 +3423,7 @@ if (8 %in% RUN_STAGES) {
                        SHARE_SIG = round(mean(p.value < 0.05, na.rm = TRUE), 3),
                        MEDIAN_P = round(median(p.value, na.rm = TRUE), 4)),
                    by = .(DEPENDENT, TIER)][order(DEPENDENT, TIER)])
-
+  
   cat("\nPooled: MAIN+CONFIRMING vs all 6 (incl. discrepant):\n")
   print(rbindlist(list(
     shop_terms[TIER %chin% c("MAIN", "CONFIRMING"),
@@ -3463,16 +3432,16 @@ if (8 %in% RUN_STAGES) {
     shop_terms[, .(POOL = "All 6 (incl. discrepant)", N_TESTS = .N,
                    SHARE_SIG = round(mean(p.value < 0.05, na.rm = TRUE), 3)), by = DEPENDENT]
   )))
-
+  
   save_csv(shop_terms, "T08F_shoppability_gradient_by_tier.csv")
-
+  
   perm_rf <- family_permutation_test(meta_input[TIER != "DISCREPANT"],
                                      dep = "RF_COEF", se = "RF_SE")
   perm_iv <- family_permutation_test(meta_input[TIER != "DISCREPANT"],
                                      dep = "IV_COEF", se = "IV_SE")
   perm_rf_all6 <- family_permutation_test(meta_input, dep = "RF_COEF", se = "RF_SE")
   perm_iv_all6 <- family_permutation_test(meta_input, dep = "IV_COEF", se = "IV_SE")
-
+  
   perm <- rbindlist(list(
     cbind(DEPENDENT = "Reduced form", POOL = "MAIN+CONFIRMING", perm_rf),
     cbind(DEPENDENT = "IV",           POOL = "MAIN+CONFIRMING", perm_iv),
@@ -3480,14 +3449,14 @@ if (8 %in% RUN_STAGES) {
     cbind(DEPENDENT = "IV",           POOL = "All 6",           perm_iv_all6)
   ), fill = TRUE)
   save_csv(perm, "T08E_family_permutation_inference.csv")
-
+  
   cat("\n", strrep("=", 96), "\nEXACT FAMILY PERMUTATION, BY POOL\n", strrep("=", 96), "\n", sep = "")
   print(perm[, .(DEPENDENT, POOL, INSTRUMENT_LABEL, OBSERVED = signif(OBSERVED, 3),
                  P = round(P_TWO_SIDED, 5), METHOD)][order(DEPENDENT, POOL, P)])
-
+  
   cat("\nDecomposition, overall:\n")
   decompose_reduced_form(meta_input, stem = "T08D_RF_vs_FS_decomposition")
-
+  
   cat("\nDecomposition by tier (does DISCREPANT's flat result trace to FS or RF?):\n")
   for (tr in c("MAIN", "CONFIRMING", "DISCREPANT")) {
     cat("\n--", tr, "--\n")
@@ -3501,15 +3470,15 @@ if (8 %in% RUN_STAGES) {
 # STAGE 9 RUN BLOCK
 ###############################################################################
 if (9 %in% RUN_STAGES) {
-
+  
   verify_loo_sd(outpatient)
-
+  
   measures <- cache_or_run("comparability_measures",
                            build_comparability_measures(outpatient))
-
+  
   comp_int <- cache_or_run("comparability_interaction",
                            run_comparability_interaction(outpatient, measures))
-
+  
   comp_wf  <- run_comparability_within_family(concept_results, measures)
 }
 
@@ -3568,13 +3537,13 @@ add_system_membership <- function(panel) {
 run_main_results_insystem_robustness <- function(
     panel, schemes = SCHEME_COLUMNS, instruments = MAIN_INSTRUMENTS,
     outcome = PRIMARY_OUTCOME, stem = "T11C_insystem_robustness") {
-
+  
   panel2 <- add_system_membership(panel)
   controls <- c(BASELINE_CONTROLS, "IN_SYSTEM")
-
+  
   rows <- list(); tests <- list(); g <- 0L
   n <- length(schemes) * length(instruments); t0 <- Sys.time()
-
+  
   for (sl in names(schemes)) {
     sc <- schemes[[sl]]; if (!(sc %in% names(panel2))) next
     for (il in names(instruments)) {
@@ -3588,14 +3557,14 @@ run_main_results_insystem_robustness <- function(
                   substr(il, 1, 34), as.numeric(difftime(Sys.time(), t1, units = "secs"))))
     }
   }
-
+  
   mr <- rbindlist(rows, fill = TRUE); mt <- rbindlist(tests, fill = TRUE)
   if (nrow(mr) == 0L) stop("No results.", call. = FALSE)
-
+  
   save_csv(mr, paste0(stem, "_interacted_RF_and_IV.csv"))
   save_csv(mt, paste0(stem, "B_heterogeneity_tests.csv"))
   cat("\nElapsed:", round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 1), "min\n")
-
+  
   rm(panel2); invisible(gc())
   list(rows = mr, tests = mt)
 }
@@ -3607,18 +3576,18 @@ run_main_results_insystem_robustness <- function(
 ###############################################################################
 compare_insystem_robustness <- function(original_rows, original_tests,
                                         robust_rows, robust_tests) {
-
+  
   base <- original_rows[, .(SPEC, INSTRUMENT_LABEL, TERM,
                             RF_BASE = RF_PERCENT_PER_SD, RF_P_BASE = RF_P,
                             IV_BASE = IV_PERCENT, IV_P_BASE = IV_P)]
   rob  <- robust_rows[, .(SPEC, INSTRUMENT_LABEL, TERM,
                           RF_ROBUST = RF_PERCENT_PER_SD, RF_P_ROBUST = RF_P,
                           IV_ROBUST = IV_PERCENT, IV_P_ROBUST = IV_P)]
-
+  
   cmp <- merge(base, rob, by = c("SPEC", "INSTRUMENT_LABEL", "TERM"))
   cmp[, RF_DELTA_PP := RF_ROBUST - RF_BASE]
   cmp[, SIGN_STABLE := as.integer(sign(RF_BASE) == sign(RF_ROBUST) | RF_BASE == 0)]
-
+  
   cat("\n", strrep("=", 116), "\nHEADLINE ESTIMATES: ORIGINAL vs CONTROLLING FOR IN_SYSTEM\n",
       strrep("=", 116), "\n", sep = "")
   print(cmp[order(SPEC, INSTRUMENT_LABEL, TERM),
@@ -3626,23 +3595,23 @@ compare_insystem_robustness <- function(original_rows, original_tests,
               TERM, RF_BASE = round(RF_BASE, 3), RF_ROBUST = round(RF_ROBUST, 3),
               DELTA_PP = round(RF_DELTA_PP, 3), P_BASE = round(RF_P_BASE, 4),
               P_ROBUST = round(RF_P_ROBUST, 4), SIGN_STABLE)])
-
+  
   bt <- original_tests[, .(SPEC, INSTRUMENT_LABEL, ESTIMATOR, P_BASE = P_VALUE)]
   rt <- robust_tests[, .(SPEC, INSTRUMENT_LABEL, ESTIMATOR, P_ROBUST = P_VALUE)]
   ht <- merge(bt, rt, by = c("SPEC", "INSTRUMENT_LABEL", "ESTIMATOR"))
-
+  
   ht[, STILL_SIG_05 := as.integer(P_ROBUST < 0.05)]
-
+  
   cat("\n", strrep("=", 116), "\nHETEROGENEITY TEST: ORIGINAL vs CONTROLLING FOR IN_SYSTEM\n",
       strrep("=", 116), "\n", sep = "")
   print(ht[order(SPEC, INSTRUMENT_LABEL, ESTIMATOR),
            .(SPEC = substr(SPEC, 1, 22), INSTRUMENT_LABEL = substr(INSTRUMENT_LABEL, 1, 28),
              ESTIMATOR, P_BASE = round(P_BASE, 4), P_ROBUST = round(P_ROBUST, 4),
              STILL_SIG_05)])
-
+  
   save_csv(cmp, "T11D_insystem_robustness_comparison.csv")
   save_csv(ht,  "T11E_insystem_robustness_heterogeneity_comparison.csv")
-
+  
   cat("\n", strrep("=", 116), "\nSUMMARY\n", strrep("=", 116), "\n",
       "Coefficients changing by more than ~10% of their base value, or\n",
       "significance flipping, would mean IN_SYSTEM is doing real work that the\n",
@@ -3651,11 +3620,11 @@ compare_insystem_robustness <- function(original_rows, original_tests,
       "was cosmetic -- consistent with it being close to a mechanical byproduct\n",
       "of how the COMPETITOR instruments are constructed (they count\n",
       "competitors OUTSIDE the focal hospital's own system).\n", sep = "")
-
+  
   cat("\nMedian heterogeneity p, MAIN tier, RF: original =",
       round(median(ht[STILL_SIG_05 >= 0]$P_BASE, na.rm = TRUE), 4), "| with IN_SYSTEM =",
       round(median(ht$P_ROBUST, na.rm = TRUE), 4), "\n")
-
+  
   list(estimates = cmp, tests = ht)
 }
 
@@ -3804,25 +3773,25 @@ attach_county_demographics_v2 <- function(panel, demo) {
   if (!("COUNTY_FIPS" %in% names(panel))) {
     stop("Panel lacks COUNTY_FIPS.", call. = FALSE)
   }
-
+  
   d <- copy(panel)
   d[, COUNTY_FIPS := sprintf("%05d", as.integer(COUNTY_FIPS))]
-
+  
   old_demo_cols <- grep("^DEMO_", names(d), value = TRUE)
   if (length(old_demo_cols) > 0L) {
     cat("Dropping", length(old_demo_cols), "DEMO_ columns from a prior merge attempt.\n")
     d[, (old_demo_cols) := NULL]
   }
-
+  
   n_before <- uniqueN(d$ANALYSIS_MARKET)
   d <- merge(d, demo, by = "COUNTY_FIPS", all.x = TRUE, sort = FALSE)
-
+  
   matched_counties <- d[!is.na(DEMO_POPULATION), uniqueN(ANALYSIS_MARKET)]
   matched_rows <- mean(!is.na(d$DEMO_POPULATION))
-
+  
   cat("\nDemographics matched:", matched_counties, "of", n_before,
       "counties |", round(100 * matched_rows, 1), "% of panel rows\n")
-
+  
   if (matched_rows < 0.90) {
     unmatched <- unique(d[is.na(DEMO_POPULATION)]$ANALYSIS_MARKET)
     cat("\nBelow 90%. Sample unmatched:\n")
@@ -3830,7 +3799,7 @@ attach_county_demographics_v2 <- function(panel, demo) {
   } else {
     cat("Match rate at or above 90% -- good.\n")
   }
-
+  
   d
 }
 
@@ -4090,21 +4059,21 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
                             outcome = T12T_OUTCOME, endogenous = T12T_ENDOGENOUS,
                             controls = T12T_CONTROLS, fe = T12T_FE,
                             clusters = T12T_CLUSTERS, min_obs = T12T_MIN_OBS) {
-
+  
   need <- unique(c(outcome, endogenous, instrument, controls, fe, clusters,
                    scheme_col, moderators, "FINAL_CONCEPT_ID"))
   miss <- setdiff(need, names(panel))
   if (length(miss)) { warning("Missing columns: ", paste(miss, collapse = ", "), call. = FALSE); return(NULL) }
-
+  
   d <- panel[, ..need]
   d <- d[complete.cases(d[, ..need])]
   d <- d[!is.na(get(scheme_col))]
   if (nrow(d) < min_obs) { cat("    [skip: only", nrow(d), "usable rows]\n"); return(NULL) }
-
+  
   d[, GRP := droplevels(factor(get(scheme_col)))]
   keys <- levels(d$GRP)
   if (length(keys) != 2L) { cat("    [skip: scheme has", length(keys), "levels]\n"); return(NULL) }
-
+  
   # Centre each moderator at its estimation-sample mean, and record its SD for
   # the per-SD reporting below.
   mod_tag <- paste0("M", seq_along(moderators))
@@ -4117,12 +4086,12 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
     mod_sd[j] <- sd(v, na.rm = TRUE)
     set(d, j = paste0("MODV_", mod_tag[j]), value = v - mean(v, na.rm = TRUE))
   }
-
+  
   # Build the design. Level terms first, then each moderator interaction.
   grp_tag <- paste0("G", seq_along(keys))
   endo <- ivs <- rfs <- character(0)
   term_grp <- term_lab <- term_mod <- character(0)
-
+  
   for (k in seq_along(keys)) {
     sel <- as.integer(d$GRP == keys[k])
     set(d, j = paste0("TREAT_", grp_tag[k]), value = d[[endogenous]] * sel)
@@ -4133,7 +4102,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
     rfs  <- c(rfs,  paste0("RFV_",   grp_tag[k]))
     term_grp <- c(term_grp, keys[k]); term_lab <- c(term_lab, "Level")
     term_mod <- c(term_mod, NA_character_)
-
+    
     for (j in seq_along(moderators)) {
       mv <- d[[paste0("MODV_", mod_tag[j])]]
       sfx <- paste0(grp_tag[k], "_", mod_tag[j])
@@ -4147,7 +4116,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
       term_mod <- c(term_mod, moderators[j])
     }
   }
-
+  
   cl <- .t12_cluster_formula(clusters)
   rf_fit <- tryCatch(feols(.t12_ols_formula(outcome, c(rfs, controls), fe),
                            data = d, cluster = cl, warn = FALSE, notes = FALSE),
@@ -4156,12 +4125,12 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
                            data = d, cluster = cl, warn = FALSE, notes = FALSE),
                      error = function(e) { cat("    [IV failed:", conditionMessage(e), "]\n"); NULL })
   if (is.null(rf_fit)) return(NULL)
-
+  
   sd_z    <- sd(d[[instrument]], na.rm = TRUE)
   fs_min  <- .t12_fs_wald(iv_fit)
   cd      <- .t12_cragg(iv_fit)
   n_obs   <- if (is.null(iv_fit)) nobs(rf_fit) else nobs(iv_fit)
-
+  
   rows <- rbindlist(lapply(seq_along(endo), function(i) {
     rf <- .t12_pull(rf_fit, rfs[i]); iv <- .t12_pull(iv_fit, endo[i])
     j  <- match(term_mod[i], moderators)
@@ -4184,7 +4153,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
       N_COUNTIES = uniqueN(d[[clusters[1L]]]),
       MODERATOR_SD = if (!is.na(j)) mod_sd[j] else NA_real_, INSTRUMENT_SD = sd_z)
   }), fill = TRUE)
-
+  
   # ---- The estimand: does the GAP move with the moderator? dS - dN ----
   tests <- rbindlist(lapply(seq_along(moderators), function(j) {
     iS <- which(term_grp == keys[2L] & term_lab == "x Moderator" & term_mod == moderators[j])
@@ -4192,12 +4161,12 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
     if (length(iS) != 1L || length(iN) != 1L) return(NULL)
     rf_t <- .t12_wald_diff(rf_fit, rfs[iS],  rfs[iN])
     iv_t <- .t12_wald_diff(iv_fit, endo[iS], endo[iN])
-
+    
     # Gap between the two level terms, evaluated at the moderator mean.
     lS <- which(term_grp == keys[2L] & term_lab == "Level")
     lN <- which(term_grp == keys[1L] & term_lab == "Level")
     gap <- .t12_wald_diff(rf_fit, rfs[lS], rfs[lN])
-
+    
     rbindlist(list(
       if (!is.null(rf_t)) cbind(ESTIMATOR = "Reduced form", rf_t) else NULL,
       if (!is.null(iv_t)) cbind(ESTIMATOR = "IV",           iv_t) else NULL
@@ -4211,7 +4180,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
       DGAP_PCT_PER_SD_MOD = 100 * (exp(DIFF * sd_z * mod_sd[j]) - 1),
       FIRST_STAGE_WALD_MIN = fs_min, N_OBSERVATIONS = n_obs)]
   }), fill = TRUE)
-
+  
   list(rows = rows, tests = tests)
 }
 
@@ -4235,7 +4204,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   cat("Panel rows:", format(nrow(panel), big.mark = ","),
       "| concepts:", uniqueN(panel$FINAL_CONCEPT_ID),
       "| counties:", uniqueN(panel[[T12T_COUNTY_KEY]]), "\n")
-
+  
   scr <- rbindlist(lapply(T12T_MODERATORS, function(m) {
     v <- as.numeric(panel[[m]])
     data.table(MODERATOR = m, N_FINITE = sum(is.finite(v)),
@@ -4268,19 +4237,19 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   cs <- unique(panel[, ..cols])
   cs <- cs[complete.cases(cs)]
   cat("Counties with complete demographics:", nrow(cs), "\n")
-
+  
   X <- as.matrix(cs[, ..comp])
   X <- scale(X)                                   # z-score each component
   for (m in comp) X[, m] <- X[, m] * T12T_SES_COMPONENTS[[m]]   # orient
-
+  
   pc  <- prcomp(X, center = TRUE, scale. = FALSE)
   idx <- pc$x[, 1]
   ld  <- pc$rotation[, 1]
-
+  
   # Force the index to point toward "more advantaged" using college share.
   if (ld[["DEMO_COLLEGE_SHARE"]] < 0) { idx <- -idx; ld <- -ld }
   idx <- as.numeric(scale(idx))
-
+  
   loadings <- data.table(COMPONENT = comp,
                          ORIENTATION = unname(T12T_SES_COMPONENTS[comp]),
                          PC1_LOADING = round(unname(ld[comp]), 4),
@@ -4288,7 +4257,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   cat("\nPC1 loadings (on orientation-adjusted z-scores; higher index = more advantaged):\n")
   .t12_show(loadings)
   .t12_save(loadings, "QA10_ses_index_loadings.csv")
-
+  
   cs[, SES_INDEX := idx]
   out <- merge(panel, cs[, c(T12T_COUNTY_KEY, "SES_INDEX"), with = FALSE],
                by = T12T_COUNTY_KEY, all.x = TRUE, sort = FALSE)
@@ -4323,14 +4292,14 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   }
   if (length(rows) == 0L) { warning("No results for ", tag, call. = FALSE); return(NULL) }
   cr <- rbindlist(rows, fill = TRUE); ct <- rbindlist(tests, fill = TRUE)
-
+  
   cr[, EXPECTED_SIGN := fcase(
     MODERATOR %chin% T12T_PREDICTED_NEGATIVE, "negative",
     MODERATOR %chin% T12T_PREDICTED_POSITIVE, "positive",
     default = "none (no pre-registered prediction)")]
   cr[TERM == "x Moderator" & EXPECTED_SIGN == "negative", SIGN_AS_PREDICTED := RF_COEF < 0]
   cr[TERM == "x Moderator" & EXPECTED_SIGN == "positive", SIGN_AS_PREDICTED := RF_COEF > 0]
-
+  
   list(rows = cr, tests = ct)
 }
 
@@ -4357,7 +4326,7 @@ if (isTRUE(T12T_RUN$ses_index)) {
   if (!is.null(t12t$ses)) {
     .t12_save(t12t$ses$rows,  "T12T_triple_interaction_ses.csv")
     .t12_save(t12t$ses$tests, "T12T_triple_interaction_ses_tests.csv")
-
+    
     cat("\nTHE ESTIMAND: does the shoppability gap move with county SES?\n")
     cat("(DIFF = dS - dN. Positive => gradient SHRINKS in advantaged markets,\n",
         " which is the contracting-depth reading. Negative => it WIDENS, which\n",
@@ -4369,7 +4338,7 @@ if (isTRUE(T12T_RUN$ses_index)) {
                                P = round(P_VALUE, 4),
                                DGAP_PCT_PER_SD = round(DGAP_PCT_PER_SD_MOD, 3),
                                MIN_WALD = round(FIRST_STAGE_WALD_MIN, 1))][order(P)])
-
+    
     cat("\nSummary across the 18 reduced-form tests:\n")
     .t12_show(t12t$ses$tests[ESTIMATOR == "Reduced form",
                              .(N = .N, N_SIG_05 = sum(P_VALUE < 0.05, na.rm = TRUE),
@@ -4398,13 +4367,13 @@ if (isTRUE(T12T_RUN$per_moderator)) {
                                tests = rbindlist(per_t, fill = TRUE))
     .t12_save(t12t$per_moderator$rows,  "T12T_triple_interaction_moderators.csv")
     .t12_save(t12t$per_moderator$tests, "T12T_triple_interaction_moderators_tests.csv")
-
+    
     cat("\nGradient shift by moderator (reduced form, Scheme 1):\n")
     .t12_show(t12t$per_moderator$tests[ESTIMATOR == "Reduced form",
                                        .(MODERATOR, INSTRUMENT_LABEL, DIFF = signif(DIFF, 4),
                                          P = round(P_VALUE, 4), DGAP_PCT_PER_SD = round(DGAP_PCT_PER_SD_MOD, 3),
                                          MIN_WALD = round(FIRST_STAGE_WALD_MIN, 1))][order(MODERATOR, P)])
-
+    
     cat("\nPre-registered sign check on the SHOPPABLE interaction only:\n")
     .t12_show(t12t$per_moderator$rows[
       TERM == "x Moderator" & CATEGORY == "Shoppable",
@@ -4611,7 +4580,7 @@ cat("\nDistribution:\n")
 # Estimator
 # ---------------------------------------------------------------------------
 .s14_fit <- function(panel, scheme_col, scheme_label, instrument, instrument_label) {
-
+  
   need <- unique(c(S14_OUTCOME, S14_ENDOGENOUS, instrument, S14_CONTROLS, S14_FE,
                    S14_CLUSTERS, scheme_col, "SES_BIN", "FINAL_CONCEPT_ID"))
   if (length(setdiff(need, names(panel)))) {
@@ -4620,12 +4589,12 @@ cat("\nDistribution:\n")
   d <- panel[, ..need]
   d <- d[complete.cases(d)][!is.na(get(scheme_col)) & !is.na(SES_BIN)]
   if (nrow(d) < S14_MIN_OBS) { cat("[skip: ", nrow(d), " rows]\n", sep = ""); return(NULL) }
-
+  
   d[, SHOP := droplevels(factor(get(scheme_col)))]
   keys <- levels(d$SHOP)
   if (length(keys) != 2L) { cat("[skip: ", length(keys), " shoppability levels]\n", sep = ""); return(NULL) }
   bins <- levels(droplevels(d$SES_BIN))
-
+  
   grid <- CJ(SHOP = keys, BIN = bins, sorted = FALSE)
   grid[, TAG := paste0("G", .I)]
   for (i in seq_len(nrow(grid))) {
@@ -4634,26 +4603,26 @@ cat("\nDistribution:\n")
     set(d, j = paste0("ZV_", grid$TAG[i]), value = d[[instrument]]     * sel)
   }
   endo <- paste0("TR_", grid$TAG); ivs <- paste0("ZV_", grid$TAG)
-
+  
   cl <- as.formula(paste0("~", paste(S14_CLUSTERS, collapse = " + ")))
   f_rf <- as.formula(paste0(S14_OUTCOME, " ~ ", paste(c(ivs, S14_CONTROLS), collapse = " + "),
                             " | ", paste(S14_FE, collapse = " + ")))
   f_iv <- as.formula(paste0(S14_OUTCOME, " ~ ", paste(S14_CONTROLS, collapse = " + "),
                             " | ", paste(S14_FE, collapse = " + "), " | ",
                             paste(endo, collapse = " + "), " ~ ", paste(ivs, collapse = " + ")))
-
+  
   rf <- tryCatch(feols(f_rf, data = d, cluster = cl, warn = FALSE, notes = FALSE),
                  error = function(e) { cat("[RF failed]\n"); NULL })
   iv <- tryCatch(feols(f_iv, data = d, cluster = cl, warn = FALSE, notes = FALSE),
                  error = function(e) NULL)
   if (is.null(rf)) return(NULL)
-
+  
   fsw <- tryCatch({
     w <- fixest::fitstat(iv, "ivwald", simplify = FALSE); w <- w[["ivwald"]] %||% w
     min(suppressWarnings(as.numeric(unlist(lapply(w, function(z) if (is.list(z)) z$stat else z)))), na.rm = TRUE)
   }, error = function(e) NA_real_)
   sd_z <- sd(d[[instrument]], na.rm = TRUE)
-
+  
   # ---- per-group level coefficients ----
   pull <- function(fit, tm) {
     cand <- c(paste0("fit_", tm), tm); nm <- cand[cand %in% names(coef(fit))]
@@ -4669,7 +4638,7 @@ cat("\nDistribution:\n")
                IV_COEF = b[1], IV_P = 2 * pnorm(-abs(b[1] / b[2])),
                FIRST_STAGE_WALD_MIN = fsw, N_OBSERVATIONS = nobs(rf))
   }))
-
+  
   # ---- the gap inside each bin, and the tests across bins ----
   idx <- function(s, bn) which(grid$SHOP == s & grid$BIN == bn)
   gaps <- rbindlist(lapply(bins, function(bn) {
@@ -4685,7 +4654,7 @@ cat("\nDistribution:\n")
                GAP_IV_P = if (!is.null(g_iv)) g_iv$P_VALUE else NA_real_,
                FIRST_STAGE_WALD_MIN = fsw)
   }))
-
+  
   mk <- function(b1, b2) {
     R <- matrix(0, 1, nrow(grid))
     R[1, idx(keys[2], b2)] <-  1; R[1, idx(keys[1], b2)] <- -1
@@ -4694,7 +4663,7 @@ cat("\nDistribution:\n")
   }
   R_hl   <- mk(bins[1], bins[length(bins)])                       # high - low, 1 df
   R_join <- do.call(rbind, lapply(bins[-1], function(b) mk(bins[1], b)))  # all equal
-
+  
   tests <- rbindlist(list(
     cbind(TEST = "gap(high SES) - gap(low SES)", ESTIMATOR = "Reduced form", .s14_contrast(rf, ivs,  R_hl)),
     cbind(TEST = "gap(high SES) - gap(low SES)", ESTIMATOR = "IV",           .s14_contrast(iv, endo, R_hl)),
@@ -4703,7 +4672,7 @@ cat("\nDistribution:\n")
   ), fill = TRUE)
   tests[, `:=`(SPEC = scheme_label, INSTRUMENT_LABEL = instrument_label,
                N_BINS = length(bins), FIRST_STAGE_WALD_MIN = fsw, N_OBSERVATIONS = nobs(rf))]
-
+  
   list(rows = rows, gaps = gaps, tests = tests)
 }
 
@@ -4872,13 +4841,13 @@ cat("Rows where raw", s13_sys_col, "disagreed with the resolved value:",
 
 if (isTRUE(S13_RUN$system_month)) {
   .s13_head("13A. SYSTEM x MONTH FIXED EFFECTS")
-
+  
   s13_panel <- copy(outpatient_r13)
   s13_panel[, SYSTEM_MONTH := paste0(fifelse(is.na(SYS_RESOLVED), "NOSYS", SYS_RESOLVED),
                                      "_", as.character(POST_MONTH))]
   cat("System key: SYS_RESOLVED (fixed) | distinct system-months:",
       uniqueN(s13_panel$SYSTEM_MONTH), "\n")
-
+  
   s13_sysmonth <- cache_or_run("s13_system_month_v2", {
     rows <- list(); tests <- list()
     for (il in names(MAIN_INSTRUMENTS)) {
@@ -4898,15 +4867,15 @@ if (isTRUE(S13_RUN$system_month)) {
     }
     list(rows = rbindlist(rows, fill = TRUE), tests = rbindlist(tests, fill = TRUE))
   })
-
+  
   save_csv(s13_sysmonth$rows,  "T13A_system_month_fe_rows.csv")
   save_csv(s13_sysmonth$tests, "T13A_system_month_fe_tests.csv")
-
+  
   cat("\nHeterogeneity test under system x month FE (reduced form):\n")
   .s13_show(s13_sysmonth$tests[ESTIMATOR == "Reduced form",
                                .(SPEC, INSTRUMENT_LABEL, P = round(P_VALUE, 4),
                                  MIN_WALD = round(FIRST_STAGE_WALD_MIN, 1), N = N_OBSERVATIONS)][order(P)])
-
+  
   cat("\nShoppable level term (the point estimate that has to hold):\n")
   .s13_show(s13_sysmonth$rows[TERM == "Shoppable",
                               .(SPEC, INSTRUMENT_LABEL, RF_PCT_PER_SD = round(RF_PERCENT_PER_SD, 3),
@@ -4936,13 +4905,13 @@ if (isTRUE(S13_RUN$system_month)) {
 
 if (isTRUE(S13_RUN$leave_one_out)) {
   .s13_head("13B. LEAVE-ONE-SYSTEM-OUT (TOP 15 BY HOSPITAL COUNT)")
-
+  
   sys_size <- outpatient_r13[!is.na(SYS_RESOLVED) & SYS_RESOLVED != "",
                              .(N_HOSPITALS = uniqueN(HOSPITAL_ID),
                                N_ROWS = .N), by = SYS_RESOLVED][order(-N_HOSPITALS)]
   top_sys <- head(sys_size, S13_N_SYSTEMS)
   cat("Largest systems:\n"); .s13_show(top_sys)
-
+  
   s13_loo <- cache_or_run("s13_leave_one_system_out_v2", {
     base <- .s13_baseline(outpatient_r13)
     out <- list()
@@ -4970,16 +4939,16 @@ if (isTRUE(S13_RUN$leave_one_out)) {
     res <- rbindlist(out, fill = TRUE)
     merge(res, base, by = c("INSTRUMENT_LABEL", "ESTIMATOR"), all.x = TRUE)
   })
-
+  
   s13_loo[, STILL_SIG_05 := as.integer(P_VALUE < 0.05)]
   save_csv(s13_loo, "T13B_leave_one_system_out.csv")
-
+  
   .s13_show(s13_loo[ESTIMATOR == "Reduced form",
                     .(DROPPED_SYSTEM = substr(DROPPED_SYSTEM, 1, 26), INSTRUMENT_LABEL,
                       P_BASE = round(P_BASE, 4), P_LOO = round(P_VALUE, 4),
                       SHOP_PCT = round(SHOPPABLE_RF_PCT, 2), STILL_SIG = STILL_SIG_05)][
                         order(-P_LOO)])
-
+  
   cat("\nSummary (reduced form):\n")
   .s13_show(s13_loo[ESTIMATOR == "Reduced form",
                     .(N = .N, N_STILL_SIG = sum(STILL_SIG_05), MEDIAN_P = round(median(P_VALUE), 4),
@@ -5019,7 +4988,7 @@ cat("\nSummary (reduced form):\n")
 
 if (isTRUE(S13_RUN$ladder)) {
   .s13_head("13C. INSTRUMENT CONSTRUCTION LADDER")
-
+  
   S13_LADDER <- c(
     `9M stock, competitor hospitals (baseline)` = "Z_SYS_COMPETITOR_ONLY_9M_EXCL_CURRENT",
     `9M stock, strict system`                   = "Z_SYS_STRICT_9M_EXCL_CURRENT",
@@ -5032,7 +5001,7 @@ if (isTRUE(S13_RUN$ladder)) {
   )
   S13_LADDER <- S13_LADDER[unname(S13_LADDER) %in% names(outpatient)]
   cat("Available variants:", length(S13_LADDER), "of 8\n")
-
+  
   s13_ladder <- cache_or_run("s13_instrument_ladder", {
     rows <- list(); tests <- list()
     for (i in seq_along(S13_LADDER)) {
@@ -5049,14 +5018,14 @@ if (isTRUE(S13_RUN$ladder)) {
     }
     list(rows = rbindlist(rows, fill = TRUE), tests = rbindlist(tests, fill = TRUE))
   })
-
+  
   save_csv(s13_ladder$rows,  "T13C_instrument_ladder_rows.csv")
   save_csv(s13_ladder$tests, "T13C_instrument_ladder_tests.csv")
-
+  
   cat("\nShoppable vs non-shoppable across instrument constructions:\n")
   .s13_show(dcast(s13_ladder$rows, INSTRUMENT_LABEL ~ TERM,
                   value.var = "RF_PERCENT_PER_SD")[order(Shoppable)])
-
+  
   cat("\nHeterogeneity test (reduced form):\n")
   .s13_show(s13_ladder$tests[ESTIMATOR == "Reduced form",
                              .(INSTRUMENT_LABEL, P = round(P_VALUE, 4),
@@ -5084,7 +5053,7 @@ if (isTRUE(S13_RUN$ladder)) {
 
 if (isTRUE(S13_RUN$randomisation)) {
   .s13_head("13D. RANDOMISATION INFERENCE ON THE INSTRUMENT")
-
+  
   .s13_rf_wald <- function(d, zcol, scheme_col) {
     keys <- levels(droplevels(factor(d[[scheme_col]])))
     if (length(keys) != 2L) return(NA_real_)
@@ -5105,7 +5074,7 @@ if (isTRUE(S13_RUN$randomisation)) {
     if (!is.finite(vv) || vv <= 0) return(NA_real_)
     (dd / vv^0.5)^2
   }
-
+  
   s13_ri <- cache_or_run("s13_randomisation_inference", {
     zcol <- MAIN_INSTRUMENTS[[1L]]
     keep <- unique(c(PRIMARY_OUTCOME, zcol, S13_SCHEME, BASELINE_CONTROLS,
@@ -5113,10 +5082,10 @@ if (isTRUE(S13_RUN$randomisation)) {
                      "HOSPITAL_ID", "POST_MONTH"))
     d0 <- outpatient[, ..keep]
     d0 <- d0[complete.cases(d0)][!is.na(get(S13_SCHEME))]
-
+    
     observed <- .s13_rf_wald(copy(d0), zcol, S13_SCHEME)
     cat("Observed RF heterogeneity Wald:", round(observed, 4), "\n")
-
+    
     hosp <- unique(d0[, .(HOSPITAL_ID, POST_MONTH, Z_ORIG = get(zcol))])
     set.seed(S13_SEED)
     draws <- numeric(S13_N_PERM)
@@ -5131,7 +5100,7 @@ if (isTRUE(S13_RUN$randomisation)) {
     list(observed = observed, draws = draws,
          p = mean(draws >= observed, na.rm = TRUE), n_valid = sum(is.finite(draws)))
   })
-
+  
   ri_tab <- data.table(
     STATISTIC = "RF heterogeneity Wald (Scheme 1, competitor hospitals)",
     OBSERVED = s13_ri$observed,
@@ -5276,10 +5245,6 @@ S15_RUN <- list(cbsa = TRUE, windows = TRUE, payer = TRUE)
   list(rows = rbindlist(rows, fill = TRUE), tests = rbindlist(tests, fill = TRUE))
 }
 
-# Confirm FILES survived into this session before the merge step below relies
-# on it. See the note above if it has not.
-exists("FILES")
-
 
 
 ###############################################################################
@@ -5347,27 +5312,27 @@ S15_CBSA_INSTRUMENTS <- c(
 
 if (isTRUE(S15_RUN$cbsa)) {
   .s15_head("15A. CBSA MARKET DEFINITION")
-
+  
   if (!file.exists(S15_CBSA_CONCEPT)) {
     warning("CBSA concept panel not found at:\n  ", S15_CBSA_CONCEPT, call. = FALSE)
   } else {
-
+    
     cbsa_panel <- cache_or_run("cbsa_panel", {
       raw <- read_panel(S15_CBSA_CONCEPT, "CBSA concept panel")
       p   <- prepare_panel(raw, "CBSA concept panel", choose_sample_flag(raw))
       rm(raw); invisible(gc())
-
+      
       if (file.exists(S15_CBSA_EXACT)) {
         old_exact <- get("FILES", envir = .GlobalEnv)$outpatient_exact
-
+        
         tmp_files <- get("FILES", envir = .GlobalEnv)
         tmp_files$outpatient_exact <- S15_CBSA_EXACT
         assign("FILES", tmp_files, envir = .GlobalEnv)
-
+        
         p <- tryCatch(apply_concept_merges(p),
                       error = function(e) { warning("Merge failed: ",
                                                     conditionMessage(e), " -- continuing unmerged."); p })
-
+        
         tmp_files <- get("FILES", envir = .GlobalEnv)
         tmp_files$outpatient_exact <- old_exact
         assign("FILES", tmp_files, envir = .GlobalEnv)
@@ -5378,7 +5343,7 @@ if (isTRUE(S15_RUN$cbsa)) {
       }
       attach_scheme_columns(p, schemes_long)
     })
-
+    
     cat("\nCBSA panel:", format(nrow(cbsa_panel), big.mark = ","), "rows |",
         uniqueN(cbsa_panel$FINAL_CONCEPT_ID), "concepts |",
         uniqueN(cbsa_panel$ANALYSIS_MARKET), "markets |",
@@ -5386,29 +5351,29 @@ if (isTRUE(S15_RUN$cbsa)) {
     cat("County panel for comparison:", format(nrow(outpatient), big.mark = ","),
         "rows |", uniqueN(outpatient$FINAL_CONCEPT_ID), "concepts |",
         uniqueN(outpatient$ANALYSIS_MARKET), "markets\n")
-
+    
     if ("ANALYSIS_GEOGRAPHY" %in% names(cbsa_panel)) {
       cat("ANALYSIS_GEOGRAPHY values:",
           paste(unique(cbsa_panel$ANALYSIS_GEOGRAPHY), collapse = ", "), "\n")
     }
     stopifnot(uniqueN(cbsa_panel$ANALYSIS_MARKET) < uniqueN(outpatient$ANALYSIS_MARKET))
-
+    
     s15_cbsa <- cache_or_run("s15_cbsa_results",
                              .s15_sweep(cbsa_panel, S15_CBSA_INSTRUMENTS, label_prefix = "CBSA market"))
-
+    
     if (!is.null(s15_cbsa)) {
       save_csv(s15_cbsa$rows,  "T15A_cbsa_market_rows.csv")
       save_csv(s15_cbsa$tests, "T15A_cbsa_market_tests.csv")
-
+      
       cat("\nShoppable vs non-shoppable under CBSA markets (RF, % per SD):\n")
       .s15_show(dcast(s15_cbsa$rows, SPEC + INSTRUMENT_LABEL ~ TERM,
                       value.var = "RF_PERCENT_PER_SD"))
-
+      
       cat("\nHeterogeneity test, CBSA markets (reduced form):\n")
       .s15_show(s15_cbsa$tests[ESTIMATOR == "Reduced form",
                                .(SPEC, INSTRUMENT_LABEL, P = round(P_VALUE, 4),
                                  MIN_WALD = round(FIRST_STAGE_WALD_MIN, 1), N = N_OBSERVATIONS)][order(P)])
-
+      
       cat("\nCounty vs CBSA, Competitor_outside_CBSA_hospitals_9m (RF test p):\n")
       cty <- .s15_sweep(outpatient,
                         S15_CBSA_INSTRUMENTS["Competitor_outside_CBSA_hospitals_9m"],
@@ -5422,8 +5387,8 @@ if (isTRUE(S15_RUN$cbsa)) {
         cmp[, `:=`(P_COUNTY = round(P_COUNTY, 4), P_CBSA = round(P_CBSA, 4))]
         .s15_show(cmp); save_csv(cmp, "T15A_county_vs_cbsa_comparison.csv")
       }
-
-
+      
+      
       # ===========================================================================
       # 15A.2 -- POOLED RF/IV (folded in, runs automatically)
       #
@@ -5432,7 +5397,7 @@ if (isTRUE(S15_RUN$cbsa)) {
       # matching Table 2's main rows.
       # ===========================================================================
       .s15_head("15A.2 — POOLED RF/IV UNDER CBSA MARKETS")
-
+      
       s15_cbsa_pooled <- cache_or_run("s15_cbsa_pooled", {
         rows <- list()
         for (il in names(S15_CBSA_INSTRUMENTS)) {
@@ -5441,11 +5406,11 @@ if (isTRUE(S15_RUN$cbsa)) {
           for (oc in names(OUTCOMES)[1:3]) {
             d <- cbsa_panel[!is.na(get(ENDOGENOUS_VARIABLE)) & !is.na(get(OUTCOMES[oc]))]
             if (nrow(d) < MIN_MODEL_OBS) next
-
+            
             cl <- build_cluster_formula(available_columns(d, BASELINE_CLUSTERS))
             fe <- available_columns(d, BASELINE_FIXED_EFFECTS)
             ctrl <- available_columns(d, BASELINE_CONTROLS)
-
+            
             rf_fit <- tryCatch(feols(build_ols_formula(OUTCOMES[oc], c(z, ctrl), fe),
                                      data = d, cluster = cl, warn = FALSE, notes = FALSE),
                                error = function(e) NULL)
@@ -5453,13 +5418,13 @@ if (isTRUE(S15_RUN$cbsa)) {
                                      data = d, cluster = cl, warn = FALSE, notes = FALSE),
                                error = function(e) NULL)
             if (is.null(rf_fit)) next
-
+            
             rf_b <- coef(rf_fit)[z]; rf_s <- sqrt(vcov(rf_fit)[z, z])
             iv_nm <- if (!is.null(iv_fit)) intersect(c(paste0("fit_", ENDOGENOUS_VARIABLE), ENDOGENOUS_VARIABLE),
                                                      names(coef(iv_fit)))[1] else NA
             iv_b <- if (!is.na(iv_nm)) coef(iv_fit)[iv_nm] else NA_real_
             iv_s <- if (!is.na(iv_nm)) sqrt(vcov(iv_fit)[iv_nm, iv_nm]) else NA_real_
-
+            
             rows[[length(rows) + 1L]] <- data.table(
               INSTRUMENT_LABEL = il, OUTCOME = oc,
               RF_COEF = rf_b, RF_P = 2 * pnorm(-abs(rf_b / rf_s)),
@@ -5472,7 +5437,7 @@ if (isTRUE(S15_RUN$cbsa)) {
         }
         rbindlist(rows, fill = TRUE)
       })
-
+      
       save_csv(s15_cbsa_pooled, "T15A_cbsa_pooled.csv")
       cat("\nPooled RF/IV under CBSA markets:\n")
       .s15_show(s15_cbsa_pooled[, .(INSTRUMENT_LABEL, OUTCOME, RF_PCT = round(100*(exp(RF_COEF)-1), 3),
@@ -5757,7 +5722,6 @@ cat("\n", if (anchor_ok) paste0("PASSED at >", 100 * S15B_ANCHOR_TOL, "% toleran
 # ---------------------------------------------------------------------------
 # 7. LADDER
 # ---------------------------------------------------------------------------
-file.remove(file.path(CACHE_DIR, "s15b_window_ladder_v11.rds"))
 ladder_map <- list(Competitor_only_hospitals_9m = "Z_SYS_COMPETITOR_ONLY",
                    Competitor_outside_CBSA_hospitals_9m = "Z_SYS_COMPETITOR_OUTSIDE_CBSA")
 if (s15b_strict_ok) ladder_map$Primary_strict_system_IV <- "Z_SYS_PEER_HOSPITALS"
@@ -5825,11 +5789,11 @@ load_payer_class_panel <- function(dir = S15_PAYER_DIR, pattern = S15_PAYER_PATT
   cat("Reading", length(f), "file(s):\n"); print(basename(f))
   d <- rbindlist(lapply(f, fread, showProgress = FALSE), fill = TRUE)
   cat("Rows:", format(nrow(d), big.mark = ","), "\n")
-
+  
   d[, HOSPITAL_ID := as.character(HOSPITAL_ID)]
   d[, POST_MONTH  := as.Date(POST_MONTH)]
   d[, FINAL_CONCEPT_ID := as.character(ANALYSIS_CONCEPT_ID)]
-
+  
   # --- canonicalise merged concepts, then re-aggregate ---
   map <- rbindlist(lapply(MERGE_GROUPS, function(g)
     data.table(FINAL_CONCEPT_ID = g$constituents, CANON_ID = g$canonical_id)))
@@ -5838,12 +5802,12 @@ load_payer_class_panel <- function(dir = S15_PAYER_DIR, pattern = S15_PAYER_PATT
   cat("Rows belonging to a merge group:", format(n_const, big.mark = ","), "\n")
   d[!is.na(CANON_ID), FINAL_CONCEPT_ID := CANON_ID]
   d[, CANON_ID := NULL]
-
+  
   d <- d[, .(MEDIAN_PRICE = median(MEDIAN_PRICE, na.rm = TRUE),
              N_PAYER_CELLS_TOTAL = sum(N_PAYER_CELLS_TOTAL, na.rm = TRUE),
              TOTAL_BEDS = first(TOTAL_BEDS)),
          by = .(HOSPITAL_ID, POST_MONTH, PAYER_CLASS, FINAL_CONCEPT_ID)]
-
+  
   d[, LN_MEDIAN_PRICE := log(pmax(MEDIAN_PRICE, .Machine$double.eps))]
   d[!is.finite(LN_MEDIAN_PRICE), LN_MEDIAN_PRICE := NA_real_]
   d
@@ -5851,10 +5815,10 @@ load_payer_class_panel <- function(dir = S15_PAYER_DIR, pattern = S15_PAYER_PATT
 
 if (isTRUE(S15_RUN$payer)) {
   .s15_head("15C. PAYER-CONDITIONAL")
-
+  
   s15_payer <- cache_or_run("s15_payer_class_panel", {
     pc <- load_payer_class_panel()
-
+    
     # Treatment, instruments and controls come from the existing panel. Merging
     # rather than rebuilding is the whole point: these are identical across
     # payer classes by construction.
@@ -5863,24 +5827,24 @@ if (isTRUE(S15_RUN$payer)) {
     tx <- unique(outpatient[, c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID",
                                 "ANALYSIS_MARKET", "LOG_TOTAL_BEDS", zc), with = FALSE],
                  by = c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID"))
-
+    
     pc <- merge(pc, tx, by = c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID"),
                 all.x = TRUE, sort = FALSE)
     cat("Treatment merge rate:",
         round(100 * mean(!is.na(pc[[ENDOGENOUS_VARIABLE]])), 2), "% of rows\n")
-
+    
     # Concept attributes (family, scheme labels) from the same source, so the
     # classification is byte-identical to the headline.
     sc <- intersect(c("FINAL_FAMILY_ID", unname(SCHEME_COLUMNS)), names(outpatient))
     ca <- unique(outpatient[, c("FINAL_CONCEPT_ID", sc), with = FALSE],
                  by = "FINAL_CONCEPT_ID")
     pc <- merge(pc, ca, by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
-
+    
     pc[, MARKET_ID := paste(ANALYSIS_MARKET, FINAL_CONCEPT_ID, sep = "::")]
     setDT(pc)
     pc[!is.na(get(ENDOGENOUS_VARIABLE)) & !is.na(LN_MEDIAN_PRICE) & !is.na(MARKET_ID)]
   })
-
+  
   cat("\nCoverage by payer class:\n")
   .s15_show(s15_payer[, .(N_ROWS = .N,
                           N_HOSPITALS = uniqueN(HOSPITAL_ID),
@@ -5891,7 +5855,7 @@ if (isTRUE(S15_RUN$payer)) {
   cat("\nCompare N_HOSPITALS against 3,723 in the pooled panel. A class far\n",
       "below that is UNDERPOWERED, not null -- check its first stage before\n",
       "reading anything into its p-values.\n", sep = "")
-
+  
   s15_payer_res <- cache_or_run("s15_payer_results", {
     rows <- list(); tests <- list()
     for (cl in sort(unique(s15_payer$PAYER_CLASS))) {
@@ -5906,15 +5870,15 @@ if (isTRUE(S15_RUN$payer)) {
     if (length(rows) == 0L) return(NULL)
     list(rows = rbindlist(rows, fill = TRUE), tests = rbindlist(tests, fill = TRUE))
   })
-
+  
   if (!is.null(s15_payer_res)) {
     save_csv(s15_payer_res$rows,  "T15C_payer_conditional_rows.csv")
     save_csv(s15_payer_res$tests, "T15C_payer_conditional_tests.csv")
-
+    
     cat("\nShoppable vs non-shoppable by payer class (RF, % per SD):\n")
     .s15_show(dcast(s15_payer_res$rows, PAYER_CLASS + INSTRUMENT_LABEL ~ TERM,
                     value.var = "RF_PERCENT_PER_SD"))
-
+    
     cat("\nHeterogeneity test by payer class (reduced form):\n")
     .s15_show(s15_payer_res$tests[ESTIMATOR == "Reduced form",
                                   .(PAYER_CLASS, INSTRUMENT_LABEL, P = round(P_VALUE, 4),
@@ -6006,7 +5970,7 @@ if (!is.null(d)) {
     TERM = factor(TERM, levels = c("Non_shoppable", "Shoppable")),
     INSTR = gsub("_", " ", INSTRUMENT_LABEL)
   )]
-
+  
   p1 <- ggplot(h, aes(x = INSTR, y = RF_PERCENT_PER_SD, colour = TERM)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
     geom_pointrange(aes(ymin = LO, ymax = HI),
@@ -6032,7 +5996,7 @@ t <- read_table("T06_mainB_heterogeneity_tests.csv")
 if (!is.null(t)) {
   t[, INSTR := gsub("_", " ", INSTRUMENT_LABEL)]
   t[, SPEC_SHORT := gsub("^[0-9]+\\. ", "", SPEC)]
-
+  
   p2 <- ggplot(t[ESTIMATOR == "Reduced form"],
                aes(x = reorder(SPEC_SHORT, -P_VALUE), y = P_VALUE, fill = INSTR)) +
     geom_hline(yintercept = 0.05, linetype = "dashed", colour = FSU_GARNET) +
@@ -6061,19 +6025,19 @@ if (!is.null(l) && !is.null(lb)) {
   lvl <- c("Linear", "Winsor_P99", "Winsor_P95", "Winsor_P90", "Sqrt", "Log1p")
   l[,  TRANSFORM := factor(TRANSFORM, levels = lvl)]
   lb[, TRANSFORM := factor(TRANSFORM, levels = lvl)]
-
+  
   panel_a <- l[TERM == "Shoppable",
                .(VAL = median(IV_PERCENT, na.rm = TRUE)), by = TRANSFORM]
   panel_a[, FACET := "IV magnitude, shoppable services (%)"]
-
+  
   panel_b <- lb[ESTIMATOR == "Reduced form",
                 .(VAL = median(P_VALUE, na.rm = TRUE)), by = TRANSFORM]
   panel_b[, FACET := "Reduced-form heterogeneity p-value"]
-
+  
   both <- rbind(panel_a, panel_b)
   both[, FACET := factor(FACET, levels = c("IV magnitude, shoppable services (%)",
                                            "Reduced-form heterogeneity p-value"))]
-
+  
   p3 <- ggplot(both, aes(x = TRANSFORM, y = VAL)) +
     geom_col(fill = FSU_GARNET, alpha = 0.85, width = 0.6) +
     geom_text(aes(label = ifelse(FACET == "Reduced-form heterogeneity p-value",
@@ -6088,7 +6052,7 @@ if (!is.null(l) && !is.null(lb)) {
                           "all six forms, because it contains no treatment variable")) +
     theme_paper() +
     theme(axis.text.x = element_text(angle = 25, hjust = 1))
-
+  
   save_fig(p3, "fig03_transform_ladder", width = 7.5, height = 6.5)
 }
 
@@ -6106,7 +6070,7 @@ if (!is.null(cr)) {
                       levels = c("Non_shoppable", "Shoppable"))]
   sub <- cr[INSTRUMENT_LABEL == "Competitor_only_hospitals_9m" & is.finite(RF_COEF)]
   sub <- sub[RF_COEF > quantile(RF_COEF, .01) & RF_COEF < quantile(RF_COEF, .99)]
-
+  
   p4 <- ggplot(sub, aes(x = RF_COEF, fill = SHOP, colour = SHOP)) +
     geom_density(alpha = 0.35, linewidth = 0.6) +
     geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
@@ -6130,7 +6094,7 @@ rr <- read_table("T06L_tier_rerank_all_schemes.csv")
 if (!is.null(rr)) {
   rr[, INSTR := short_instr(INSTRUMENT_LABEL)]
   rr[, TIER := factor(TIER, levels = c("MAIN", "CONFIRMING", "DISCREPANT"))]
-
+  
   base5 <- ggplot(rr, aes(x = MEDIAN_FIRST_STAGE_F, y = SHARE_SIG, colour = TIER)) +
     geom_vline(xintercept = 10, linetype = "dashed", colour = "grey55") +
     annotate("text", x = 11, y = 0.02, label = "Conventional\nweak-instrument\nthreshold",
@@ -6147,7 +6111,7 @@ if (!is.null(rr)) {
          title = "Instrument strength and result strength are independent",
          subtitle = "The two strongest first stages produce the two weakest results") +
     theme_paper()
-
+  
   if (requireNamespace("ggrepel", quietly = TRUE)) {
     p5 <- base5 + ggrepel::geom_text_repel(
       aes(label = INSTR), size = 2.8, show.legend = FALSE,
@@ -6159,7 +6123,7 @@ if (!is.null(rr)) {
     p5 <- base5 + geom_text(aes(label = INSTR), size = 2.7, vjust = -1.3,
                             show.legend = FALSE)
   }
-
+  
   save_fig(p5, "fig05_instrument_tiers", width = 8.5, height = 5.5)
 }
 
@@ -6187,7 +6151,7 @@ if (!is.null(dec)) {
   s[, INSTR := short_instr(INSTRUMENT_LABEL)]
   s[, TIER := instrument_tier(INSTRUMENT_LABEL)]
   s <- s[TIER %chin% c("MAIN", "CONFIRMING")]
-
+  
   p6 <- ggplot(s, aes(x = reorder(INSTR, TSTAT), y = TSTAT, fill = DEP)) +
     geom_hline(yintercept = 0, colour = "grey40") +
     geom_hline(yintercept = c(-1.96, 1.96), linetype = "dashed",
@@ -6202,7 +6166,7 @@ if (!is.null(dec)) {
          subtitle = paste("Shoppability shifts the reduced form well beyond",
                           "conventional significance; it leaves the first stage inside it")) +
     theme_paper()
-
+  
   save_fig(p6, "fig06_decomposition", width = 8.5, height = 4.5)
 }
 
@@ -6220,7 +6184,7 @@ wf <- read_table("T09D_comparability_within_family.csv")
 
 if (!is.null(wf)) {
   m <- wf[term == "MODC" & grepl("^\\(b\\)", SPEC) & TIER == "MAIN"]
-
+  
   if (nrow(m) > 0) {
     m[, `:=`(
       LO   = estimate - 1.96 * std.error,
@@ -6241,10 +6205,10 @@ if (!is.null(wf)) {
     m[, STATUS := factor(STATUS, levels = c("Not significant",
                                             "Significant, predicted sign",
                                             "Significant, OPPOSITE sign"))]
-
+    
     ord <- m[, .(M = mean(abs(estimate / std.error))), by = LBL][order(M)]$LBL
     m[, LBL := factor(LBL, levels = ord)]
-
+    
     p7 <- ggplot(m, aes(x = LBL, y = estimate, colour = STATUS, shape = STATUS)) +
       geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
       geom_pointrange(aes(ymin = LO, ymax = HI),
@@ -6263,9 +6227,9 @@ if (!is.null(wf)) {
                             "predicts, and with the sign opposite to prediction")) +
       theme_paper() +
       theme(legend.position = "bottom", legend.box = "vertical")
-
+    
     save_fig(p7, "fig07_mechanism", width = 8.5, height = 4.5)
-
+    
     cat("\nFigure 7 status counts:\n")
     print(m[, .N, by = STATUS])
   }
@@ -6286,7 +6250,7 @@ if (!is.null(sg)) {
       s[, .(SIZE_Q, VAL = MEDIAN_RF / abs(MEDIAN_RF[1]), SERIES = "Reduced form")],
       s[, .(SIZE_Q, VAL = MEDIAN_IV_PCT / abs(MEDIAN_IV_PCT[1]), SERIES = "IV")]
     )
-
+    
     p8 <- ggplot(long, aes(x = SIZE_Q, y = VAL, colour = SERIES, group = SERIES)) +
       geom_line(linewidth = 0.8) + geom_point(size = 2.5) +
       scale_colour_manual(values = c(`Reduced form` = FSU_GARNET, IV = FSU_GREY)) +
@@ -6324,22 +6288,22 @@ s[FAMILY == "ECHOCARDIOGRAPHY" & SCHEME_ID == "scheme_theory_v2",
 # characteristics.
 ###############################################################################
 build_summary_stats <- function(panel) {
-
+  
   fmt <- function(x, digits = 2) formatC(x, format = "f", digits = digits, big.mark = ",")
-
+  
   row_stat <- function(label, v, digits = 2) {
     v <- v[is.finite(v)]
     data.table(LABEL = label, N = length(v), MEAN = mean(v), SD = sd(v),
                P25 = quantile(v, .25), MEDIAN = median(v), P75 = quantile(v, .75),
                DIGITS = digits)
   }
-
+  
   panel[, IN_SYSTEM := as.integer(!is.na(SYSTEM_KEY) & SYSTEM_KEY != "")]
   if ("HOSPITAL_TYPE" %in% names(panel)) {
     panel[, IS_SHORT_TERM := as.integer(grepl("SHORT|ACUTE|GENERAL", HOSPITAL_TYPE,
                                               ignore.case = TRUE))]
   }
-
+  
   rows <- rbindlist(list(
     # Panel A: prices
     row_stat("Median price ($)",        panel$MEDIAN_PRICE, 0),
@@ -6366,7 +6330,7 @@ build_summary_stats <- function(panel) {
     if ("IS_SHORT_TERM" %in% names(panel))
       row_stat("Short-term acute care",  panel$IS_SHORT_TERM, 3) else NULL
   ), fill = TRUE)
-
+  
   demo_rows <- NULL
   demo_cols <- grep("^DEMO_", names(panel), value = TRUE)
   if (length(demo_cols) > 0) {
@@ -6386,7 +6350,7 @@ build_summary_stats <- function(panel) {
       row_stat(demo_labels[[cc]], panel[[cc]], dg)
     }), fill = TRUE)
   }
-
+  
   structure_rows <- data.table(
     ITEM = c("Hospital-concept-month observations", "Hospitals", "Counties",
              "Clinical concepts", "Clinical families", "Posting months",
@@ -6395,7 +6359,7 @@ build_summary_stats <- function(panel) {
               uniqueN(panel$FINAL_CONCEPT_ID), uniqueN(panel$FINAL_FAMILY_ID),
               uniqueN(panel$POST_MONTH), uniqueN(panel$MARKET_ID))
   )
-
+  
   cat("\n", strrep("=", 92), "\nSUMMARY STATISTICS\n", strrep("=", 92), "\n", sep = "")
   print(rows[, .(LABEL, N = format(N, big.mark = ","),
                  MEAN = round(MEAN, 3), SD = round(SD, 3),
@@ -6407,10 +6371,10 @@ build_summary_stats <- function(panel) {
                         P25 = round(P25, 3), MEDIAN = round(MEDIAN, 3), P75 = round(P75, 3))])
   }
   cat("\nSample structure:\n"); print(structure_rows)
-
+  
   save_csv(rbind(rows, demo_rows, fill = TRUE), "T01_summary_statistics.csv")
   save_csv(structure_rows, "T01B_sample_structure.csv")
-
+  
   # ---- Emit LaTeX ----------------------------------------------------------
   tex <- c(
     "\\begin{table}[!htbp]", "\\centering",
@@ -6420,7 +6384,7 @@ build_summary_stats <- function(panel) {
     "\\toprule", "Statistic & N & Mean & Std.\\ Dev. & Median & IQR \\\\",
     "\\midrule"
   )
-
+  
   emit <- function(dt, header) {
     out <- sprintf("\\multicolumn{6}{l}{\\textit{%s}} \\\\", header)
     for (i in seq_len(nrow(dt))) {
@@ -6434,25 +6398,25 @@ build_summary_stats <- function(panel) {
     }
     c(out, "\\addlinespace[4pt]")
   }
-
+  
   tex <- c(tex,
            emit(rows[1:5],   "Panel A: Prices"),
            emit(rows[6:11],  "Panel B: Treatment and instruments"),
            emit(rows[12:nrow(rows)], "Panel C: Hospital characteristics"))
   if (!is.null(demo_rows)) tex <- c(tex, emit(demo_rows, "Panel D: Market demographics"))
-
+  
   tex <- c(tex, "\\multicolumn{6}{l}{\\textit{Panel E: Sample structure}} \\\\")
   for (i in seq_len(nrow(structure_rows))) {
     tex <- c(tex, sprintf("\\quad %s & \\multicolumn{5}{l}{%s} \\\\",
                           structure_rows$ITEM[i],
                           formatC(structure_rows$VALUE[i], format = "d", big.mark = ",")))
   }
-
+  
   tex <- c(tex, "\\bottomrule", "\\end{tabular}", "\\end{table}")
-
+  
   writeLines(tex, file.path(TABLE_DIR, "tab_summstats.tex"))
   cat("\nLaTeX written to:", file.path(TABLE_DIR, "tab_summstats.tex"), "\n")
-
+  
   invisible(list(stats = rows, demographics = demo_rows, structure = structure_rows))
 }
 
@@ -6474,7 +6438,7 @@ permutation_null_distribution <- function(mi, instrument_label,
   d <- mi[INSTRUMENT_LABEL == instrument_label &
             is.finite(get(dep)) & is.finite(get(se)) & get(se) > 0]
   if (nrow(d) < MIN_CONCEPTS_META) stop("Too few concepts.", call. = FALSE)
-
+  
   wdiff <- function(fams) {
     dd <- copy(d)[, S := fifelse(FINAL_FAMILY_ID %chin% fams, "Shoppable", "Non_shoppable")]
     if (uniqueN(dd$S) < 2L) return(NA_real_)
@@ -6482,17 +6446,17 @@ permutation_null_distribution <- function(mi, instrument_label,
     dd[S == "Shoppable", sum(W * get(dep)) / sum(W)] -
       dd[S == "Non_shoppable", sum(W * get(dep)) / sum(W)]
   }
-
+  
   fams  <- sort(unique(d$FINAL_FAMILY_ID))
   obs_f <- intersect(shoppable_families, fams)
   k <- length(obs_f); n <- length(fams)
-
+  
   observed <- wdiff(obs_f)
   combos <- combn(fams, k, simplify = FALSE)
   cat("Enumerating", length(combos), "assignments of", k, "shoppable families from", n, "...\n")
   null <- vapply(combos, wdiff, numeric(1))
   null <- null[is.finite(null)]
-
+  
   list(observed = observed, null = null,
        p_two_sided = mean(abs(null) >= abs(observed)),
        n_families = n, n_shoppable = k, instrument = instrument_label)
@@ -6501,7 +6465,7 @@ permutation_null_distribution <- function(mi, instrument_label,
 
 plot_permutation_null <- function(perm, filename = "fig09_permutation_null") {
   nd <- data.table(VALUE = perm$null)
-
+  
   p <- ggplot(nd, aes(x = VALUE)) +
     geom_histogram(bins = 60, fill = FSU_GREY, alpha = 0.55, colour = NA) +
     geom_vline(xintercept = perm$observed, colour = FSU_GARNET, linewidth = 1) +
@@ -6517,7 +6481,7 @@ plot_permutation_null <- function(perm, filename = "fig09_permutation_null") {
            "All %s ways of assigning %d of %d clinical families to the shoppable category",
            format(length(perm$null), big.mark = ","), perm$n_shoppable, perm$n_families)) +
     theme_paper()
-
+  
   save_fig(p, filename, width = 7.5, height = 4.5)
   p
 }
@@ -6542,16 +6506,16 @@ plot_permutation_null(perm)
 # rather than being hidden by the aggregation.
 ###############################################################################
 build_scheme_table <- function(schemes_long, panel) {
-
+  
   fam_map <- unique(panel[, .(ANALYSIS_CONCEPT_ID = FINAL_CONCEPT_ID,
                               FAMILY = FINAL_FAMILY_ID)])
   s <- merge(schemes_long, fam_map, by = "ANALYSIS_CONCEPT_ID", all.x = FALSE)
-
+  
   cell <- s[, {
     tb <- sort(table(SHOPPABILITY_CATEGORY), decreasing = TRUE)
     .(MODAL = names(tb)[1], SHARE = as.numeric(tb[1]) / sum(tb), N = sum(tb))
   }, by = .(SCHEME_ID, SCHEME_NAME, FAMILY)]
-
+  
   cell[, CODE := fcase(
     MODAL == "HIGH"         & SHARE >= 0.9, "S",
     MODAL == "HIGH"         & SHARE <  0.9, "s",
@@ -6559,20 +6523,20 @@ build_scheme_table <- function(schemes_long, panel) {
     MODAL == "LOW"          & SHARE <  0.9, "n",
     MODAL == "INTERMEDIATE",                "B",
     default = "?")]
-
+  
   wide <- dcast(cell, FAMILY ~ SCHEME_NAME, value.var = "CODE")
-
+  
   fam_n <- s[, .(N_CONCEPTS = uniqueN(ANALYSIS_CONCEPT_ID)), by = FAMILY]
   wide <- merge(fam_n, wide, by = "FAMILY")
   setorder(wide, -N_CONCEPTS)
-
+  
   cat("\n", strrep("=", 100), "\nSCHEME CLASSIFICATION BY FAMILY (corrected rules)\n",
       strrep("=", 100), "\n", sep = "")
   print(wide)
-
+  
   save_csv(wide, "T02B_scheme_classification_by_family.csv")
   save_csv(cell, "T02C_scheme_classification_detail.csv")
-
+  
   mixed <- cell[SHARE < 0.9]
   cat("\nFamily-scheme cells where concepts split across categories:", nrow(mixed),
       "of", nrow(cell), "\n")
@@ -6581,7 +6545,7 @@ build_scheme_table <- function(schemes_long, panel) {
         "place a within-family test has anything to identify from:\n", sep = "")
     print(mixed[order(SHARE)][1:min(.N, 15)])
   }
-
+  
   invisible(wide)
 }
 
@@ -6944,7 +6908,7 @@ p19 <- ggplot(
     position = position_dodge(width = 0.55),
     size = 2.4
   ) +
-
+  
   scale_colour_manual(
     name = "Instrument",
     values = PAL,
@@ -6954,7 +6918,7 @@ p19 <- ggplot(
       order = 1
     )
   ) +
-
+  
   scale_shape_manual(
     name = "Prediction",
     values = c(
@@ -6968,7 +6932,7 @@ p19 <- ggplot(
       order = 2
     )
   ) +
-
+  
   labs(
     title = "Individual demographic moderators of the shoppability gradient",
     subtitle = paste0(
@@ -6978,20 +6942,20 @@ p19 <- ggplot(
     x = "t-statistic on the gradient interaction",
     y = NULL
   ) +
-
+  
   theme_paper() +
-
+  
   theme(
     panel.grid.major.x = element_line(colour = "grey92"),
     panel.grid.major.y = element_blank(),
-
+    
     legend.position = "bottom",
     legend.box = "vertical",
     legend.box.just = "center",
-
+    
     legend.text = element_text(size = 8),
     legend.title = element_text(size = 8.5, face = "bold"),
-
+    
     legend.spacing.x = unit(4, "pt"),
     legend.spacing.y = unit(1, "pt"),
     legend.key.width = unit(12, "pt"),
@@ -7547,28 +7511,28 @@ pooled <- cache_or_run("t02_pooled_current_vintage", {
       d <- outpatient[, ..keep]
       d <- d[complete.cases(d)]
       if (nrow(d) < MIN_MODEL_OBS) next
-
+      
       cl   <- build_cluster_formula(available_columns(d, BASELINE_CLUSTERS))
       fe   <- available_columns(d, BASELINE_FIXED_EFFECTS)
       ctrl <- available_columns(d, BASELINE_CONTROLS)
-
+      
       cat(sprintf("  %-30s %-7s ", substr(il, 1, 28), oc)); t0 <- Sys.time()
-
+      
       ols <- feols(build_ols_formula(y, c(ENDOGENOUS_VARIABLE, ctrl), fe),
                    data = d, cluster = cl, warn = FALSE, notes = FALSE)
       rf  <- feols(build_ols_formula(y, c(z, ctrl), fe),
                    data = d, cluster = cl, warn = FALSE, notes = FALSE)
       iv  <- feols(build_iv_formula(y, ENDOGENOUS_VARIABLE, z, ctrl, fe),
                    data = d, cluster = cl, warn = FALSE, notes = FALSE)
-
+      
       cat(sprintf("%5.1fs\n", as.numeric(difftime(Sys.time(), t0, units = "secs"))))
-
+      
       ivnm <- intersect(c(paste0("fit_", ENDOGENOUS_VARIABLE), ENDOGENOUS_VARIABLE),
                         names(coef(iv)))[1]
       b_ols <- unname(coef(ols)[ENDOGENOUS_VARIABLE])
       b_rf  <- unname(coef(rf)[z])
       b_iv  <- unname(coef(iv)[ivnm]); s_iv <- unname(sqrt(vcov(iv)[ivnm, ivnm]))
-
+      
       rows[[length(rows) + 1L]] <- data.table(
         INSTRUMENT_LABEL = il, OUTCOME = oc,
         OLS_PERCENT = 100 * (exp(b_ols) - 1),
@@ -7879,3 +7843,257 @@ fam_share[, `:=`(SHARE_OF_TOTAL_PCT = round(100 * PRICE_WEIGHT / sum(PRICE_WEIGH
 setorder(fam_share, -SHARE_OF_TOTAL_PCT)
 save_csv(fam_share, "QA11_shoppable_shares_by_family.csv")
 .sh(fam_share)
+
+
+###############################################################################
+# SESSION RESTORE AND CACHE MANAGEMENT
+#
+# Everything above this line either defines a function or runs an analysis.
+# This block does neither: it manages the .rds cache written by cache_or_run()
+# so that a fresh session can pick up a completed run without re-estimating,
+# and so that a code change can be propagated without re-running everything.
+#
+# Nothing here executes on its own. Load Sections 0-12 to define the pipeline,
+# then call these directly.
+#
+#   cache_status()        what is cached, how large, and when it was written
+#   restore_session()     load cached results into the global environment
+#   invalidate_cache()    delete caches so the next run recomputes them
+#
+# -----------------------------------------------------------------------------
+# THE PROBLEM THIS SOLVES
+# -----------------------------------------------------------------------------
+# cache_or_run() returns a saved result whenever the .rds exists. That is what
+# makes a warm run fast, and it is also the one way this pipeline can silently
+# report a stale number: if build_schemes() is edited, schemes_long.rds is now
+# wrong, but cache_or_run() will load it anyway and every downstream result
+# inherits the old classification without a warning.
+#
+# The cache has a dependency order, and invalidating a step requires
+# invalidating everything built from it. invalidate_cache() does that by
+# default rather than leaving it to be remembered:
+#
+#   schemes_long
+#     └── outpatient_panel
+#           ├── instrument_screen, pooled_models, t02_pooled_current_vintage
+#           ├── concept_level_6inst  (8 hours)
+#           │     └── meta_regressions_rf, meta_regressions_iv
+#           ├── main_results, transform_ladder, confirming_results,
+#           │   discrepant_results, robustness_pool_results
+#           ├── comparability_measures
+#           │     └── comparability_interaction
+#           ├── s13_* (four robustness blocks)
+#           └── cbsa_panel, s15_* (market definition, windows, payer)
+#
+# Editing a function changes only the caches at or below its level. Editing a
+# scheme rule invalidates everything; editing run_transform_ladder() invalidates
+# one object.
+###############################################################################
+
+
+# ---------------------------------------------------------------------------
+# Cache registry: .rds key -> global variable name -> what produced it
+# ---------------------------------------------------------------------------
+CACHE_REGISTRY <- list(
+  schemes_long                = list(var = "schemes_long",     stage = "BUILD"),
+  outpatient_panel            = list(var = "outpatient",       stage = "BUILD"),
+  instrument_screen           = list(var = "screen",           stage = "5"),
+  pooled_models               = list(var = "pooled",           stage = "5"),
+  concept_level_6inst         = list(var = "concept_results",  stage = "6"),
+  main_results                = list(var = "main",             stage = "7"),
+  transform_ladder            = list(var = "ladder",           stage = "7"),
+  confirming_results          = list(var = "confirming",       stage = "7"),
+  discrepant_results          = list(var = "discrepant",       stage = "7"),
+  robustness_pool_results     = list(var = "robustness_pool",  stage = "7"),
+  meta_regressions_rf         = list(var = "meta_rf",          stage = "8"),
+  meta_regressions_iv         = list(var = "meta_iv",          stage = "8"),
+  comparability_measures      = list(var = "measures",         stage = "9"),
+  comparability_interaction   = list(var = "comp_int",         stage = "9"),
+  s13_system_month_v2         = list(var = "s13_sysmonth",     stage = "13A"),
+  s13_leave_one_system_out_v2 = list(var = "s13_loo",          stage = "13B"),
+  s13_instrument_ladder       = list(var = "s13_ladder",       stage = "13C"),
+  s13_randomisation_inference = list(var = "s13_ri",           stage = "13D"),
+  cbsa_panel                  = list(var = "cbsa_panel",       stage = "15A"),
+  s15_cbsa_results            = list(var = "s15_cbsa",         stage = "15A"),
+  s15_cbsa_pooled             = list(var = "s15_cbsa_pooled",  stage = "15A"),
+  s15b_window_ladder_v11      = list(var = "s15b_results",     stage = "15B"),
+  s15_payer_class_panel       = list(var = "s15_payer",        stage = "15C"),
+  s15_payer_results           = list(var = "s15_payer_res",    stage = "15C"),
+  t02_pooled_current_vintage  = list(var = "pooled",           stage = "LaTeX")
+)
+
+# Dependency edges: invalidating the name on the left invalidates everything on
+# the right, transitively. Used by invalidate_cache(cascade = TRUE).
+CACHE_DEPENDENTS <- list(
+  schemes_long        = "outpatient_panel",
+  outpatient_panel    = c("instrument_screen", "pooled_models",
+                          "t02_pooled_current_vintage", "concept_level_6inst",
+                          "main_results", "transform_ladder",
+                          "confirming_results", "discrepant_results",
+                          "robustness_pool_results", "comparability_measures",
+                          "s13_system_month_v2", "s13_leave_one_system_out_v2",
+                          "s13_instrument_ladder", "s13_randomisation_inference",
+                          "cbsa_panel", "s15b_window_ladder_v11",
+                          "s15_payer_class_panel"),
+  concept_level_6inst    = c("meta_regressions_rf", "meta_regressions_iv"),
+  comparability_measures = "comparability_interaction",
+  cbsa_panel             = c("s15_cbsa_results", "s15_cbsa_pooled"),
+  s15_payer_class_panel  = "s15_payer_results"
+)
+
+
+# ---------------------------------------------------------------------------
+# cache_status() -- what exists on disk
+# ---------------------------------------------------------------------------
+# Base R throughout, so this block keeps working even if the pipeline's
+# packages are not loaded in the session.
+cache_status <- function(quiet = FALSE) {
+  keys <- names(CACHE_REGISTRY)
+  path <- file.path(CACHE_DIR, paste0(keys, ".rds"))
+  ok   <- file.exists(path)
+  
+  out <- data.frame(
+    KEY       = keys,
+    VARIABLE  = vapply(CACHE_REGISTRY, function(x) x$var,   character(1), USE.NAMES = FALSE),
+    STAGE     = vapply(CACHE_REGISTRY, function(x) x$stage, character(1), USE.NAMES = FALSE),
+    CACHED    = ok,
+    SIZE_MB   = ifelse(ok, round(file.size(path) / 1024^2, 2), NA_real_),
+    WRITTEN   = ifelse(ok, format(file.mtime(path), "%Y-%m-%d %H:%M"), NA_character_),
+    IN_MEMORY = vapply(keys, function(k) exists(CACHE_REGISTRY[[k]]$var, envir = .GlobalEnv),
+                       logical(1), USE.NAMES = FALSE),
+    stringsAsFactors = FALSE
+  )
+  
+  if (!quiet) {
+    cat("\nCache directory:", CACHE_DIR, "\n")
+    cat(sum(out$CACHED), "of", nrow(out), "objects cached,",
+        round(sum(out$SIZE_MB, na.rm = TRUE), 1), "MB total\n\n")
+    print(out[, c("KEY", "STAGE", "CACHED", "SIZE_MB", "WRITTEN")], row.names = FALSE)
+    miss <- out$KEY[!out$CACHED]
+    if (length(miss))
+      cat("\nNot cached (", length(miss), "):\n  ",
+          paste(miss, collapse = ", "), "\n", sep = "")
+  }
+  invisible(out)
+}
+
+
+# ---------------------------------------------------------------------------
+# restore_session() -- load a completed run into a fresh session
+#
+# Loads every cached object into the global environment under the same variable
+# name the run blocks use, so downstream code written afterwards sees exactly
+# what it would have seen at the end of a full run.
+#
+# Does NOT recompute anything. A key with no .rds is reported as missing and
+# skipped, so this is safe to call on a partially completed run.
+# ---------------------------------------------------------------------------
+restore_session <- function(keys = names(CACHE_REGISTRY), quiet = FALSE) {
+  keys    <- intersect(keys, names(CACHE_REGISTRY))
+  loaded  <- character(0)
+  missing <- character(0)
+  
+  for (k in keys) {
+    path <- file.path(CACHE_DIR, paste0(k, ".rds"))
+    if (!file.exists(path)) { missing <- c(missing, k); next }
+    assign(CACHE_REGISTRY[[k]]$var, readRDS(path), envir = .GlobalEnv)
+    loaded <- c(loaded, CACHE_REGISTRY[[k]]$var)
+  }
+  
+  # Rebuilt rather than cached: cheap, and needed by several later blocks.
+  if (exists("MAIN_INSTRUMENTS", envir = .GlobalEnv) &&
+      exists("SUPPORTING_INSTRUMENTS", envir = .GlobalEnv)) {
+    assign("CONCEPT_INSTRUMENTS",
+           c(get("MAIN_INSTRUMENTS", envir = .GlobalEnv),
+             get("SUPPORTING_INSTRUMENTS", envir = .GlobalEnv)),
+           envir = .GlobalEnv)
+    loaded <- c(loaded, "CONCEPT_INSTRUMENTS")
+  }
+  
+  if (!quiet) {
+    cat("\nRestored", length(loaded), "objects into the global environment:\n  ",
+        paste(loaded, collapse = ", "), "\n")
+    if (length(missing))
+      cat("\nNot on disk, skipped:\n  ", paste(missing, collapse = ", "),
+          "\n  Run the stages that produce these, or ignore if not needed.\n")
+    cat("\nResult CSVs remain readable from", TABLE_DIR, "\n")
+  }
+  invisible(list(loaded = loaded, missing = missing))
+}
+
+
+# ---------------------------------------------------------------------------
+# invalidate_cache() -- delete caches so the next run recomputes them
+#
+# cascade = TRUE (the default) also deletes everything built from the named
+# keys, which is what keeps a code change from producing a half-updated set of
+# results. dry_run = TRUE shows what would be deleted without deleting it, and
+# is worth using first when concept_level_6inst is in scope -- that one costs
+# eight hours to rebuild.
+# ---------------------------------------------------------------------------
+invalidate_cache <- function(keys, cascade = TRUE, dry_run = TRUE) {
+  unknown <- setdiff(keys, names(CACHE_REGISTRY))
+  if (length(unknown))
+    stop("Unknown cache key(s): ", paste(unknown, collapse = ", "),
+         "\nSee names(CACHE_REGISTRY).", call. = FALSE)
+  
+  if (cascade) {
+    repeat {
+      expanded <- unique(c(keys, unlist(CACHE_DEPENDENTS[keys], use.names = FALSE)))
+      expanded <- expanded[!is.na(expanded)]
+      if (setequal(expanded, keys)) break
+      keys <- expanded
+    }
+  }
+  
+  present <- keys[file.exists(file.path(CACHE_DIR, paste0(keys, ".rds")))]
+  
+  if (!length(present)) {
+    cat("Nothing to invalidate: none of those keys are cached.\n")
+    return(invisible(character(0)))
+  }
+  
+  cat("\n", if (dry_run) "WOULD DELETE" else "DELETING", " ",
+      length(present), " cached object(s):\n", sep = "")
+  for (k in present)
+    cat("  ", k, "  (stage ", CACHE_REGISTRY[[k]]$stage, ")\n", sep = "")
+  
+  if ("concept_level_6inst" %in% present)
+    cat("\n  NOTE: concept_level_6inst takes roughly 8 hours to rebuild.\n")
+  
+  if (dry_run) {
+    cat("\nDry run. Re-call with dry_run = FALSE to delete.\n")
+    return(invisible(present))
+  }
+  
+  file.remove(file.path(CACHE_DIR, paste0(present, ".rds")))
+  cat("\nDeleted. The next run of the relevant stages will recompute them.\n")
+  invisible(present)
+}
+
+
+###############################################################################
+# TYPICAL USE
+#
+# Fresh session, continuing from a completed run:
+#
+#   # load Sections 0-12 to define the pipeline, then:
+#   cache_status()
+#   restore_session()
+#   # every object is now in memory under its usual name
+#
+# After editing a function and wanting the change to propagate:
+#
+#   invalidate_cache("comparability_measures")                    # dry run
+#   invalidate_cache("comparability_measures", dry_run = FALSE)   # delete
+#   RUN_STAGES <- c(9)                                            # recompute
+#
+# After editing a scheme rule in Section 3, which changes the classification
+# every result depends on:
+#
+#   invalidate_cache("schemes_long")   # dry run first -- this cascades widely
+#
+# To recompute one object without touching anything downstream, set
+# cascade = FALSE. Do that only when the change genuinely cannot affect
+# dependents, since a partially updated cache is worse than a stale one.
+###############################################################################
