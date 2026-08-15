@@ -1,0 +1,1131 @@
+/* =============================================================================
+
+   WHEN TRANSPARENCY WORKS: SERVICE SHOPPABILITY, CONTRACTING DEPTH, AND
+   THE PRICE EFFECTS OF HOSPITAL DISCLOSURE
+
+   Replication code -- stage 1b: price construction and analysis exports
+
+   Danny Sierra
+   Department of Economics, Florida State University
+   Ds22c@fsu.edu
+
+   -----------------------------------------------------------------------------
+   WHAT THIS FILE DOES
+   -----------------------------------------------------------------------------
+   Takes the frozen codebook from 01_Phase1_Codebook.sql and builds prices at
+   three levels of aggregation, then the market-entry exposure variable and the
+   exports the Python and R stages consume.
+
+   The groupings themselves were fixed in stage 1a. This file computes prices
+   at those groupings; it does not redefine them.
+
+   -----------------------------------------------------------------------------
+   THE THREE OUTPUT LEVELS
+   -----------------------------------------------------------------------------
+     EXACT CODE   70552, "MRI brain w/ contrast"      one CPT code
+     CONCEPT      MRI_MRA_MRI_BRAIN, "MRI Brain"      collapses contrast
+                                                      variants of the same body
+                                                      part into one row; column
+                                                      ANALYSIS_CONCEPT_ID
+     FAMILY       MRI_MRA, "MRI/MRA"                  collapses all MRI body
+                                                      parts together; column
+                                                      ANALYSIS_FAMILY_ID
+
+   The concept is the analysis unit for the paper. The family is the level at
+   which shoppability is assigned, and therefore the level at which the
+   permutation inference in the R stage operates.
+
+   -----------------------------------------------------------------------------
+   DESIGN DECISIONS
+   -----------------------------------------------------------------------------
+   STANDALONE VERSUS COMPONENT IS AN OBJECTIVE TWO-WAY SPLIT, driven by
+   IS_NCCI_ADDON_FLAG from stage 1a. A code that the official NCCI file
+   designates as an add-on is a component; everything else is standalone. No
+   per-code judgment is involved, and there is no third "robustness-only" tier.
+
+   SAMPLE RESTRICTIONS HAPPEN AT ANALYSIS TIME, NOT HERE. Every price row
+   carries its own support metrics -- N_HOSPITALS, N_DISTINCT_PAYERS,
+   N_PAYER_CELLS -- through every stage. Decisions of the form "use only
+   concepts with at least N hospitals" are then made in R as documented,
+   variable screens rather than baked into SQL as an irreversible filter.
+
+   COMPONENT PRICES NEVER ENTER A PRIMARY ROLLUP. Add-on codes are exported
+   separately as sensitivity context only.
+
+   -----------------------------------------------------------------------------
+   A SNOWFLAKE REGEXP_LIKE TRAP THAT AFFECTS THIS WHOLE FILE
+   -----------------------------------------------------------------------------
+   Snowflake's REGEXP_LIKE requires a FULL match of the entire input string by
+   default. Unlike most SQL dialects it does not perform substring search. Any
+   pattern intended as a substring test must therefore be wrapped as
+   '.*(' || PATTERN || ').*'.
+
+   Without the wrap, a pattern never fires against a realistic multi-word value
+   -- "70% of billed charges" is never equal to the whole pattern
+   "PERCENT|%|..." -- and the check silently passes every row it was written to
+   exclude. Every substring-intent REGEXP_LIKE call in this file is wrapped
+   accordingly, and the same convention applies in 01_Phase1_Codebook.sql and
+   03_Supplementary_Analyses.sql.
+
+   -----------------------------------------------------------------------------
+   REQUIRED INPUT
+   -----------------------------------------------------------------------------
+     O_ECON.COMMON.HR_SUBSET_ALL
+     O_ECON.COMMON.HPT_P1_STUDY_WINDOW
+     O_ECON.COMMON.HPT_P1_FINAL_CODEBOOK_SCOPED
+
+   -----------------------------------------------------------------------------
+   OUTPUTS
+   -----------------------------------------------------------------------------
+     PHASE 2   HPT_P2_EXACT_CODEBOOK, HPT_P2_MATCHED_RAW_ROWS,
+               HPT_P2_FLAGGED_ROWS, HPT_P2_CANONICAL_FILE_SELECTION,
+               HPT_P2_ELIGIBLE_ROWS, HPT_P2_PAYER_CELLS, HPT_P2_QA_SUMMARY
+
+     PHASE 3   HPT_P3_CODE_PRICE_DISTRIBUTIONS, HPT_P3_CODE_PRICE_BOUNDS,
+               HPT_P3_HOSPITAL_EXACT_CODE_PRICES, HPT_P3_QA_SUMMARY
+
+     PHASE 4   HPT_P4_HOSPITAL_POSTING_CONTEXT, HPT_P4_HOSPITAL_CONCEPT_PRICES,
+               HPT_P4_HOSPITAL_FAMILY_PRICES, HPT_P4_COMPONENT_CONTEXT,
+               HPT_HOSPITAL_DIRECTORY, HPT_P4_QA_SUMMARY
+
+   -----------------------------------------------------------------------------
+   HOW TO RUN
+   -----------------------------------------------------------------------------
+   Run and check each phase in order. Do not run all three blind in one
+   sitting: Phase 2 Section 2 contains the single expensive scan of the raw
+   source, and each phase ends with a QA table whose status must read PASS
+   before the next phase is meaningful.
+   ============================================================================= */
+
+
+USE WAREHOUSE ECON_DEF_WH;
+USE DATABASE O_ECON;
+USE SCHEMA COMMON;
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 0: PREFLIGHT
+
+   Confirm the scoped codebook matches what stage 1a reported before spending
+   a raw scan on it.
+   ============================================================================= */
+
+SELECT
+    COUNT(*) AS N_SCOPED_CODES,
+    COUNT(DISTINCT BILLING_CODE_TYPE || '|' || BILLING_CODE) AS N_DISTINCT_KEYS,
+    COUNT_IF(BILLING_CODE_TYPE = 'CPT_HCPCS') AS N_CPT_HCPCS,
+    COUNT_IF(BILLING_CODE_TYPE = 'MS_DRG') AS N_MSDRG,
+    COUNT_IF(IS_NCCI_ADDON_FLAG = 1) AS N_COMPONENT_CODES,
+    COUNT_IF(IS_CMS70_CODE = 1) AS N_CMS70_CODES
+FROM O_ECON.COMMON.HPT_P1_FINAL_CODEBOOK_SCOPED
+;
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 1: MATERIALIZE THE SCOPED CODEBOOK FOR JOINING
+
+   Freezes the exact-code lookup once, so the expensive raw scan below joins
+   against a small normalized table rather than re-deriving codes on the fly.
+   ============================================================================= */
+
+CREATE OR REPLACE TRANSIENT TABLE O_ECON.COMMON.HPT_P2_EXACT_CODEBOOK AS
+SELECT
+    BILLING_CODE_TYPE,
+    BILLING_CODE,
+    OFFICIAL_DESCRIPTION,
+    ANALYSIS_SUPERFAMILY_ID,
+    ANALYSIS_FAMILY_ID,
+    ANALYSIS_FAMILY_NAME,
+    ANALYSIS_CONCEPT_ID,
+    CONCEPT_STEM_TEXT,
+    CONTRAST_VARIANT,
+    IS_CMS70_CODE,
+    CMS70_SERVICE_ID,
+    CMS70_SERVICE_NAME,
+    IS_NCCI_ADDON_FLAG,
+    IS_ASC_COVERED_FLAG,
+    OPPS_STATUS_INDICATORS,
+    MDC,
+    MEDICAL_SURGICAL_TYPE,
+    DRG_ACUITY_KEYWORD_TAG,
+    IFF(IS_NCCI_ADDON_FLAG = 1, 'COMPONENT', 'STANDALONE') AS CODE_ROLE,
+    SCOPE_REASON
+FROM O_ECON.COMMON.HPT_P1_FINAL_CODEBOOK_SCOPED
+;
+
+SELECT COUNT(*) AS N_CODEBOOK_ROWS,
+       COUNT_IF(CODE_ROLE = 'STANDALONE') AS N_STANDALONE,
+       COUNT_IF(CODE_ROLE = 'COMPONENT') AS N_COMPONENT
+FROM O_ECON.COMMON.HPT_P2_EXACT_CODEBOOK;
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 2: THE ONE EXPENSIVE RAW SCAN
+
+   Scans the raw source once, restricts to the study window and positive
+   direct-dollar candidates, normalizes the billing code, and joins immediately
+   to the scoped codebook so nothing outside the analysis universe is carried
+   forward.
+   ============================================================================= */
+
+CREATE OR REPLACE TRANSIENT TABLE O_ECON.COMMON.HPT_P2_MATCHED_RAW_ROWS AS
+
+WITH RAW_NORM AS (
+    SELECT
+        TO_VARCHAR(ID)                                        AS SOURCE_ROW_ID,
+        TO_VARCHAR(PROVIDER_ID)                                AS HOSPITAL_ID,
+        NULLIF(TRIM(TO_VARCHAR(PROVIDER_NPI)), '')             AS PROVIDER_NPI,
+        NULLIF(TRIM(TO_VARCHAR(PROVIDER_NAME)), '')            AS PROVIDER_NAME,
+        NULLIF(TRIM(TO_VARCHAR(PROVIDER_CITY_REF)), '')        AS PROVIDER_CITY,
+        UPPER(TRIM(TO_VARCHAR(PROVIDER_STATE_REF)))            AS PROVIDER_STATE,
+        UPPER(TRIM(TO_VARCHAR(COUNTY)))                        AS COUNTY,
+        NULLIF(TRIM(TO_VARCHAR(CBSA_CODE)), '')                AS CBSA_CODE,
+        NULLIF(TRIM(TO_VARCHAR(HOSPITAL_TYPE)), '')            AS HOSPITAL_TYPE,
+        NULLIF(TRIM(TO_VARCHAR(HEALTH_SYSTEM_ID)), '')         AS HEALTH_SYSTEM_ID,
+        NULLIF(TRIM(TO_VARCHAR(HEALTH_SYSTEM_NAME)), '')       AS HEALTH_SYSTEM_NAME,
+        TRY_TO_DOUBLE(TO_VARCHAR(TOTAL_BEDS))                  AS TOTAL_BEDS,
+        NULLIF(TRIM(TO_VARCHAR(FILE_ID)), '')                  AS FILE_ID,
+        TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR(INGESTED_ON))          AS INGESTED_ON,
+        TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR(LOADED_ON))            AS LOADED_ON,
+        DATE_TRUNC('MONTH', TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR(INGESTED_ON))) AS POST_MONTH,
+        NULLIF(UPPER(TRIM(TO_VARCHAR(SRC))), '')               AS SRC,
+
+        CASE
+            WHEN UPPER(TRIM(TO_VARCHAR(BILLING_CODE_TYPE))) IN ('CPT','HCPCS','CPT/HCPCS','CPT_HCPCS')
+                THEN 'CPT_HCPCS'
+            WHEN UPPER(TRIM(TO_VARCHAR(BILLING_CODE_TYPE))) IN ('MS-DRG','MS_DRG','MS DRG','DRG')
+                THEN 'MS_DRG'
+            ELSE NULL
+        END AS BILLING_CODE_TYPE_RAW,
+
+        REGEXP_REPLACE(UPPER(TRIM(TO_VARCHAR(BILLING_CODE))), '[^A-Z0-9]', '') AS BILLING_CODE_CLEAN,
+
+        NULLIF(UPPER(TRIM(TO_VARCHAR(BILLING_CODE_MODIFIERS))), '') AS BILLING_CODE_MODIFIERS,
+        NULLIF(UPPER(TRIM(TO_VARCHAR(BILLING_CLASS))), '')     AS BILLING_CLASS_RAW,
+        NULLIF(UPPER(TRIM(TO_VARCHAR(SETTING))), '')           AS SETTING_RAW,
+
+        TRY_TO_DOUBLE(TO_VARCHAR(NEGOTIATED_DOLLAR))           AS NEGOTIATED_DOLLAR,
+        TRY_TO_DOUBLE(TO_VARCHAR(NEGOTIATED_PERCENTAGE))       AS NEGOTIATED_PERCENTAGE,
+        NULLIF(TRIM(TO_VARCHAR(NEGOTIATED_ALGORITHM)), '')     AS NEGOTIATED_ALGORITHM,
+        TRY_TO_DOUBLE(TO_VARCHAR(MEDICARE_RATE))               AS MEDICARE_RATE,
+        NULLIF(UPPER(TRIM(TO_VARCHAR(CONTRACT_METHODOLOGY))), '') AS CONTRACT_METHODOLOGY,
+
+        NULLIF(TRIM(TO_VARCHAR(PLAN_NAME)), '')                AS PLAN_NAME,
+        NULLIF(TRIM(TO_VARCHAR(PAYER_NAME)), '')               AS PAYER_NAME,
+        NULLIF(TRIM(TO_VARCHAR(PARENT_PAYER_NAME)), '')        AS PARENT_PAYER_NAME,
+        NULLIF(TRIM(TO_VARCHAR(PAYER_PRODUCT_NETWORK)), '')    AS PAYER_PRODUCT_NETWORK,
+        NULLIF(TRIM(TO_VARCHAR(PAYER_ID)), '')                 AS PAYER_ID,
+
+        TRY_TO_BOOLEAN(TO_VARCHAR(IS_SCHEMA_COMPLIANT))        AS IS_SCHEMA_COMPLIANT,
+        TRY_TO_BOOLEAN(TO_VARCHAR(RATE_IS_OUTLIER))            AS RATE_IS_OUTLIER,
+        TRY_TO_BOOLEAN(TO_VARCHAR(MAPPED_FROM_APC))            AS MAPPED_FROM_APC,
+        TRY_TO_DOUBLE(TO_VARCHAR(TQ_TRANSPARENCY_SCORE))       AS TQ_TRANSPARENCY_SCORE
+
+    FROM O_ECON.COMMON.HR_SUBSET_ALL
+    CROSS JOIN O_ECON.COMMON.HPT_P1_STUDY_WINDOW W
+
+    WHERE PROVIDER_ID IS NOT NULL
+      AND TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR(INGESTED_ON)) BETWEEN W.WINDOW_START_DATE AND W.WINDOW_END_DATE
+      AND UPPER(TRIM(TO_VARCHAR(BILLING_CODE_TYPE))) IN ('CPT','HCPCS','CPT/HCPCS','CPT_HCPCS','MS-DRG','MS_DRG','MS DRG','DRG')
+      AND TRY_TO_DOUBLE(TO_VARCHAR(NEGOTIATED_DOLLAR)) > 0
+),
+
+RAW_KEYED AS (
+    SELECT
+        R.*,
+        CASE
+            WHEN BILLING_CODE_TYPE_RAW = 'MS_DRG' AND REGEXP_LIKE(BILLING_CODE_CLEAN, '^[0-9]{1,3}$')
+                THEN LPAD(BILLING_CODE_CLEAN, 3, '0')
+            WHEN BILLING_CODE_TYPE_RAW = 'CPT_HCPCS' AND REGEXP_LIKE(BILLING_CODE_CLEAN, '^[0-9]{1,5}$')
+                THEN LPAD(BILLING_CODE_CLEAN, 5, '0')
+            ELSE BILLING_CODE_CLEAN
+        END AS BILLING_CODE,
+        COALESCE(FILE_ID, 'NOFILE|' || HOSPITAL_ID || '|' || COALESCE(SRC,'UNK') || '|' || COALESCE(TO_VARCHAR(INGESTED_ON),'UNK')) AS RAW_FILE_KEY
+    FROM RAW_NORM R
+)
+
+SELECT
+    RK.SOURCE_ROW_ID, RK.HOSPITAL_ID, RK.PROVIDER_NPI, RK.PROVIDER_NAME, RK.PROVIDER_CITY,
+    RK.PROVIDER_STATE, RK.COUNTY, RK.PROVIDER_STATE || '|' || RK.COUNTY AS COUNTY_STATE, RK.CBSA_CODE,
+    RK.HOSPITAL_TYPE, RK.HEALTH_SYSTEM_ID, RK.HEALTH_SYSTEM_NAME, RK.TOTAL_BEDS,
+    RK.FILE_ID, RK.RAW_FILE_KEY, RK.INGESTED_ON, RK.LOADED_ON, RK.POST_MONTH, RK.SRC,
+
+    C.BILLING_CODE_TYPE, C.BILLING_CODE, C.OFFICIAL_DESCRIPTION,
+    C.ANALYSIS_SUPERFAMILY_ID, C.ANALYSIS_FAMILY_ID, C.ANALYSIS_FAMILY_NAME,
+    C.ANALYSIS_CONCEPT_ID, C.CONCEPT_STEM_TEXT, C.CONTRAST_VARIANT,
+    C.IS_CMS70_CODE, C.CMS70_SERVICE_ID, C.CMS70_SERVICE_NAME,
+    C.IS_NCCI_ADDON_FLAG, C.IS_ASC_COVERED_FLAG, C.OPPS_STATUS_INDICATORS,
+    C.MDC, C.MEDICAL_SURGICAL_TYPE, C.DRG_ACUITY_KEYWORD_TAG, C.CODE_ROLE,
+
+    RK.BILLING_CODE_MODIFIERS, RK.BILLING_CLASS_RAW, RK.SETTING_RAW,
+    RK.NEGOTIATED_DOLLAR, RK.NEGOTIATED_PERCENTAGE, RK.NEGOTIATED_ALGORITHM,
+    RK.MEDICARE_RATE, RK.CONTRACT_METHODOLOGY,
+    RK.PLAN_NAME, RK.PAYER_NAME, RK.PARENT_PAYER_NAME, RK.PAYER_PRODUCT_NETWORK, RK.PAYER_ID,
+    RK.IS_SCHEMA_COMPLIANT, RK.RATE_IS_OUTLIER, RK.MAPPED_FROM_APC, RK.TQ_TRANSPARENCY_SCORE
+
+FROM RAW_KEYED RK
+INNER JOIN O_ECON.COMMON.HPT_P2_EXACT_CODEBOOK C
+    ON RK.BILLING_CODE_TYPE_RAW = C.BILLING_CODE_TYPE
+   AND RK.BILLING_CODE = C.BILLING_CODE
+;
+
+-- QA. The expensive step; confirm sane before continuing.
+SELECT
+    BILLING_CODE_TYPE, CODE_ROLE,
+    COUNT(*) AS N_ROWS, COUNT(DISTINCT HOSPITAL_ID) AS N_HOSPITALS,
+    COUNT(DISTINCT BILLING_CODE) AS N_CODES,
+    MIN(POST_MONTH) AS FIRST_MONTH, MAX(POST_MONTH) AS LAST_MONTH
+FROM O_ECON.COMMON.HPT_P2_MATCHED_RAW_ROWS
+GROUP BY BILLING_CODE_TYPE, CODE_ROLE
+ORDER BY BILLING_CODE_TYPE, CODE_ROLE;
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 3: ROW-LEVEL CLEANING FLAGS
+
+   A row survives only if it is an unmodified, direct dollar amount -- not a
+   percentage, algorithm, APC-derived, or per-diem rate -- that is
+   schema-compliant, not flagged as an outlier by the source, and in the
+   correct billing class and setting tier for its code type.
+
+   Each condition is a separate named flag rather than one compound predicate,
+   so the QA query below shows which condition removes what.
+   ============================================================================= */
+
+CREATE OR REPLACE TRANSIENT TABLE O_ECON.COMMON.HPT_P2_FLAGGED_ROWS AS
+
+WITH NORMALIZED AS (
+    SELECT
+        M.*,
+        CASE
+            WHEN BILLING_CLASS_RAW IS NULL THEN 'UNKNOWN'
+            WHEN REGEXP_LIKE(BILLING_CLASS_RAW,'.*(PROFESSIONAL).*') AND REGEXP_LIKE(BILLING_CLASS_RAW,'.*(FACILITY).*') THEN 'MIXED_CLASS'
+            WHEN REGEXP_LIKE(BILLING_CLASS_RAW,'.*(FACILITY).*') THEN 'FACILITY'
+            WHEN REGEXP_LIKE(BILLING_CLASS_RAW,'.*(PROFESSIONAL).*') THEN 'PROFESSIONAL'
+            ELSE 'OTHER'
+        END AS BILLING_CLASS_GROUP,
+
+        CASE
+            WHEN SETTING_RAW IS NULL THEN 'UNKNOWN'
+            WHEN REGEXP_LIKE(SETTING_RAW,'.*(OUTPATIENT).*') AND REGEXP_LIKE(SETTING_RAW,'.*(INPATIENT).*') THEN 'MIXED'
+            WHEN REGEXP_LIKE(SETTING_RAW,'.*(OUTPATIENT).*') THEN 'OUTPATIENT'
+            WHEN REGEXP_LIKE(SETTING_RAW,'.*(INPATIENT).*') THEN 'INPATIENT'
+            ELSE 'OTHER'
+        END AS SETTING_GROUP,
+
+        /* Every REGEXP_LIKE below is wrapped as '.*(...).*' for the reason
+           given in the file header. PASS_NOT_PERDIEM is the one that matters
+           most, because it has no numeric-field backstop: unwrapped, it would
+           pass every per-diem-priced row through as a clean direct-dollar
+           rate. */
+        IFF(BILLING_CODE_MODIFIERS IS NULL, 1, 0) AS PASS_NO_MODIFIER,
+        IFF(NEGOTIATED_DOLLAR > 0 AND NEGOTIATED_DOLLAR <= 10000000, 1, 0) AS PASS_DOLLAR_RANGE,
+        IFF(
+            NEGOTIATED_PERCENTAGE IS NULL AND NEGOTIATED_ALGORITHM IS NULL
+            AND NOT REGEXP_LIKE(COALESCE(CONTRACT_METHODOLOGY,''), '.*(PERCENT|%|OF[[:space:]]+CHARGE|ALGORITHM|FORMULA).*'),
+            1, 0
+        ) AS PASS_NOT_PERCENT_ALGO,
+        IFF(
+            COALESCE(MAPPED_FROM_APC, FALSE) = FALSE
+            AND NOT REGEXP_LIKE(COALESCE(CONTRACT_METHODOLOGY,''), '.*(^|[^A-Z])APC([^A-Z]|$).*'),
+            1, 0
+        ) AS PASS_NOT_APC,
+        IFF(NOT REGEXP_LIKE(COALESCE(CONTRACT_METHODOLOGY,''), '.*(PER[[:space:]_-]*DIEM|DAILY[[:space:]_-]*RATE).*'), 1, 0) AS PASS_NOT_PERDIEM,
+        IFF(COALESCE(IS_SCHEMA_COMPLIANT, TRUE) = TRUE, 1, 0) AS PASS_SCHEMA_COMPLIANT,
+        IFF(COALESCE(RATE_IS_OUTLIER, FALSE) = FALSE, 1, 0) AS PASS_NOT_OUTLIER
+
+    FROM O_ECON.COMMON.HPT_P2_MATCHED_RAW_ROWS M
+),
+
+TIERED AS (
+    SELECT
+        N.*,
+        CASE
+            WHEN BILLING_CODE_TYPE='CPT_HCPCS' AND SETTING_GROUP='OUTPATIENT' AND BILLING_CLASS_GROUP='FACILITY' THEN 1
+            WHEN BILLING_CODE_TYPE='CPT_HCPCS' AND SETTING_GROUP='OUTPATIENT' AND BILLING_CLASS_GROUP='UNKNOWN'  THEN 2
+            WHEN BILLING_CODE_TYPE='CPT_HCPCS' AND SETTING_GROUP='MIXED'      AND BILLING_CLASS_GROUP='FACILITY' THEN 3
+            WHEN BILLING_CODE_TYPE='CPT_HCPCS' AND SETTING_GROUP='MIXED'      AND BILLING_CLASS_GROUP='UNKNOWN'  THEN 4
+            WHEN BILLING_CODE_TYPE='MS_DRG'    AND SETTING_GROUP='INPATIENT'  AND BILLING_CLASS_GROUP='FACILITY' THEN 1
+            WHEN BILLING_CODE_TYPE='MS_DRG'    AND SETTING_GROUP='INPATIENT'  AND BILLING_CLASS_GROUP='UNKNOWN'  THEN 2
+            WHEN BILLING_CODE_TYPE='MS_DRG'    AND SETTING_GROUP='MIXED'      AND BILLING_CLASS_GROUP='FACILITY' THEN 3
+            WHEN BILLING_CODE_TYPE='MS_DRG'    AND SETTING_GROUP='MIXED'      AND BILLING_CLASS_GROUP='UNKNOWN'  THEN 4
+            ELSE NULL
+        END AS SAMPLE_TIER_RANK
+    FROM NORMALIZED N
+)
+
+SELECT
+    T.*,
+    IFF(
+        SAMPLE_TIER_RANK IS NOT NULL AND PASS_NO_MODIFIER=1 AND PASS_DOLLAR_RANGE=1
+        AND PASS_NOT_PERCENT_ALGO=1 AND PASS_NOT_APC=1 AND PASS_NOT_PERDIEM=1
+        AND PASS_SCHEMA_COMPLIANT=1 AND PASS_NOT_OUTLIER=1,
+        1, 0
+    ) AS ROW_ELIGIBLE
+FROM TIERED T
+;
+
+SELECT
+    BILLING_CODE_TYPE, ROW_ELIGIBLE, SAMPLE_TIER_RANK,
+    COUNT(*) AS N_ROWS
+FROM O_ECON.COMMON.HPT_P2_FLAGGED_ROWS
+GROUP BY BILLING_CODE_TYPE, ROW_ELIGIBLE, SAMPLE_TIER_RANK
+ORDER BY BILLING_CODE_TYPE, ROW_ELIGIBLE DESC, SAMPLE_TIER_RANK;
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 4: ONE CANONICAL FILE PER HOSPITAL x MONTH x CODE TYPE
+
+   A hospital may publish several overlapping files in a month. Selection is
+   partitioned by code type as well as hospital-month, which prevents a large
+   outpatient file from displacing a separate inpatient file for the same
+   hospital-month.
+
+   Ranking prefers the file with the most eligible codes, then the most
+   eligible rows, then schema compliance, then transparency score, then
+   recency, with the file key as a deterministic final tiebreak so the
+   selection is reproducible.
+   ============================================================================= */
+
+CREATE OR REPLACE TRANSIENT TABLE O_ECON.COMMON.HPT_P2_CANONICAL_FILE_SELECTION AS
+
+WITH FILE_INVENTORY AS (
+    SELECT
+        HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, RAW_FILE_KEY,
+        COUNT(*) AS N_ROWS,
+        COUNT_IF(ROW_ELIGIBLE=1) AS N_ELIGIBLE_ROWS,
+        COUNT(DISTINCT IFF(ROW_ELIGIBLE=1, BILLING_CODE, NULL)) AS N_ELIGIBLE_CODES,
+        AVG(IFF(IS_SCHEMA_COMPLIANT IS NULL, NULL, IFF(IS_SCHEMA_COMPLIANT,1,0))) AS SHARE_SCHEMA_COMPLIANT,
+        MAX(TQ_TRANSPARENCY_SCORE) AS MAX_TQ_SCORE,
+        MAX(LOADED_ON) AS LAST_LOADED_ON
+    FROM O_ECON.COMMON.HPT_P2_FLAGGED_ROWS
+    GROUP BY HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, RAW_FILE_KEY
+)
+
+SELECT
+    F.*,
+    ROW_NUMBER() OVER (
+        PARTITION BY HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE
+        ORDER BY N_ELIGIBLE_CODES DESC, N_ELIGIBLE_ROWS DESC,
+                 COALESCE(SHARE_SCHEMA_COMPLIANT,-1) DESC, COALESCE(MAX_TQ_SCORE,-1) DESC,
+                 LAST_LOADED_ON DESC NULLS LAST, RAW_FILE_KEY
+    ) AS FILE_RANK
+FROM FILE_INVENTORY F
+;
+
+SELECT
+    COUNT(*) AS N_FILES,
+    COUNT_IF(FILE_RANK=1) AS N_CANONICAL,
+    COUNT(DISTINCT HOSPITAL_ID||'|'||POST_MONTH||'|'||BILLING_CODE_TYPE) AS N_HOSPITAL_MONTH_TYPES
+FROM O_ECON.COMMON.HPT_P2_CANONICAL_FILE_SELECTION;
+-- N_CANONICAL must equal N_HOSPITAL_MONTH_TYPES.
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 5: ELIGIBLE ROWS FROM CANONICAL FILES ONLY, DEDUPED
+   ============================================================================= */
+
+CREATE OR REPLACE TRANSIENT TABLE O_ECON.COMMON.HPT_P2_ELIGIBLE_ROWS AS
+
+WITH CANONICAL_ONLY AS (
+    SELECT R.*
+    FROM O_ECON.COMMON.HPT_P2_FLAGGED_ROWS R
+    INNER JOIN O_ECON.COMMON.HPT_P2_CANONICAL_FILE_SELECTION F
+        ON R.HOSPITAL_ID = F.HOSPITAL_ID AND R.POST_MONTH = F.POST_MONTH
+       AND R.BILLING_CODE_TYPE = F.BILLING_CODE_TYPE AND R.RAW_FILE_KEY = F.RAW_FILE_KEY
+       AND F.FILE_RANK = 1
+    WHERE R.ROW_ELIGIBLE = 1
+),
+
+DEDUPED AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY
+                HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, BILLING_CODE, SAMPLE_TIER_RANK,
+                COALESCE(PAYER_ID,''), COALESCE(PLAN_NAME,''), COALESCE(PAYER_NAME,''),
+                COALESCE(PARENT_PAYER_NAME,''), COALESCE(PAYER_PRODUCT_NETWORK,''),
+                COALESCE(CONTRACT_METHODOLOGY,''), NEGOTIATED_DOLLAR
+            ORDER BY LOADED_ON DESC NULLS LAST, SOURCE_ROW_ID DESC
+        ) AS RN
+    FROM CANONICAL_ONLY
+)
+
+SELECT * EXCLUDE (RN) FROM DEDUPED WHERE RN = 1
+;
+
+SELECT COUNT(*) AS N_ELIGIBLE_DEDUPED_ROWS FROM O_ECON.COMMON.HPT_P2_ELIGIBLE_ROWS;
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 6: PAYER-CELL CONSTRUCTION
+
+   One row per hospital x month x exact code x payer x plan x network. Where a
+   payer cell has support in more than one billing class and setting tier, the
+   strictest available tier is used, so the cell is priced from the cleanest
+   observation rather than an average across tiers of differing quality.
+
+   Payer identity falls back through PAYER_ID, then parent payer, then payer
+   name, and MISSING_PAYER_IDENTITY_FLAG records where none of the three was
+   present. That flag is the payer-cleanliness filter used downstream.
+   ============================================================================= */
+
+CREATE OR REPLACE TRANSIENT TABLE O_ECON.COMMON.HPT_P2_PAYER_CELLS AS
+
+WITH CANONICAL_PAYER AS (
+    SELECT
+        *,
+        COALESCE(NULLIF(PAYER_ID,''), NULLIF(PARENT_PAYER_NAME,''), NULLIF(PAYER_NAME,''), 'UNKNOWN_PAYER') AS CANONICAL_PAYER_KEY,
+        COALESCE(NULLIF(PLAN_NAME,''), 'UNKNOWN_PLAN') AS CANONICAL_PLAN_NAME,
+        COALESCE(NULLIF(PAYER_PRODUCT_NETWORK,''), 'UNKNOWN_NETWORK') AS CANONICAL_NETWORK_NAME,
+        IFF(PAYER_ID IS NULL AND PARENT_PAYER_NAME IS NULL AND PAYER_NAME IS NULL, 1, 0) AS MISSING_PAYER_IDENTITY_FLAG
+    FROM O_ECON.COMMON.HPT_P2_ELIGIBLE_ROWS
+),
+
+PREFERRED_TIER AS (
+    SELECT
+        CP.*,
+        MIN(SAMPLE_TIER_RANK) OVER (
+            PARTITION BY HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, BILLING_CODE,
+                         CANONICAL_PAYER_KEY, CANONICAL_PLAN_NAME, CANONICAL_NETWORK_NAME
+        ) AS PREFERRED_TIER_RANK
+    FROM CANONICAL_PAYER CP
+)
+
+SELECT
+    SHA2(CONCAT_WS('|', HOSPITAL_ID, TO_VARCHAR(POST_MONTH), BILLING_CODE_TYPE, BILLING_CODE,
+                   CANONICAL_PAYER_KEY, CANONICAL_PLAN_NAME, CANONICAL_NETWORK_NAME), 256) AS PAYER_CELL_ID,
+
+    HOSPITAL_ID,
+    MIN(PROVIDER_NPI) AS PROVIDER_NPI, MIN(PROVIDER_NAME) AS PROVIDER_NAME,
+    MIN(PROVIDER_CITY) AS PROVIDER_CITY, MIN(PROVIDER_STATE) AS PROVIDER_STATE,
+    MIN(COUNTY) AS COUNTY, MIN(COUNTY_STATE) AS COUNTY_STATE, MIN(CBSA_CODE) AS CBSA_CODE,
+    MIN(HOSPITAL_TYPE) AS HOSPITAL_TYPE, MIN(HEALTH_SYSTEM_ID) AS HEALTH_SYSTEM_ID,
+    MIN(HEALTH_SYSTEM_NAME) AS HEALTH_SYSTEM_NAME, MEDIAN(TOTAL_BEDS) AS TOTAL_BEDS,
+
+    POST_MONTH,
+    BILLING_CODE_TYPE, BILLING_CODE,
+    MIN(OFFICIAL_DESCRIPTION) AS OFFICIAL_DESCRIPTION,
+    MIN(ANALYSIS_SUPERFAMILY_ID) AS ANALYSIS_SUPERFAMILY_ID,
+    MIN(ANALYSIS_FAMILY_ID) AS ANALYSIS_FAMILY_ID,
+    MIN(ANALYSIS_FAMILY_NAME) AS ANALYSIS_FAMILY_NAME,
+    MIN(ANALYSIS_CONCEPT_ID) AS ANALYSIS_CONCEPT_ID,
+    MIN(CONTRAST_VARIANT) AS CONTRAST_VARIANT,
+    MIN(CODE_ROLE) AS CODE_ROLE,
+    MIN(IS_CMS70_CODE) AS IS_CMS70_CODE,
+    MIN(CMS70_SERVICE_ID) AS CMS70_SERVICE_ID,
+    MIN(MDC) AS MDC,
+    MIN(DRG_ACUITY_KEYWORD_TAG) AS DRG_ACUITY_KEYWORD_TAG,
+
+    CANONICAL_PAYER_KEY, MIN(PAYER_NAME) AS CANONICAL_PAYER_NAME, CANONICAL_PLAN_NAME, CANONICAL_NETWORK_NAME,
+
+    MIN(PREFERRED_TIER_RANK) AS SAMPLE_TIER_RANK,
+    IFF(MIN(PREFERRED_TIER_RANK)=1, 1, 0) AS STRICT_TIER_FLAG,
+
+    MEDIAN(NEGOTIATED_DOLLAR) AS PAYER_CELL_RATE,
+    MIN(NEGOTIATED_DOLLAR) AS PAYER_CELL_RATE_MIN,
+    MAX(NEGOTIATED_DOLLAR) AS PAYER_CELL_RATE_MAX,
+    COUNT(*) AS N_DEDUP_RATE_ROWS,
+    COUNT(DISTINCT NEGOTIATED_DOLLAR) AS N_DISTINCT_RATES,
+    MEDIAN(MEDICARE_RATE) AS MEDICARE_RATE_MEDIAN,
+    MAX(MISSING_PAYER_IDENTITY_FLAG) AS MISSING_PAYER_IDENTITY_FLAG
+
+FROM PREFERRED_TIER
+WHERE SAMPLE_TIER_RANK = PREFERRED_TIER_RANK
+GROUP BY
+    HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, BILLING_CODE,
+    CANONICAL_PAYER_KEY, CANONICAL_PLAN_NAME, CANONICAL_NETWORK_NAME
+;
+
+CREATE OR REPLACE VIEW O_ECON.COMMON.HPT_P2_PAYER_CELLS_STANDALONE AS
+SELECT * FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS WHERE CODE_ROLE = 'STANDALONE';
+
+CREATE OR REPLACE VIEW O_ECON.COMMON.HPT_P2_PAYER_CELLS_COMPONENT AS
+SELECT * FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS WHERE CODE_ROLE = 'COMPONENT';
+
+
+/* =============================================================================
+   PHASE 2 -- SECTION 7: HARD QA
+
+   PHASE2_QA_STATUS must read PASS before Phase 3 is run. It tests that the
+   payer cell key is genuinely unique and that no non-positive rate survived.
+   ============================================================================= */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P2_QA_SUMMARY AS
+SELECT
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P2_EXACT_CODEBOOK) AS N_CODEBOOK_CODES,
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) AS N_PAYER_CELLS,
+    (SELECT COUNT(DISTINCT PAYER_CELL_ID) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) AS N_DISTINCT_CELL_IDS,
+    (SELECT COUNT(DISTINCT HOSPITAL_ID) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) AS N_HOSPITALS,
+    (SELECT COUNT(DISTINCT BILLING_CODE_TYPE||'|'||BILLING_CODE) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) AS N_CODES_WITH_PRICES,
+    (SELECT COUNT_IF(PAYER_CELL_RATE <= 0) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) AS N_NONPOSITIVE_RATES,
+    (SELECT MIN(POST_MONTH) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) AS FIRST_POST_MONTH,
+    (SELECT MAX(POST_MONTH) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) AS LAST_POST_MONTH,
+    CASE
+        WHEN (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS)
+             = (SELECT COUNT(DISTINCT PAYER_CELL_ID) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS)
+         AND (SELECT COUNT_IF(PAYER_CELL_RATE <= 0) FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS) = 0
+            THEN 'PASS'
+        ELSE 'REVIEW'
+    END AS PHASE2_QA_STATUS
+;
+
+SELECT * FROM O_ECON.COMMON.HPT_P2_QA_SUMMARY;
+
+SELECT
+    BILLING_CODE_TYPE, CODE_ROLE,
+    COUNT(*) AS N_PAYER_CELLS, COUNT(DISTINCT HOSPITAL_ID) AS N_HOSPITALS,
+    COUNT(DISTINCT BILLING_CODE) AS N_CODES
+FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS
+GROUP BY BILLING_CODE_TYPE, CODE_ROLE
+ORDER BY BILLING_CODE_TYPE, CODE_ROLE;
+
+
+/* =============================================================================
+   =============================================================================
+   PHASE 3 -- HOSPITAL x MONTH x EXACT-CODE PRICE CONSTRUCTION
+   =============================================================================
+   ============================================================================= */
+
+/* SECTION 1: code-specific price distributions and support-adaptive bounds.
+
+   Trimming is scaled to the support available for each code, so a
+   thinly-observed code is not trimmed on percentiles estimated from a handful
+   of cells: 1000 or more payer cells trims at P0.5/P99.5, 200 to 999 at P1/P99,
+   and fewer than 200 is left untrimmed. Bounds are computed once per code and
+   applied everywhere, including in the payer-class rebuild in
+   03_Supplementary_Analyses.sql, so no comparison can be a trimming artifact. */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P3_CODE_PRICE_DISTRIBUTIONS AS
+SELECT
+    BILLING_CODE_TYPE, BILLING_CODE,
+    MIN(OFFICIAL_DESCRIPTION) AS OFFICIAL_DESCRIPTION,
+    MIN(ANALYSIS_FAMILY_ID) AS ANALYSIS_FAMILY_ID,
+    MIN(ANALYSIS_CONCEPT_ID) AS ANALYSIS_CONCEPT_ID,
+    MIN(CODE_ROLE) AS CODE_ROLE,
+    COUNT(*) AS N_PAYER_CELLS,
+    COUNT(DISTINCT HOSPITAL_ID) AS N_HOSPITALS,
+    MIN(PAYER_CELL_RATE) AS MIN_RATE,
+    MAX(PAYER_CELL_RATE) AS MAX_RATE,
+    PERCENTILE_CONT(0.005) WITHIN GROUP (ORDER BY PAYER_CELL_RATE) AS P005_RATE,
+    PERCENTILE_CONT(0.01)  WITHIN GROUP (ORDER BY PAYER_CELL_RATE) AS P01_RATE,
+    PERCENTILE_CONT(0.99)  WITHIN GROUP (ORDER BY PAYER_CELL_RATE) AS P99_RATE,
+    PERCENTILE_CONT(0.995) WITHIN GROUP (ORDER BY PAYER_CELL_RATE) AS P995_RATE
+FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS
+GROUP BY BILLING_CODE_TYPE, BILLING_CODE
+;
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P3_CODE_PRICE_BOUNDS AS
+SELECT
+    BILLING_CODE_TYPE, BILLING_CODE, OFFICIAL_DESCRIPTION, ANALYSIS_FAMILY_ID, ANALYSIS_CONCEPT_ID, CODE_ROLE,
+    N_PAYER_CELLS, N_HOSPITALS,
+    CASE WHEN N_PAYER_CELLS >= 1000 THEN P005_RATE WHEN N_PAYER_CELLS >= 200 THEN P01_RATE ELSE MIN_RATE END AS LOWER_BOUND,
+    CASE WHEN N_PAYER_CELLS >= 1000 THEN P995_RATE WHEN N_PAYER_CELLS >= 200 THEN P99_RATE ELSE MAX_RATE END AS UPPER_BOUND,
+    CASE WHEN N_PAYER_CELLS >= 1000 THEN 'P005_P995' WHEN N_PAYER_CELLS >= 200 THEN 'P01_P99' ELSE 'NO_TRIM' END AS BOUND_METHOD
+FROM O_ECON.COMMON.HPT_P3_CODE_PRICE_DISTRIBUTIONS
+;
+
+SELECT COUNT(*) AS N_BOUND_ROWS,
+       COUNT_IF(LOWER_BOUND <= 0) AS N_BAD_LOWER,
+       COUNT_IF(UPPER_BOUND < LOWER_BOUND) AS N_REVERSED
+FROM O_ECON.COMMON.HPT_P3_CODE_PRICE_BOUNDS;
+-- N_BAD_LOWER and N_REVERSED must both be 0.
+
+
+/* SECTION 2: hospital x month x exact-code prices, in-bound observations only.
+
+   The full distribution is retained -- median, mean, min, max, P25, P75,
+   standard deviation, and the log-price moments -- because the R stage
+   estimates on several of these outcomes and constructs its dispersion-based
+   comparability measures from the percentile spread. */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES AS
+
+WITH FLAGGED AS (
+    SELECT
+        P.*,
+        B.LOWER_BOUND, B.UPPER_BOUND, B.BOUND_METHOD,
+        IFF(P.PAYER_CELL_RATE BETWEEN B.LOWER_BOUND AND B.UPPER_BOUND, 1, 0) AS IN_BOUND_FLAG
+    FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS P
+    INNER JOIN O_ECON.COMMON.HPT_P3_CODE_PRICE_BOUNDS B
+        ON P.BILLING_CODE_TYPE = B.BILLING_CODE_TYPE AND P.BILLING_CODE = B.BILLING_CODE
+)
+
+SELECT
+    SHA2(CONCAT_WS('|', HOSPITAL_ID, TO_VARCHAR(POST_MONTH), BILLING_CODE_TYPE, BILLING_CODE), 256) AS HOSPITAL_CODE_MONTH_ID,
+    HOSPITAL_ID,
+    MIN(PROVIDER_NPI) AS PROVIDER_NPI, MIN(PROVIDER_NAME) AS PROVIDER_NAME,
+    MIN(PROVIDER_STATE) AS PROVIDER_STATE, MIN(COUNTY) AS COUNTY, MIN(COUNTY_STATE) AS COUNTY_STATE,
+    MIN(CBSA_CODE) AS CBSA_CODE, MIN(HEALTH_SYSTEM_ID) AS HEALTH_SYSTEM_ID,
+    MEDIAN(TOTAL_BEDS) AS TOTAL_BEDS,
+    POST_MONTH,
+    BILLING_CODE_TYPE, BILLING_CODE,
+    MIN(OFFICIAL_DESCRIPTION) AS OFFICIAL_DESCRIPTION,
+    MIN(ANALYSIS_SUPERFAMILY_ID) AS ANALYSIS_SUPERFAMILY_ID,
+    MIN(ANALYSIS_FAMILY_ID) AS ANALYSIS_FAMILY_ID,
+    MIN(ANALYSIS_FAMILY_NAME) AS ANALYSIS_FAMILY_NAME,
+    MIN(ANALYSIS_CONCEPT_ID) AS ANALYSIS_CONCEPT_ID,
+    MIN(CONTRAST_VARIANT) AS CONTRAST_VARIANT,
+    MIN(CODE_ROLE) AS CODE_ROLE,
+    MIN(IS_CMS70_CODE) AS IS_CMS70_CODE,
+    MIN(MDC) AS MDC, MIN(DRG_ACUITY_KEYWORD_TAG) AS DRG_ACUITY_KEYWORD_TAG,
+
+    COUNT_IF(IN_BOUND_FLAG=1) AS N_PAYER_CELLS,
+    COUNT(DISTINCT IFF(IN_BOUND_FLAG=1, CANONICAL_PAYER_KEY, NULL)) AS N_DISTINCT_PAYERS,
+
+    ROUND(MEDIAN(IFF(IN_BOUND_FLAG=1, PAYER_CELL_RATE, NULL)), 6) AS MEDIAN_PRICE,
+    ROUND(AVG(IFF(IN_BOUND_FLAG=1, PAYER_CELL_RATE, NULL)), 6) AS MEAN_PRICE,
+    ROUND(MIN(IFF(IN_BOUND_FLAG=1, PAYER_CELL_RATE, NULL)), 6) AS MIN_PRICE,
+    ROUND(MAX(IFF(IN_BOUND_FLAG=1, PAYER_CELL_RATE, NULL)), 6) AS MAX_PRICE,
+    ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY IFF(IN_BOUND_FLAG=1, PAYER_CELL_RATE, NULL)), 6) AS P25_PRICE,
+    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY IFF(IN_BOUND_FLAG=1, PAYER_CELL_RATE, NULL)), 6) AS P75_PRICE,
+    ROUND(STDDEV_SAMP(IFF(IN_BOUND_FLAG=1, PAYER_CELL_RATE, NULL)), 6) AS STDDEV_PRICE,
+    AVG(IFF(IN_BOUND_FLAG=1, LN(PAYER_CELL_RATE), NULL)) AS MEAN_LOG_PRICE,
+    MEDIAN(IFF(IN_BOUND_FLAG=1, LN(PAYER_CELL_RATE), NULL)) AS MEDIAN_LOG_PRICE,
+    ROUND(MEDIAN(IFF(IN_BOUND_FLAG=1, MEDICARE_RATE_MEDIAN, NULL)), 6) AS MEDICARE_RATE_MEDIAN
+
+FROM FLAGGED
+GROUP BY HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, BILLING_CODE
+HAVING COUNT_IF(IN_BOUND_FLAG=1) > 0
+;
+
+CREATE OR REPLACE VIEW O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES_STANDALONE AS
+SELECT * FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES WHERE CODE_ROLE = 'STANDALONE';
+
+
+/* SECTION 3: hard QA. Tests key uniqueness and quantile ordering; a violation
+   of the latter would mean the percentile aggregation is misbehaving. */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P3_QA_SUMMARY AS
+SELECT
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES) AS N_ROWS,
+    (SELECT COUNT(DISTINCT HOSPITAL_CODE_MONTH_ID) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES) AS N_DISTINCT_IDS,
+    (SELECT COUNT(DISTINCT HOSPITAL_ID) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES) AS N_HOSPITALS,
+    (SELECT COUNT(DISTINCT BILLING_CODE_TYPE||'|'||BILLING_CODE) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES) AS N_CODES,
+    (SELECT COUNT_IF(MIN_PRICE <= 0 OR MIN_PRICE > P25_PRICE OR P25_PRICE > MEDIAN_PRICE OR MEDIAN_PRICE > P75_PRICE OR P75_PRICE > MAX_PRICE)
+       FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES) AS N_QUANTILE_ORDER_ERRORS,
+    CASE
+        WHEN (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES)
+             = (SELECT COUNT(DISTINCT HOSPITAL_CODE_MONTH_ID) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES)
+         AND (SELECT COUNT_IF(MIN_PRICE <= 0 OR MIN_PRICE > P25_PRICE OR P25_PRICE > MEDIAN_PRICE OR MEDIAN_PRICE > P75_PRICE OR P75_PRICE > MAX_PRICE)
+                FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES) = 0
+            THEN 'PASS'
+        ELSE 'REVIEW'
+    END AS PHASE3_QA_STATUS
+;
+
+SELECT * FROM O_ECON.COMMON.HPT_P3_QA_SUMMARY;
+
+
+/* =============================================================================
+   =============================================================================
+   PHASE 4 -- MARKET-ENTRY EXPOSURE, THEN CONCEPT AND FAMILY ROLLUPS
+   =============================================================================
+   ============================================================================= */
+
+/* SECTION 1: county posting-cohort exposure.
+
+   This is the treatment variable for the design: how many hospitals had
+   already posted standalone prices in the county before this hospital's first
+   observed posting month.
+
+   Note that the cohort is built from a hospital's FIRST observed month, which
+   is what makes it a disclosure cohort rather than a panel month. Nearly every
+   hospital discloses once, so there is no within-hospital timing variation to
+   exploit downstream -- the R stage addresses that structurally rather than
+   with an event study. */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_COHORT AS
+SELECT
+    HOSPITAL_ID,
+    MIN(PROVIDER_NAME) AS PROVIDER_NAME, MIN(PROVIDER_STATE) AS PROVIDER_STATE,
+    MIN(COUNTY_STATE) AS COUNTY_STATE, MIN(CBSA_CODE) AS CBSA_CODE,
+    MIN(POST_MONTH) AS HOSPITAL_FIRST_POST_MONTH,
+    MAX(POST_MONTH) AS HOSPITAL_LAST_POST_MONTH,
+    COUNT(DISTINCT POST_MONTH) AS N_OBSERVED_MONTHS
+FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES
+WHERE CODE_ROLE = 'STANDALONE'
+GROUP BY HOSPITAL_ID
+;
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P4_COUNTY_POSTING_COHORT AS
+WITH ENTRIES AS (
+    SELECT COUNTY_STATE, HOSPITAL_FIRST_POST_MONTH AS COHORT_MONTH, COUNT(DISTINCT HOSPITAL_ID) AS N_ENTERING
+    FROM O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_COHORT
+    WHERE COUNTY_STATE IS NOT NULL
+    GROUP BY COUNTY_STATE, HOSPITAL_FIRST_POST_MONTH
+)
+SELECT
+    *,
+    SUM(N_ENTERING) OVER (PARTITION BY COUNTY_STATE ORDER BY COHORT_MONTH ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS N_CUMULATIVE_POSTERS,
+    SUM(N_ENTERING) OVER (PARTITION BY COUNTY_STATE) AS N_FINAL_TOTAL_POSTERS
+FROM ENTRIES
+;
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT AS
+SELECT
+    H.*,
+    C.N_CUMULATIVE_POSTERS - C.N_ENTERING AS COUNTY_N_PRIOR_POSTERS,
+    C.N_FINAL_TOTAL_POSTERS AS COUNTY_FINAL_TOTAL_POSTERS
+FROM O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_COHORT H
+LEFT JOIN O_ECON.COMMON.HPT_P4_COUNTY_POSTING_COHORT C
+    ON H.COUNTY_STATE = C.COUNTY_STATE AND H.HOSPITAL_FIRST_POST_MONTH = C.COHORT_MONTH
+;
+
+SELECT COUNT(*) AS N_HOSPITALS,
+       COUNT_IF(COUNTY_N_PRIOR_POSTERS < 0) AS N_NEGATIVE_PRIOR_COUNTS
+FROM O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT;
+-- N_NEGATIVE_PRIOR_COUNTS must be 0. Subtracting the entering cohort from the
+-- cumulative count is what makes the measure strictly prior; a negative value
+-- would mean that subtraction has gone wrong.
+
+
+/* SECTION 2: CONCEPT level.
+
+   Equal-weighted median of the exact-code medians within a concept, standalone
+   codes only. Equal weighting means a concept spanning many billing-code
+   variants does not have its price driven by whichever variant happens to be
+   most widely posted. Component codes never enter as primary observations. */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P4_HOSPITAL_CONCEPT_PRICES AS
+SELECT
+    E.HOSPITAL_ID,
+    MIN(E.PROVIDER_NAME) AS PROVIDER_NAME, MIN(E.PROVIDER_STATE) AS PROVIDER_STATE,
+    MIN(E.COUNTY_STATE) AS COUNTY_STATE, MIN(E.CBSA_CODE) AS CBSA_CODE,
+    E.POST_MONTH,
+    E.BILLING_CODE_TYPE, E.ANALYSIS_SUPERFAMILY_ID, E.ANALYSIS_FAMILY_ID,
+    MIN(E.ANALYSIS_FAMILY_NAME) AS ANALYSIS_FAMILY_NAME,
+    E.ANALYSIS_CONCEPT_ID,
+    COUNT(*) AS N_CODES_IN_CONCEPT,
+    LISTAGG(DISTINCT E.BILLING_CODE, ',') WITHIN GROUP (ORDER BY E.BILLING_CODE) AS BILLING_CODES,
+    LISTAGG(DISTINCT E.CONTRAST_VARIANT, ',') WITHIN GROUP (ORDER BY E.CONTRAST_VARIANT) AS VARIANTS_PRESENT,
+    SUM(E.N_PAYER_CELLS) AS N_PAYER_CELLS_TOTAL,
+    ROUND(MEDIAN(E.MEDIAN_PRICE), 6) AS MEDIAN_PRICE,
+    ROUND(AVG(E.MEDIAN_PRICE), 6) AS MEAN_PRICE,
+    ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY E.MEDIAN_PRICE), 6) AS P25_PRICE,
+    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY E.MEDIAN_PRICE), 6) AS P75_PRICE,
+    MEDIAN(E.MEDIAN_LOG_PRICE) AS MEDIAN_LOG_PRICE
+
+FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES E
+WHERE E.CODE_ROLE = 'STANDALONE'
+GROUP BY E.HOSPITAL_ID, E.POST_MONTH, E.BILLING_CODE_TYPE, E.ANALYSIS_SUPERFAMILY_ID, E.ANALYSIS_FAMILY_ID, E.ANALYSIS_CONCEPT_ID
+;
+
+
+/* SECTION 3: FAMILY level.
+
+   Equal-weighted median of concept medians within a family, so a family
+   covering more body parts does not mechanically outweigh one covering few. */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P4_HOSPITAL_FAMILY_PRICES AS
+SELECT
+    C.HOSPITAL_ID,
+    MIN(C.PROVIDER_NAME) AS PROVIDER_NAME, MIN(C.PROVIDER_STATE) AS PROVIDER_STATE,
+    MIN(C.COUNTY_STATE) AS COUNTY_STATE, MIN(C.CBSA_CODE) AS CBSA_CODE,
+    C.POST_MONTH,
+    C.BILLING_CODE_TYPE, C.ANALYSIS_SUPERFAMILY_ID, C.ANALYSIS_FAMILY_ID,
+    MIN(C.ANALYSIS_FAMILY_NAME) AS ANALYSIS_FAMILY_NAME,
+    COUNT(*) AS N_CONCEPTS_IN_FAMILY,
+    SUM(C.N_PAYER_CELLS_TOTAL) AS N_PAYER_CELLS_TOTAL,
+    ROUND(MEDIAN(C.MEDIAN_PRICE), 6) AS MEDIAN_PRICE,
+    ROUND(AVG(C.MEDIAN_PRICE), 6) AS MEAN_PRICE,
+    ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY C.MEDIAN_PRICE), 6) AS P25_PRICE,
+    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY C.MEDIAN_PRICE), 6) AS P75_PRICE
+FROM O_ECON.COMMON.HPT_P4_HOSPITAL_CONCEPT_PRICES C
+GROUP BY C.HOSPITAL_ID, C.POST_MONTH, C.BILLING_CODE_TYPE, C.ANALYSIS_SUPERFAMILY_ID, C.ANALYSIS_FAMILY_ID
+;
+
+
+/* SECTION 4: component (add-on) prices, exported as sensitivity context only
+   and never folded into a primary concept or family price. */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P4_COMPONENT_CONTEXT AS
+SELECT *
+FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES
+WHERE CODE_ROLE = 'COMPONENT'
+;
+
+
+/* SECTION 5: convenience views joining prices to posting context, plus QA. */
+
+CREATE OR REPLACE VIEW O_ECON.COMMON.HPT_HOSPITAL_EXACT_CODE_PRICES_CURRENT AS
+SELECT E.*, H.HOSPITAL_FIRST_POST_MONTH, H.COUNTY_N_PRIOR_POSTERS, H.COUNTY_FINAL_TOTAL_POSTERS
+FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES E
+INNER JOIN O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT H ON E.HOSPITAL_ID = H.HOSPITAL_ID
+WHERE E.CODE_ROLE = 'STANDALONE';
+
+CREATE OR REPLACE VIEW O_ECON.COMMON.HPT_HOSPITAL_CONCEPT_PRICES_CURRENT AS
+SELECT C.*, H.HOSPITAL_FIRST_POST_MONTH, H.COUNTY_N_PRIOR_POSTERS, H.COUNTY_FINAL_TOTAL_POSTERS
+FROM O_ECON.COMMON.HPT_P4_HOSPITAL_CONCEPT_PRICES C
+INNER JOIN O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT H ON C.HOSPITAL_ID = H.HOSPITAL_ID;
+
+CREATE OR REPLACE VIEW O_ECON.COMMON.HPT_HOSPITAL_FAMILY_PRICES_CURRENT AS
+SELECT F.*, H.HOSPITAL_FIRST_POST_MONTH, H.COUNTY_N_PRIOR_POSTERS, H.COUNTY_FINAL_TOTAL_POSTERS
+FROM O_ECON.COMMON.HPT_P4_HOSPITAL_FAMILY_PRICES F
+INNER JOIN O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT H ON F.HOSPITAL_ID = H.HOSPITAL_ID;
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_P4_QA_SUMMARY AS
+SELECT
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES WHERE CODE_ROLE='STANDALONE') AS N_EXACT_CODE_ROWS,
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_CONCEPT_PRICES) AS N_CONCEPT_ROWS,
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_FAMILY_PRICES) AS N_FAMILY_ROWS,
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P4_COMPONENT_CONTEXT) AS N_COMPONENT_ROWS,
+    (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT) AS N_HOSPITALS_WITH_COHORT,
+    (SELECT COUNT_IF(COUNTY_N_PRIOR_POSTERS < 0) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT) AS N_NEGATIVE_PRIOR_COUNTS,
+    CASE
+        WHEN (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES WHERE CODE_ROLE='STANDALONE') > 0
+         AND (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_CONCEPT_PRICES) > 0
+         AND (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_FAMILY_PRICES) > 0
+         AND (SELECT COUNT(*) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT) > 0
+         AND (SELECT COUNT_IF(COUNTY_N_PRIOR_POSTERS < 0) FROM O_ECON.COMMON.HPT_P4_HOSPITAL_POSTING_CONTEXT) = 0
+            THEN 'PASS'
+        ELSE 'REVIEW'
+    END AS PHASE4_QA_STATUS
+;
+
+SELECT * FROM O_ECON.COMMON.HPT_P4_QA_SUMMARY;
+
+-- Spot check the concept rollup on a known concept: pull an MRI brain concept
+-- and inspect its constituent exact codes and the family it rolls into.
+SELECT *
+FROM O_ECON.COMMON.HPT_P4_HOSPITAL_CONCEPT_PRICES
+WHERE ANALYSIS_CONCEPT_ID ILIKE '%MRI_BRAIN%'
+LIMIT 20;
+
+
+/* =============================================================================
+   PHASE 4 -- SECTION 5B: HOSPITAL DIRECTORY
+
+   One row per hospital with every hospital-level attribute in one place, built
+   from the payer-cell table so no rescan of the raw source is needed.
+
+   Hospital attributes -- name, city, health system, bed count -- would
+   otherwise be carried inconsistently through the exact-code and rollup
+   aggregations, kept in some and dropped in others. Rather than thread every
+   attribute through every aggregation stage, they are joined onto whichever
+   table needs them at the Python or R stage.
+
+   HQ_LATITUDE and HQ_LONGITUDE are deliberately excluded. They exist on the
+   raw source, but the HQ prefix indicates health-system headquarters rather
+   than facility coordinates, and for a multi-facility system a per-hospital
+   spatial join on them could silently assign the wrong county. County
+   assignment uses name-based matching until facility coordinates are
+   available.
+   ============================================================================= */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_HOSPITAL_DIRECTORY AS
+SELECT
+    HOSPITAL_ID,
+    MIN(PROVIDER_NPI) AS PROVIDER_NPI,
+    MIN(PROVIDER_NAME) AS PROVIDER_NAME,
+    MIN(PROVIDER_CITY) AS PROVIDER_CITY,
+    MIN(PROVIDER_STATE) AS PROVIDER_STATE,
+    MIN(COUNTY) AS COUNTY,
+    MIN(COUNTY_STATE) AS COUNTY_STATE,
+    MIN(CBSA_CODE) AS CBSA_CODE,
+    MIN(HOSPITAL_TYPE) AS HOSPITAL_TYPE,
+    MIN(HEALTH_SYSTEM_ID) AS HEALTH_SYSTEM_ID,
+    MIN(HEALTH_SYSTEM_NAME) AS HEALTH_SYSTEM_NAME,
+    MEDIAN(TOTAL_BEDS) AS TOTAL_BEDS
+FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS
+GROUP BY HOSPITAL_ID
+;
+
+SELECT COUNT(*) AS N_HOSPITALS FROM O_ECON.COMMON.HPT_HOSPITAL_DIRECTORY;
+
+
+/* =============================================================================
+   PHASE 4 -- SECTION 6: EXPORT FOR PYTHON AND R
+
+   Four data folders:
+
+     exact_standalone/   hospital x month x exact code, standalone codes
+     exact_component/    hospital x month x exact code, add-on codes
+     concept/            hospital x month x concept
+     family/             hospital x month x family
+
+   There is no separate strict-tier export. STRICT_TIER_FLAG is a column on the
+   exact-code rows, so that subset is a filter in Python or R rather than a
+   parallel table Snowflake has to build and transfer.
+
+   Plus a QA folder holding everything needed to verify the download landed
+   correctly, and one codebook file carrying the raw objective attributes --
+   OPPS status, ASC eligibility, CMS-70 membership, DRG acuity, contrast
+   variant -- that the R stage uses to construct shoppability schemes. There is
+   no pre-baked scheme file to join, by design.
+   ============================================================================= */
+
+CREATE OR REPLACE STAGE O_ECON.COMMON.HPT_PY_EXPORT_STAGE
+    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+    DIRECTORY = (ENABLE = TRUE)
+    COMMENT = 'Final Python/R-ready exports'
+;
+
+-- ---- Codebook ----
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/qa/HPT_CODEBOOK.csv
+FROM (
+    SELECT *
+    FROM O_ECON.COMMON.HPT_P1_FINAL_CODEBOOK_SCOPED
+    ORDER BY BILLING_CODE_TYPE, ANALYSIS_FAMILY_ID, ANALYSIS_CONCEPT_ID, BILLING_CODE
+)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = NONE NULL_IF = (''))
+HEADER = TRUE SINGLE = TRUE OVERWRITE = TRUE
+;
+
+-- ---- Hospital directory ----
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/qa/HPT_HOSPITAL_DIRECTORY.csv
+FROM (SELECT * FROM O_ECON.COMMON.HPT_HOSPITAL_DIRECTORY ORDER BY HOSPITAL_ID)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = NONE NULL_IF = (''))
+HEADER = TRUE SINGLE = TRUE OVERWRITE = TRUE
+;
+
+-- ---- QA summaries. The Python stage reads expected row counts from these
+-- rather than from hardcoded constants, so they must be exported alongside
+-- the data. ----
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/qa/HPT_P2_QA_SUMMARY.csv
+FROM (SELECT * FROM O_ECON.COMMON.HPT_P2_QA_SUMMARY)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = NONE NULL_IF = (''))
+HEADER = TRUE SINGLE = TRUE OVERWRITE = TRUE
+;
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/qa/HPT_P3_QA_SUMMARY.csv
+FROM (SELECT * FROM O_ECON.COMMON.HPT_P3_QA_SUMMARY)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = NONE NULL_IF = (''))
+HEADER = TRUE SINGLE = TRUE OVERWRITE = TRUE
+;
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/qa/HPT_P4_QA_SUMMARY.csv
+FROM (SELECT * FROM O_ECON.COMMON.HPT_P4_QA_SUMMARY)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = NONE NULL_IF = (''))
+HEADER = TRUE SINGLE = TRUE OVERWRITE = TRUE
+;
+
+-- ---- The four data exports, sharded GZIP. These are multi-million-row
+-- tables, so SINGLE = FALSE lets Snowflake split them; the Python loader
+-- reads every matching shard rather than expecting one file. ----
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/data/exact_standalone/HPT_EXACT_STANDALONE_
+FROM (
+    SELECT * FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES
+    WHERE CODE_ROLE = 'STANDALONE'
+    ORDER BY PROVIDER_STATE, HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, BILLING_CODE
+)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = GZIP NULL_IF = (''))
+HEADER = TRUE SINGLE = FALSE MAX_FILE_SIZE = 268435456 INCLUDE_QUERY_ID = TRUE
+;
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/data/exact_component/HPT_EXACT_COMPONENT_
+FROM (
+    SELECT * FROM O_ECON.COMMON.HPT_P3_HOSPITAL_EXACT_CODE_PRICES
+    WHERE CODE_ROLE = 'COMPONENT'
+    ORDER BY PROVIDER_STATE, HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, BILLING_CODE
+)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = GZIP NULL_IF = (''))
+HEADER = TRUE SINGLE = FALSE MAX_FILE_SIZE = 268435456 INCLUDE_QUERY_ID = TRUE
+;
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/data/concept/HPT_CONCEPT_
+FROM (
+    SELECT * FROM O_ECON.COMMON.HPT_P4_HOSPITAL_CONCEPT_PRICES
+    ORDER BY PROVIDER_STATE, HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, ANALYSIS_FAMILY_ID, ANALYSIS_CONCEPT_ID
+)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = GZIP NULL_IF = (''))
+HEADER = TRUE SINGLE = FALSE MAX_FILE_SIZE = 268435456 INCLUDE_QUERY_ID = TRUE
+;
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/data/family/HPT_FAMILY_
+FROM (
+    SELECT * FROM O_ECON.COMMON.HPT_P4_HOSPITAL_FAMILY_PRICES
+    ORDER BY PROVIDER_STATE, HOSPITAL_ID, POST_MONTH, BILLING_CODE_TYPE, ANALYSIS_FAMILY_ID
+)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = GZIP NULL_IF = (''))
+HEADER = TRUE SINGLE = FALSE MAX_FILE_SIZE = 268435456 INCLUDE_QUERY_ID = TRUE
+;
+
+ALTER STAGE O_ECON.COMMON.HPT_PY_EXPORT_STAGE REFRESH;
+
+-- QA files: direct 7-day download links.
+SELECT
+    RELATIVE_PATH AS FILE_NAME,
+    ROUND(SIZE / 1024 / 1024, 2) AS SIZE_MB,
+    GET_PRESIGNED_URL(@O_ECON.COMMON.HPT_PY_EXPORT_STAGE, RELATIVE_PATH, 604800) AS DOWNLOAD_URL
+FROM DIRECTORY(@O_ECON.COMMON.HPT_PY_EXPORT_STAGE)
+WHERE RELATIVE_PATH LIKE 'qa/%'
+ORDER BY RELATIVE_PATH;
+
+-- Data-file inventory. Download these through the stage file browser's bulk
+-- download rather than one presigned URL at a time.
+SELECT RELATIVE_PATH, ROUND(SIZE / 1024 / 1024, 2) AS SIZE_MB, LAST_MODIFIED
+FROM DIRECTORY(@O_ECON.COMMON.HPT_PY_EXPORT_STAGE)
+WHERE RELATIVE_PATH LIKE 'data/%'
+ORDER BY RELATIVE_PATH;
+
+
+/* =============================================================================
+   PHASE 4 -- SECTION 7: PAYER DISPERSION EXPORT
+
+   Payer-level price dispersion within each hospital x month x concept cell.
+   This is the input to PD_PAYER_V2 and N_PAYERS_V2, the two contracting-depth
+   measures the R stage uses to test price comparability as a mechanism.
+
+   It is built from identified payers and negotiated rates directly, which is
+   what distinguishes it from a dispersion measure derived from the concept
+   panel's own percentile columns -- the latter captures variation across
+   billing codes inside a concept rather than across payers.
+   ============================================================================= */
+
+CREATE OR REPLACE TABLE O_ECON.COMMON.HPT_SUPPLEMENTARY_PAYER_DISPERSION AS
+SELECT
+    HOSPITAL_ID,
+    POST_MONTH,
+    ANALYSIS_CONCEPT_ID,
+    COUNT(DISTINCT CANONICAL_PAYER_KEY)                        AS N_DISTINCT_PAYERS,
+    COUNT(*)                                                    AS N_PAYER_CELLS,
+    (PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY PAYER_CELL_RATE)
+     - PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY PAYER_CELL_RATE))
+     / NULLIF(MEDIAN(PAYER_CELL_RATE), 0)                      AS CV_PAYER_NEGOTIATED
+FROM O_ECON.COMMON.HPT_P2_PAYER_CELLS
+WHERE CODE_ROLE = 'STANDALONE'
+  AND MISSING_PAYER_IDENTITY_FLAG = 0
+  AND PAYER_CELL_RATE > 0
+GROUP BY HOSPITAL_ID, POST_MONTH, ANALYSIS_CONCEPT_ID
+;
+
+-- Coverage check. A high single-payer or zero-dispersion share would mean the
+-- measure has little variation to identify anything, so check this before
+-- relying on it downstream.
+SELECT
+    COUNT(*)                                       AS n_hospital_month_concepts,
+    COUNT(DISTINCT HOSPITAL_ID)                    AS n_hospitals,
+    COUNT(DISTINCT ANALYSIS_CONCEPT_ID)            AS n_concepts,
+    AVG(N_DISTINCT_PAYERS)                         AS mean_n_payers,
+    MEDIAN(N_DISTINCT_PAYERS)                      AS median_n_payers,
+    COUNT_IF(N_DISTINCT_PAYERS = 1)                AS n_single_payer_cells,
+    COUNT_IF(N_DISTINCT_PAYERS = 1) / COUNT(*)     AS pct_single_payer,
+    COUNT_IF(CV_PAYER_NEGOTIATED = 0)              AS n_zero_dispersion,
+    COUNT_IF(CV_PAYER_NEGOTIATED = 0) / COUNT(*)   AS pct_zero_dispersion
+FROM O_ECON.COMMON.HPT_SUPPLEMENTARY_PAYER_DISPERSION
+;
+
+COPY INTO @O_ECON.COMMON.HPT_PY_EXPORT_STAGE/data/payer_dispersion/HPT_PAYER_DISPERSION.csv.gz
+FROM (
+    SELECT * FROM O_ECON.COMMON.HPT_SUPPLEMENTARY_PAYER_DISPERSION
+    ORDER BY HOSPITAL_ID, POST_MONTH, ANALYSIS_CONCEPT_ID
+)
+FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' COMPRESSION = GZIP NULL_IF = (''))
+HEADER = TRUE
+MAX_FILE_SIZE = 5368709120
+OVERWRITE = TRUE
+;
+
+ALTER STAGE O_ECON.COMMON.HPT_PY_EXPORT_STAGE REFRESH;
+
+-- Snowflake splits this export above an internal size threshold regardless of
+-- MAX_FILE_SIZE, so it arrives as several gzip parts, each with its own header
+-- row. The R loader reads every matching shard individually for that reason.
+SELECT RELATIVE_PATH, ROUND(SIZE/1024/1024,2) AS SIZE_MB,
+       GET_PRESIGNED_URL(@O_ECON.COMMON.HPT_PY_EXPORT_STAGE, RELATIVE_PATH, 604800) AS DOWNLOAD_URL
+FROM DIRECTORY(@O_ECON.COMMON.HPT_PY_EXPORT_STAGE)
+WHERE RELATIVE_PATH LIKE 'data/payer_dispersion/%';

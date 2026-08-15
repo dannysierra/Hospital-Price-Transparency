@@ -33,8 +33,8 @@ Code/*
 Notebooks/*
 
 # Uncomment as needed:
-# !SQL/
-# SQL/*
+!SQL/
+SQL/*
 
 
 # --- 3. FILES: the complete list of what gets committed ----------------------
@@ -48,8 +48,9 @@ Notebooks/*
 !Notebooks/HPT_Python_Pipeline.ipynb
 
 # Examples, uncomment and edit:
-# !SQL/HPT_Phase1_Rebuilt.sql
-# !SQL/HPT_Phase2to4_Rebuilt.sql
+!SQL/01_Phase1_Codebook.sql
+!SQL/02_Phase2to4_Prices.sql
+!SQL/03_Supplementary_Analyses.sql
 # !HPT_Project.Rproj
 
 # --- end of allowlist. Do not add patterns below this line. ---
