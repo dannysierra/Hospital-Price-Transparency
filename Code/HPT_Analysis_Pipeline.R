@@ -66,6 +66,32 @@
 # estimated on the panel currently in memory, and stops if they were not.
 #
 # ---------------------------------------------------------------------------
+# RESUMING A COMPLETED RUN IN A FRESH SESSION
+# ---------------------------------------------------------------------------
+# Once the pipeline has been run through, a new session does not need to
+# re-estimate anything. Three steps:
+#
+#   1. Run Sections 0 through 12 -- everything ABOVE the line marked
+#      `# ORDER OF OPERATIONS` (search for it; line 2958 in this version).
+#      These are pure definitions and take seconds. Do not run past it.
+#
+#   2. Run the SESSION RESTORE block at the very bottom of this file. It
+#      defines cache_status(), restore_session(), and invalidate_cache().
+#
+#   3. Call restore_session(). Every cached object is loaded into the global
+#      environment under the name the run blocks use -- `outpatient`,
+#      `concept_results`, `main`, `measures`, and the rest. Call
+#      cache_status() first if you want to see what is on disk before loading.
+#
+# New analysis can then be written directly against those objects, and every
+# pipeline function is available to reuse. Result CSVs also remain readable
+# from TABLE_DIR without restoring anything.
+#
+# IF YOU CHANGE A FUNCTION and want the change reflected, restoring a stale
+# cache would hide it. Use invalidate_cache(), which knows the dependency
+# order and cascades by default. See the SESSION RESTORE block for details.
+#
+# ---------------------------------------------------------------------------
 # DESIGN DECISIONS
 # ---------------------------------------------------------------------------
 # Four choices are fixed throughout and are not re-litigated section by
@@ -3829,6 +3855,16 @@ for (cc in demo_cols) {
 # ---------------------------------------------------------------------------
 # STEP 8 -- persist the merged panel, only after steps 4 and 7 look right
 # ---------------------------------------------------------------------------
+#
+# This overwrites the cached panel with the demographics-merged version,
+# deliberately and outside cache_or_run(). The effect is that restore_session()
+# returns `outpatient` with the DEMO_ columns already attached, so Sections 12
+# and 12B run in a fresh session without another Census API pull.
+#
+# THE TRADE-OFF: the cached panel is no longer what the BUILD block alone would
+# produce. After any rebuild of outpatient_panel -- whether through
+# invalidate_cache() or USE_CACHE <- FALSE -- the DEMO_ columns are gone until
+# this block is run again. Re-run it before Section 12 in that case.
 saveRDS(outpatient, file.path(CACHE_DIR, "outpatient_panel.rds"))
 
 
@@ -7874,16 +7910,16 @@ save_csv(fam_share, "QA11_shoppable_shares_by_family.csv")
 # default rather than leaving it to be remembered:
 #
 #   schemes_long
-#     └── outpatient_panel
-#           ├── instrument_screen, pooled_models, t02_pooled_current_vintage
-#           ├── concept_level_6inst  (8 hours)
-#           │     └── meta_regressions_rf, meta_regressions_iv
-#           ├── main_results, transform_ladder, confirming_results,
-#           │   discrepant_results, robustness_pool_results
-#           ├── comparability_measures
-#           │     └── comparability_interaction
-#           ├── s13_* (four robustness blocks)
-#           └── cbsa_panel, s15_* (market definition, windows, payer)
+#     `-- outpatient_panel
+#           |-- instrument_screen, pooled_models, t02_pooled_current_vintage
+#           |-- concept_level_6inst  (8 hours)
+#           |     `-- meta_regressions_rf, meta_regressions_iv
+#           |-- main_results, transform_ladder, confirming_results,
+#           |   discrepant_results, robustness_pool_results
+#           |-- comparability_measures
+#           |     `-- comparability_interaction
+#           |-- s13_* (four robustness blocks)
+#           `-- cbsa_panel, s15_* (market definition, windows, payer)
 #
 # Editing a function changes only the caches at or below its level. Editing a
 # scheme rule invalidates everything; editing run_transform_ladder() invalidates
@@ -7919,7 +7955,10 @@ CACHE_REGISTRY <- list(
   s15b_window_ladder_v11      = list(var = "s15b_results",     stage = "15B"),
   s15_payer_class_panel       = list(var = "s15_payer",        stage = "15C"),
   s15_payer_results           = list(var = "s15_payer_res",    stage = "15C"),
-  t02_pooled_current_vintage  = list(var = "pooled",           stage = "LaTeX")
+  # The LaTeX block assigns this to `pooled`, the same name stage 5 uses for a
+  # different object. Restored under a distinct name so one cannot overwrite the
+  # other; the block itself is unaffected.
+  t02_pooled_current_vintage  = list(var = "pooled_t02",       stage = "LaTeX")
 )
 
 # Dependency edges: invalidating the name on the left invalidates everything on
@@ -7992,6 +8031,15 @@ restore_session <- function(keys = names(CACHE_REGISTRY), quiet = FALSE) {
   keys    <- intersect(keys, names(CACHE_REGISTRY))
   loaded  <- character(0)
   missing <- character(0)
+  
+  # Two keys mapping to one variable name would mean the later silently
+  # overwrites the earlier, which is exactly the kind of thing that produces a
+  # correct-looking object holding the wrong contents.
+  targets <- vapply(keys, function(k) CACHE_REGISTRY[[k]]$var, character(1))
+  if (anyDuplicated(targets))
+    stop("CACHE_REGISTRY maps more than one key to the same variable name: ",
+         paste(unique(targets[duplicated(targets)]), collapse = ", "),
+         call. = FALSE)
   
   for (k in keys) {
     path <- file.path(CACHE_DIR, paste0(k, ".rds"))
