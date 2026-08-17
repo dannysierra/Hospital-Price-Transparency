@@ -45,6 +45,10 @@ SQL/*
 !LICENSE
 
 !Code/HPT_Analysis_Pipeline.R
+!Code/HPT_warm_start.R
+!Code/HPT_diagnostic_for_family_levels.R
+
+
 !Notebooks/HPT_Python_Pipeline.ipynb
 
 # Examples, uncomment and edit:

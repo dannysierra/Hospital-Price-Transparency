@@ -8145,3 +8145,979 @@ invalidate_cache <- function(keys, cascade = TRUE, dry_run = TRUE) {
 # cascade = FALSE. Do that only when the change genuinely cannot affect
 # dependents, since a partially updated cache is worse than a stale one.
 ###############################################################################
+
+
+source("/Users/danielsierra/Library/CloudStorage/OneDrive-FloridaStateUniversity/Hospital Price Transparency Paper/Code/HPT_warm_start.R")
+
+warm_start()
+
+source("/Users/danielsierra/Library/CloudStorage/OneDrive-FloridaStateUniversity/Hospital Price Transparency Paper/Code/HPT_diagnostic_for_family_levels.R")
+
+
+
+
+
+###############################################################################
+# SECTION 16 -- FAMILY AND SUPERFAMILY LEVEL ANALYSIS (subsample design)
+#
+# Same estimator, same fixed effects, same clustering as the concept-level
+# work. Nothing here builds a new outcome variable or a weighting rule; every
+# number is estimated on raw rows filtered (or grouped) by FINAL_FAMILY_ID or
+# FINAL_SUPERFAMILY_ID instead of ANALYSIS_SERVICE_ID.
+#
+# Load AFTER warm_start() / restore_session(). Needs `outpatient` and every
+# Section-0-through-12 function and constant. Nothing here overwrites an
+# existing object; new results go into GROUP_ prefixed and s16_ prefixed names.
+#
+# WHAT "INTERACTED IV" MEANS AT THIS GRAIN
+#   estimate_interacted()'s categorical branch already handles a moderator
+#   with any number of levels, not just two. Passing FINAL_FAMILY_ID directly
+#   as the moderator on the full panel gives every family's coefficient from
+#   ONE exactly-identified regression, with a joint heterogeneity Wald test --
+#   the direct family-level extension of the Scheme 1 table, not new
+#   machinery. This is 16.5/16.6 below.
+#
+# WHAT REPLACES THE MEta-REGRESSION
+#   Sixteen families and MIN_CONCEPTS_META = 15 means a family-level
+#   meta-regression is a two-group comparison clustered on the variable that
+#   defines the groups -- not informative. What DOES carry weight at this
+#   grain is the exact permutation test already used at concept level
+#   (family_permutation_test()), now with each family contributing exactly
+#   one point instead of several, which is better-specified inference, not a
+#   downgrade. That is 16.7. A parametric weighted-mean-difference companion
+#   is reported alongside it for comparison, not as the primary result.
+###############################################################################
+
+suppressPackageStartupMessages({ library(data.table); library(fixest) })
+
+.s16_hd   <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+.s16_show <- function(d, n = Inf) {
+  d <- as.data.frame(d)
+  if (is.finite(n) && nrow(d) > n) { print(head(d, n), row.names = FALSE)
+    cat("  [", nrow(d) - n, " further rows suppressed]\n", sep = "")
+  } else print(d, row.names = FALSE)
+  invisible(NULL)
+}
+
+stopifnot(exists("outpatient"), exists("schemes_long"))
+
+
+# ===========================================================================
+# 16.0 BACKFILL FINAL_SUPERFAMILY_ID FOR MERGED CANONICAL CONCEPTS
+#
+# apply_concept_merges() sets FINAL_FAMILY_ID on the six merged concepts but
+# never sets FINAL_SUPERFAMILY_ID, so it comes through as NA on those rows
+# (confirmed: 14,143 rows / 6 concepts in the diagnostic). Every constituent
+# family already has a known superfamily elsewhere in the panel, so this is a
+# lookup, not an inference.
+# ===========================================================================
+.s16_hd("16.0 Backfilling FINAL_SUPERFAMILY_ID")
+
+n_na_before <- outpatient[is.na(FINAL_SUPERFAMILY_ID), .N]
+
+.s16_fam2super <- unique(outpatient[!is.na(FINAL_SUPERFAMILY_ID),
+                                    .(FINAL_FAMILY_ID, FINAL_SUPERFAMILY_ID)])
+if (uniqueN(.s16_fam2super$FINAL_FAMILY_ID) != nrow(.s16_fam2super)) {
+  stop("A FINAL_FAMILY_ID maps to more than one FINAL_SUPERFAMILY_ID among the ",
+       "non-missing rows -- the lookup is not well defined. Inspect ",
+       "'.s16_fam2super[, .N, by = FINAL_FAMILY_ID][N > 1]' before proceeding.",
+       call. = FALSE)
+}
+
+outpatient[is.na(FINAL_SUPERFAMILY_ID),
+           FINAL_SUPERFAMILY_ID := .s16_fam2super$FINAL_SUPERFAMILY_ID[
+             match(FINAL_FAMILY_ID, .s16_fam2super$FINAL_FAMILY_ID)]]
+
+n_na_after <- outpatient[is.na(FINAL_SUPERFAMILY_ID), .N]
+cat("FINAL_SUPERFAMILY_ID missing before:", n_na_before, "| after backfill:", n_na_after, "\n")
+if (n_na_after > 0L) {
+  cat("Remaining NA families (no known superfamily anywhere in the panel):\n")
+  print(outpatient[is.na(FINAL_SUPERFAMILY_ID), .N, by = FINAL_FAMILY_ID])
+}
+
+# OTHER is a genuine mix under Scheme 1 (LABORATORY_PATHOLOGY / EVALUATION_
+# MANAGEMENT are shoppable; EMERGENCY_DEPARTMENT / CRITICAL_CARE are forced
+# non-shoppable), confirmed 64% shoppable by concept count in the diagnostic.
+# That only matters where OTHER is asked to stand in for a shoppability label
+# (e.g. a binary shoppable-vs-not collapse). It is NOT a problem for treating
+# OTHER as its own category in the joint family/superfamily interaction below
+# -- that only asks "what is OTHER's own average gradient," which is a valid
+# question regardless of its internal composition.
+S16_CONTAMINATED_SUPERFAMILIES <- "OTHER"
+
+
+# ===========================================================================
+# 16.1 GENERALISED GROUP-LEVEL SWEEP
+#
+# Direct analogue of estimate_concept_level() (Section 6), grouped by an
+# arbitrary column instead of ANALYSIS_SERVICE_ID. Same three numbers per
+# group-instrument pair (RF, FS, IV) for the same reason: if a gradient shows
+# up in IV but not RF, it is a denominator artefact, not a price response.
+#
+# Built directly on build_ols_formula() / build_iv_formula() /
+# build_cluster_formula() / extract_coefficient() -- the same primitives
+# estimate_concept_level() uses -- rather than on run_reduced_form() /
+# run_first_stage() / run_iv(), whose exact argument names were not visible
+# from this session. Verify against T05_concept_level_RF_FS_IV.csv the first
+# time this runs: XRAY_FLUOROSCOPY's family-level RF/FS should sit inside the
+# range of its 199 constituent concepts' estimates.
+# ===========================================================================
+.s16_hd("16.1 run_group_level_sweep()")
+
+run_group_level_sweep <- function(panel, group_col, instruments = CONCEPT_INSTRUMENTS,
+                                  outcome = PRIMARY_OUTCOME, endogenous = ENDOGENOUS_VARIABLE,
+                                  drop_singletons = DROP_SINGLETON_MARKETS,
+                                  min_obs = MIN_SERVICE_OBS, min_markets = MIN_SERVICE_MARKETS,
+                                  min_months = MIN_SERVICE_MONTHS,
+                                  exclude_groups = character(0)) {
+  stopifnot(group_col %in% names(panel))
+  ids <- sort(unique(panel[[group_col]]))
+  ids <- setdiff(ids, c(NA, exclude_groups))
+  cat("\n", group_col, "groups:", length(ids), "| instruments:", length(instruments), "\n")
+  
+  rows <- vector("list", length(ids) * length(instruments)); k <- 0L; t0 <- Sys.time()
+  
+  for (gid in ids) {
+    sub <- panel[get(group_col) == gid]
+    if (drop_singletons) sub <- drop_singleton_markets(sub)
+    n_mk <- uniqueN(sub$ANALYSIS_MARKET); n_mo <- uniqueN(sub$POST_MONTH)
+    if (nrow(sub) < min_obs || n_mk < min_markets || n_mo < min_months) {
+      cat("  Skipped", gid, "-- n=", format(nrow(sub), big.mark = ","),
+          "markets=", n_mk, "months=", n_mo, "\n")
+      next
+    }
+    
+    for (il in names(instruments)) {
+      z <- instruments[[il]]
+      if (!(z %in% names(sub)) || !has_usable_variation(sub[[z]])) next
+      
+      req <- intersect(c(outcome, endogenous, z, BASELINE_CONTROLS,
+                         BASELINE_FIXED_EFFECTS, BASELINE_CLUSTERS), names(sub))
+      d <- sub[complete.cases(sub[, ..req])]
+      if (nrow(d) < min_obs) next
+      
+      rf <- tryCatch(feols(build_ols_formula(outcome, c(z, BASELINE_CONTROLS), BASELINE_FIXED_EFFECTS),
+                           data = d, cluster = build_cluster_formula(BASELINE_CLUSTERS),
+                           warn = FALSE, notes = FALSE), error = function(e) NULL)
+      fs <- tryCatch(feols(build_ols_formula(endogenous, c(z, BASELINE_CONTROLS), BASELINE_FIXED_EFFECTS),
+                           data = d, cluster = build_cluster_formula(BASELINE_CLUSTERS),
+                           warn = FALSE, notes = FALSE), error = function(e) NULL)
+      iv <- tryCatch(feols(build_iv_formula(outcome, endogenous, z, BASELINE_CONTROLS, BASELINE_FIXED_EFFECTS),
+                           data = d, cluster = build_cluster_formula(BASELINE_CLUSTERS),
+                           warn = FALSE, notes = FALSE), error = function(e) NULL)
+      
+      c_rf <- extract_coefficient(rf, z)
+      c_fs <- extract_coefficient(fs, z)
+      c_iv <- extract_coefficient(iv, c(paste0("fit_", endogenous), endogenous))
+      
+      k <- k + 1L
+      rows[[k]] <- data.table(
+        GROUP_COL = group_col, GROUP_ID = gid, INSTRUMENT_LABEL = il, INSTRUMENT = z, OUTCOME = outcome,
+        RF_COEF = c_rf$estimate, RF_SE = c_rf$std_error, RF_P = c_rf$p_value,
+        FS_COEF = c_fs$estimate, FS_SE = c_fs$std_error,
+        FS_F = if (is.finite(c_fs$statistic)) c_fs$statistic^2 else NA_real_,
+        IV_COEF = c_iv$estimate, IV_SE = c_iv$std_error, IV_P = c_iv$p_value,
+        IV_ESTIMATE_PERCENT = 100 * c_iv$estimate, IV_SE_PERCENT = 100 * c_iv$std_error,
+        N_ROWS = nrow(d), N_HOSPITALS = uniqueN(d$HOSPITAL_ID),
+        N_CONCEPTS = uniqueN(d$FINAL_CONCEPT_ID), N_MARKETS = n_mk, N_MONTHS = n_mo,
+        N_OBSERVATIONS = if (is.null(iv)) NA_integer_ else nobs(iv))
+    }
+    cat("  Done:", gid, "\n")
+  }
+  
+  out <- rbindlist(rows[seq_len(k)], fill = TRUE)
+  if (nrow(out) == 0L) stop("No rows for group_col = ", group_col, call. = FALSE)
+  out[, RF_P_FDR := p.adjust(RF_P, method = "BH"), by = INSTRUMENT_LABEL]
+  out[, IV_P_FDR := p.adjust(IV_P, method = "BH"), by = INSTRUMENT_LABEL]
+  setorder(out, INSTRUMENT_LABEL, RF_COEF)
+  cat("\nElapsed:", round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 2), "min |",
+      k, "group-instrument rows\n")
+  out
+}
+
+
+# ===========================================================================
+# 16.2 RUN: FAMILY-LEVEL SWEEP  -> T16A
+# ===========================================================================
+.s16_hd("16.2 Family-level sweep (T16A)")
+
+family_results <- cache_or_run("family_level_6inst",
+                               run_group_level_sweep(outpatient, "FINAL_FAMILY_ID", instruments = CONCEPT_INSTRUMENTS))
+save_csv(family_results, "T16A_family_level_RF_FS_IV.csv")
+
+.s16_show(family_results[INSTRUMENT_LABEL == names(MAIN_INSTRUMENTS)[1],
+                         .(GROUP_ID, RF_COEF = round(RF_COEF, 5), RF_P = round(RF_P, 4),
+                           FS_F = round(FS_F, 1), IV_PCT = round(IV_ESTIMATE_PERCENT, 2),
+                           N_ROWS)][order(RF_COEF)])
+
+
+# ===========================================================================
+# 16.3 RUN: SUPERFAMILY-LEVEL SWEEP  -> T16B
+# ===========================================================================
+.s16_hd("16.3 Superfamily-level sweep (T16B)")
+
+superfamily_results <- cache_or_run("superfamily_level_6inst",
+                                    run_group_level_sweep(outpatient, "FINAL_SUPERFAMILY_ID", instruments = CONCEPT_INSTRUMENTS))
+save_csv(superfamily_results, "T16B_superfamily_level_RF_FS_IV.csv")
+
+.s16_show(superfamily_results[INSTRUMENT_LABEL == names(MAIN_INSTRUMENTS)[1],
+                              .(GROUP_ID, RF_COEF = round(RF_COEF, 5), RF_P = round(RF_P, 4),
+                                FS_F = round(FS_F, 1), IV_PCT = round(IV_ESTIMATE_PERCENT, 2),
+                                N_ROWS)][order(RF_COEF)])
+cat("\nOTHER pools LABORATORY_PATHOLOGY/EVALUATION_MANAGEMENT (shoppable) with\n",
+    "EMERGENCY_DEPARTMENT/CRITICAL_CARE (forced non-shoppable). Read its row as\n",
+    "a basket average, not as evidence about a coherent 'other services' market.\n", sep = "")
+
+
+# ===========================================================================
+# 16.4 IS SHOPPABILITY A VALID CONCEPT-COUNT-WEIGHTED LABEL AT EACH GRAIN?
+#
+# Sanity check before the joint interactions: how many families/superfamilies
+# in the sweep tables are the a-priori DIAGNOSTIC_FAMILIES set, restated here
+# so the permutation test in 16.7 is auditable against something printed.
+# ===========================================================================
+.s16_hd("16.4 Diagnostic-family membership check")
+cat("DIAGNOSTIC_FAMILIES (a-priori shoppable):\n  ",
+    paste(DIAGNOSTIC_FAMILIES, collapse = ", "), "\n")
+cat("\nFamilies in the sweep NOT in DIAGNOSTIC_FAMILIES (a-priori non-shoppable):\n  ",
+    paste(setdiff(unique(family_results$GROUP_ID), DIAGNOSTIC_FAMILIES), collapse = ", "), "\n")
+
+
+# ===========================================================================
+# 16.5 JOINT INTERACTED IV -- FAMILY AS THE MODERATOR  -> T16C
+#
+# One exactly-identified regression per instrument: FINAL_FAMILY_ID (all
+# levels) interacted with Z, on the full panel. Direct family-level extension
+# of run_main_results()'s Scheme 1 table -- same function, wider moderator.
+# ===========================================================================
+.s16_hd("16.5 Joint interacted IV, family moderator (T16C)")
+
+family_interacted <- cache_or_run("family_interacted", {
+  rows <- list(); tests <- list()
+  for (il in names(MAIN_INSTRUMENTS)) {
+    z <- MAIN_INSTRUMENTS[[il]]
+    r <- estimate_interacted(outpatient, "FINAL_FAMILY_ID", PRIMARY_OUTCOME, z,
+                             moderator_type = "categorical", label = "Family (joint)",
+                             instrument_label = il, moderator_label = "FINAL_FAMILY_ID")
+    if (!is.null(r)) { rows[[il]] <- r$rows; tests[[il]] <- r$tests }
+    cat("  ", il, "done\n")
+  }
+  list(rows = rbindlist(rows, fill = TRUE), tests = rbindlist(tests, fill = TRUE))
+})
+save_csv(family_interacted$rows,  "T16C_family_interacted_RF_and_IV.csv")
+save_csv(family_interacted$tests, "T16C_family_interacted_heterogeneity_test.csv")
+
+.s16_show(family_interacted$rows[INSTRUMENT_LABEL == names(MAIN_INSTRUMENTS)[1],
+                                 .(TERM, RF_PERCENT_PER_SD = round(RF_PERCENT_PER_SD, 3),
+                                   RF_P = round(RF_P, 4), IV_PCT = round(IV_PERCENT, 2),
+                                   FIRST_STAGE_WALD_THIS_EQ = round(FIRST_STAGE_WALD_THIS_EQ, 1))][
+                                     order(RF_PERCENT_PER_SD)])
+cat("\nJoint heterogeneity test (H0: all 16 family coefficients equal):\n")
+.s16_show(family_interacted$tests[, .(INSTRUMENT_LABEL, ESTIMATOR, P_VALUE = round(P_VALUE, 5))])
+
+
+# ===========================================================================
+# 16.6 JOINT INTERACTED IV -- SUPERFAMILY AS THE MODERATOR  -> T16D
+# ===========================================================================
+.s16_hd("16.6 Joint interacted IV, superfamily moderator (T16D)")
+
+superfamily_interacted <- cache_or_run("superfamily_interacted", {
+  rows <- list(); tests <- list()
+  for (il in names(MAIN_INSTRUMENTS)) {
+    z <- MAIN_INSTRUMENTS[[il]]
+    r <- estimate_interacted(outpatient, "FINAL_SUPERFAMILY_ID", PRIMARY_OUTCOME, z,
+                             moderator_type = "categorical", label = "Superfamily (joint)",
+                             instrument_label = il, moderator_label = "FINAL_SUPERFAMILY_ID")
+    if (!is.null(r)) { rows[[il]] <- r$rows; tests[[il]] <- r$tests }
+    cat("  ", il, "done\n")
+  }
+  list(rows = rbindlist(rows, fill = TRUE), tests = rbindlist(tests, fill = TRUE))
+})
+save_csv(superfamily_interacted$rows,  "T16D_superfamily_interacted_RF_and_IV.csv")
+save_csv(superfamily_interacted$tests, "T16D_superfamily_interacted_heterogeneity_test.csv")
+
+.s16_show(superfamily_interacted$rows[INSTRUMENT_LABEL == names(MAIN_INSTRUMENTS)[1],
+                                      .(TERM, RF_PERCENT_PER_SD = round(RF_PERCENT_PER_SD, 3),
+                                        RF_P = round(RF_P, 4), IV_PCT = round(IV_PERCENT, 2))][
+                                          order(RF_PERCENT_PER_SD)])
+cat("\nJoint heterogeneity test (H0: IMAGING = BIOPSY = GI_ENDOSCOPY = OTHER):\n")
+.s16_show(superfamily_interacted$tests[, .(INSTRUMENT_LABEL, ESTIMATOR, P_VALUE = round(P_VALUE, 5))])
+
+
+# ===========================================================================
+# 16.7 FAMILY-LEVEL INFERENCE -- weighted mean-difference + exact permutation
+#
+# The unit here IS the family (one point each), so this is what a
+# meta-regression collapses to at n=16, plus the permutation test that is
+# actually well powered at this grain: enumerating which subsets of families
+# could have been called "shoppable" gives inference at the level the
+# shoppability decision was actually made, exactly as
+# family_permutation_test() does at concept level -- just without the
+# multiple-concepts-per-family double counting.
+# ===========================================================================
+.s16_hd("16.7 Family-level weighted mean-difference and exact permutation (T16E)")
+
+run_group_weighted_diff <- function(sweep, dep = "RF_COEF", se = "RF_SE",
+                                    shoppable = DIAGNOSTIC_FAMILIES) {
+  rbindlist(lapply(unique(sweep$INSTRUMENT_LABEL), function(il) {
+    d <- sweep[INSTRUMENT_LABEL == il & is.finite(get(dep)) & is.finite(get(se)) & get(se) > 0]
+    d[, S := fifelse(GROUP_ID %chin% shoppable, "Shoppable", "Non_shoppable")]
+    if (uniqueN(d$S) < 2L) return(data.table())
+    fit <- tryCatch(feols(as.formula(paste(dep, "~ S")), data = d, weights = as.formula(paste0("~I(1/", se, "^2)")),
+                          warn = FALSE, notes = FALSE), error = function(e) NULL)
+    if (is.null(fit)) return(data.table())
+    td <- tidy_fixest(fit)
+    td[, `:=`(INSTRUMENT_LABEL = il, N_GROUPS = nrow(d),
+              N_SHOPPABLE = d[S == "Shoppable", .N], N_NONSHOPPABLE = d[S == "Non_shoppable", .N])]
+    td
+  }), fill = TRUE)
+}
+
+run_group_permutation_test <- function(sweep, dep = "RF_COEF", se = "RF_SE",
+                                       shoppable = DIAGNOSTIC_FAMILIES,
+                                       max_exact = 50000L, seed = 20260817L) {
+  wdiff <- function(d, groups) {
+    d <- copy(d)[, S := fifelse(GROUP_ID %chin% groups, "Shoppable", "Non_shoppable")]
+    if (uniqueN(d$S) < 2L) return(NA_real_)
+    d[, W := 1 / (get(se)^2)]
+    d[S == "Shoppable", sum(W * get(dep)) / sum(W)] -
+      d[S == "Non_shoppable", sum(W * get(dep)) / sum(W)]
+  }
+  rbindlist(lapply(unique(sweep$INSTRUMENT_LABEL), function(il) {
+    d <- sweep[INSTRUMENT_LABEL == il & is.finite(get(dep)) & is.finite(get(se)) & get(se) > 0]
+    groups <- sort(unique(d$GROUP_ID))
+    obs_g <- intersect(shoppable, groups); k <- length(obs_g); n <- length(groups)
+    if (k == 0L || k == n || n < 4L) return(data.table())
+    observed <- wdiff(d, obs_g); if (!is.finite(observed)) return(data.table())
+    exact <- is.finite(choose(n, k)) && choose(n, k) <= max_exact
+    null <- if (exact) vapply(combn(groups, k, simplify = FALSE), function(g) wdiff(d, g), numeric(1))
+    else { set.seed(seed); vapply(seq_len(20000L), function(i) wdiff(d, sample(groups, k)), numeric(1)) }
+    null <- null[is.finite(null)]
+    data.table(INSTRUMENT_LABEL = il, OBSERVED = observed, N_GROUPS = n, N_SHOPPABLE = k,
+               METHOD = fifelse(exact, "Exact enumeration", "Monte Carlo (20,000)"),
+               NULL_P05 = quantile(null, .05, names = FALSE),
+               NULL_P95 = quantile(null, .95, names = FALSE),
+               P_TWO_SIDED = mean(abs(null) >= abs(observed)))
+  }), fill = TRUE)
+}
+
+family_weighted_diff <- run_group_weighted_diff(family_results)
+family_permutation   <- run_group_permutation_test(family_results)
+
+save_csv(family_weighted_diff, "T16E_family_weighted_mean_difference.csv")
+save_csv(family_permutation,   "T16E_family_exact_permutation.csv")
+
+cat("\nParametric weighted mean-difference (family as unit, n = 16):\n")
+.s16_show(family_weighted_diff[grepl("Shoppable", term),
+                               .(INSTRUMENT_LABEL, ESTIMATE = round(estimate, 5),
+                                 SE = round(std.error, 5), P = round(p.value, 4), N_GROUPS)])
+cat("\nExact permutation over family-shoppability assignment:\n")
+.s16_show(family_permutation[, .(INSTRUMENT_LABEL, OBSERVED = round(OBSERVED, 5),
+                                 N_GROUPS, N_SHOPPABLE, METHOD, P_TWO_SIDED = round(P_TWO_SIDED, 5))])
+cat("\nThese two should broadly agree in sign and rough magnitude of significance;\n",
+    "report the permutation p-value as primary, consistent with the concept-level\n",
+    "convention, and the weighted regression as the parametric companion.\n", sep = "")
+
+
+
+# ===========================================================================
+# 16.8 SUPERFAMILY-LEVEL ACS/SES HETEROGENEITY  -> T16F
+#
+# IMAGING vs. everything else, interacted with the SES index and with the
+# instrument, following Section 12's triple-interaction design:
+#
+#   ln(P) = gI*(Z x Imaging)     + gR*(Z x Rest)
+#         + dI*(Z x Imaging x M) + dR*(Z x Rest x M)
+#         + controls + FE
+#
+# Object of interest is dI - dR, a single 1-df Wald test. Family-level (16-way)
+# SES heterogeneity is NOT attempted here: that is 16 categories x SES, ~32
+# endogenous terms, and Section 12's own note already flags a weak first stage
+# with just 4. Superfamily's binary IMAGING/rest split is the version of this
+# question that is actually estimable.
+#
+# Requires .t12_build_ses_index() from Section 12's self-contained SES block.
+# That block lives entirely in the executed region of the pipeline (past
+# `# ORDER OF OPERATIONS`), not in the Sections 0-12 definitions warm_start()
+# loads, so it needs its own loader: load_t12_helpers() (in HPT_warm_start.R)
+# sources just the config + .t12_* function definitions, stopping short of
+# Section 12's own 30-45 minute driver run.
+# ===========================================================================
+source("/Users/danielsierra/Library/CloudStorage/OneDrive-FloridaStateUniversity/Hospital Price Transparency Paper/Code/HPT_warm_start.R")
+load_t12_helpers()                       # loads .t12_build_ses_index() etc., no 30-45 min run
+
+.s16_hd("16.8 Superfamily x SES heterogeneity (T16F)")
+
+if (!exists(".t12_build_ses_index")) {
+  if (exists("load_t12_helpers")) {
+    cat("`.t12_build_ses_index` not in memory -- loading Section 12's helpers.\n")
+    load_t12_helpers()
+  } else {
+    stop("`.t12_build_ses_index` is not defined and `load_t12_helpers()` is not ",
+         "available either.\n  Add load_t12_helpers() to HPT_warm_start.R (see the ",
+         "updated version) and call it, or manually source lines 3872-4340 of ",
+         "HPT_Analysis_Pipeline.R (the SECTION 12 banner through the line before ",
+         "'# 6. RUN').", call. = FALSE)
+  }
+}
+
+.s16_ses_panel <- tryCatch(.t12_build_ses_index(outpatient), error = function(e) {
+  cat("`.t12_build_ses_index(outpatient)` failed:", conditionMessage(e), "\n",
+      "Skipping 16.8.\n")
+  NULL
+})
+
+run_superfamily_ses_heterogeneity <- function(panel, shop_value = "IMAGING",
+                                              group_col = "FINAL_SUPERFAMILY_ID",
+                                              moderator = "SES_INDEX",
+                                              instrument, instrument_label = "",
+                                              outcome = PRIMARY_OUTCOME,
+                                              endogenous = ENDOGENOUS_VARIABLE,
+                                              controls = BASELINE_CONTROLS,
+                                              fe = BASELINE_FIXED_EFFECTS,
+                                              clusters = BASELINE_CLUSTERS) {
+  if (!(moderator %in% names(panel))) {
+    stop("Column '", moderator, "' not found. Check what .t12_build_ses_index() ",
+         "actually names the index and pass it via `moderator =`.", call. = FALSE)
+  }
+  d <- panel[!is.na(get(group_col)) & !is.na(get(moderator))]
+  req <- intersect(c(outcome, endogenous, instrument, moderator, controls, fe, clusters), names(d))
+  d <- d[complete.cases(d[, ..req])]
+  if (nrow(d) < MIN_MODEL_OBS) return(NULL)
+  
+  d[, SHOP := as.integer(get(group_col) == shop_value)]
+  d[, M := safe_numeric(get(moderator))]
+  d[, M := M - mean(M, na.rm = TRUE)]
+  d[, `:=`(
+    RF_S = get(instrument) * SHOP,       RF_N = get(instrument) * (1L - SHOP),
+    RF_SM = get(instrument) * SHOP * M,  RF_NM = get(instrument) * (1L - SHOP) * M,
+    TR_S = get(endogenous) * SHOP,       TR_N = get(endogenous) * (1L - SHOP),
+    TR_SM = get(endogenous) * SHOP * M,  TR_NM = get(endogenous) * (1L - SHOP) * M)]
+  
+  rf_fit <- tryCatch(feols(build_ols_formula(outcome, c("RF_S","RF_N","RF_SM","RF_NM", controls), fe),
+                           data = d, cluster = build_cluster_formula(clusters),
+                           warn = FALSE, notes = FALSE), error = function(e) NULL)
+  iv_fit <- tryCatch(feols(build_iv_formula(outcome, c("TR_S","TR_N","TR_SM","TR_NM"),
+                                            c("RF_S","RF_N","RF_SM","RF_NM"), controls, fe),
+                           data = d, cluster = build_cluster_formula(clusters),
+                           warn = FALSE, notes = FALSE), error = function(e) NULL)
+  if (is.null(rf_fit)) return(NULL)
+  
+  wald_diff <- function(fit, t1, t2) {
+    nm <- names(coef(fit))
+    n1 <- intersect(c(t1, paste0("fit_", t1)), nm)[1L]
+    n2 <- intersect(c(t2, paste0("fit_", t2)), nm)[1L]
+    if (is.na(n1) || is.na(n2)) return(c(diff = NA_real_, se = NA_real_, p = NA_real_))
+    b1 <- unname(coef(fit)[n1]); b2 <- unname(coef(fit)[n2]); V <- vcov(fit)
+    dd <- b1 - b2; se_ <- sqrt(V[n1, n1] + V[n2, n2] - 2 * V[n1, n2])
+    c(diff = dd, se = se_, p = 2 * pnorm(-abs(dd / se_)))
+  }
+  
+  rf_diff <- wald_diff(rf_fit, "RF_SM", "RF_NM")
+  iv_diff <- if (!is.null(iv_fit)) wald_diff(iv_fit, "TR_SM", "TR_NM") else c(diff = NA, se = NA, p = NA)
+  fsw <- if (!is.null(iv_fit)) first_stage_wald(iv_fit) else data.table()
+  fs_min <- if (nrow(fsw) > 0L) min(fsw$WALD, na.rm = TRUE) else NA_real_
+  
+  data.table(GROUP = shop_value, MODERATOR = moderator, INSTRUMENT_LABEL = instrument_label,
+             INSTRUMENT = instrument, OUTCOME = outcome,
+             RF_DIFF_SHOP_MINUS_REST = unname(rf_diff["diff"]), RF_SE = unname(rf_diff["se"]),
+             RF_P = unname(rf_diff["p"]),
+             IV_DIFF_SHOP_MINUS_REST = unname(iv_diff["diff"]), IV_SE = unname(iv_diff["se"]),
+             IV_P = unname(iv_diff["p"]),
+             FIRST_STAGE_WALD_MIN = fs_min,
+             N_OBSERVATIONS = if (is.null(rf_fit)) NA_integer_ else nobs(rf_fit))
+}
+
+if (!is.null(.s16_ses_panel)) {
+  superfamily_ses <- cache_or_run("superfamily_ses_heterogeneity", {
+    rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
+      run_superfamily_ses_heterogeneity(.s16_ses_panel, instrument = MAIN_INSTRUMENTS[[il]],
+                                        instrument_label = il)
+    }), fill = TRUE)
+  })
+  save_csv(superfamily_ses, "T16F_superfamily_SES_heterogeneity.csv")
+  cat("\nCheck FIRST_STAGE_WALD_MIN before quoting an IV number -- read RF as primary,\n",
+      "matching Section 12's own convention.\n", sep = "")
+  .s16_show(superfamily_ses[, .(INSTRUMENT_LABEL, RF_DIFF = round(RF_DIFF_SHOP_MINUS_REST, 5),
+                                RF_SE = round(RF_SE, 5), RF_P = round(RF_P, 4),
+                                FIRST_STAGE_WALD_MIN = round(FIRST_STAGE_WALD_MIN, 1))])
+}
+
+.s16_hd("SECTION 16 COMPLETE")
+
+
+
+
+
+
+###############################################################################
+# SECTION 17 -- CONLEY EXCLUSION-RESTRICTION SENSITIVITY
+#
+# Follows Conley, Hansen, and Rossi's plausibly-exogenous framing: how large a
+# direct effect of the instrument on price, concentrated on shoppable services
+# specifically, would have to be to overturn the gradient.
+#
+# EXACT ALGEBRA, NOT A GRID OF REFITS.
+#   The reduced form regresses ln(P) on RF_Shoppable = Z*1[Shop], RF_Non =
+#   Z*1[NonShop], controls, and FE. If a direct effect of size gamma is
+#   assumed to load on RF_Shoppable specifically, then netting it out means
+#   subtracting gamma * RF_Shoppable from the outcome and refitting the
+#   identical model. For OLS this is a Frisch-Waugh-Lovell identity: the
+#   coefficient on RF_Shoppable falls by EXACTLY gamma, every other
+#   coefficient is UNCHANGED, and every residual is UNCHANGED -- so SE(GAP)
+#   does not move either. The grid below is therefore closed-form arithmetic,
+#   confirmed once per instrument by an actual refit at the grid midpoint
+#   rather than trusted blindly.
+#
+#   This works because the reduced form is a single linear regression with
+#   RF_Shoppable literally as one of its own regressors. It does NOT carry
+#   over to the IV estimate in the same closed form (Z_Shoppable is an
+#   instrument for TREAT_Shoppable there, not a direct regressor, so netting
+#   out gamma does not simply shift one 2SLS coefficient). Given the design
+#   decision that reduced form is primary and IV is rescaling only, that is
+#   the estimator this bound is built on, and it is also the one whose
+#   p-values are Anderson-Rubin robust by construction.
+###############################################################################
+
+.s17_hd <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+
+run_conley_sensitivity <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
+                                   instrument, instrument_label = "",
+                                   outcome = PRIMARY_OUTCOME, endogenous = ENDOGENOUS_VARIABLE,
+                                   controls = BASELINE_CONTROLS, fe = BASELINE_FIXED_EFFECTS,
+                                   clusters = BASELINE_CLUSTERS,
+                                   gamma_grid = NULL, gamma_steps = 41L) {
+  
+  d <- panel[!is.na(get(scheme_col))]
+  req <- intersect(c(outcome, endogenous, instrument, scheme_col, controls, fe, clusters), names(d))
+  d <- d[complete.cases(d[, ..req])]
+  
+  d[, CAT := droplevels(factor(get(scheme_col)))]
+  keys <- levels(d$CAT)
+  if (!all(c("Shoppable", "Non_shoppable") %chin% keys)) {
+    stop("Expected 'Shoppable'/'Non_shoppable' levels in ", scheme_col,
+         "; found: ", paste(keys, collapse = ", "), call. = FALSE)
+  }
+  for (kk in keys) d[, paste0("RF_", kk) := get(instrument) * as.integer(CAT == kk)]
+  rhs <- c(paste0("RF_", keys), controls)
+  
+  fit <- tryCatch(feols(build_ols_formula(outcome, rhs, fe), data = d,
+                        cluster = build_cluster_formula(clusters), warn = FALSE, notes = FALSE),
+                  error = function(e) NULL)
+  if (is.null(fit)) stop("Reduced-form fit failed for ", instrument_label, call. = FALSE)
+  
+  nm_s <- "RF_Shoppable"; nm_n <- "RF_Non_shoppable"
+  b_s <- unname(coef(fit)[nm_s]); b_n <- unname(coef(fit)[nm_n])
+  V <- vcov(fit)
+  se_gap <- sqrt(V[nm_s, nm_s] + V[nm_n, nm_n] - 2 * V[nm_s, nm_n])
+  gap0 <- b_s - b_n
+  sd_z <- sd(d[[instrument]], na.rm = TRUE)
+  
+  if (is.null(gamma_grid)) {
+    span <- max(abs(gap0) * 1.5, 3 * se_gap)
+    gamma_grid <- seq(-span, span, length.out = gamma_steps)
+  }
+  
+  grid <- data.table(GAMMA = gamma_grid)
+  grid[, `:=`(GAP_CAUSAL = gap0 - GAMMA, SE_GAP = se_gap,
+              CI_LOW = gap0 - GAMMA - 1.96 * se_gap, CI_HIGH = gap0 - GAMMA + 1.96 * se_gap)]
+  grid[, SIGNIFICANT := as.integer(sign(CI_LOW) == sign(CI_HIGH))]
+  
+  # Smallest-magnitude adversarial gamma (toward zero) at which the CI first
+  # touches zero -- the direct effect the design can withstand before the
+  # gradient stops being distinguishable from zero at 95%.
+  # Two thresholds, both reported.
+  #
+  # BREAKEVEN_GAMMA_SIG: the smallest-magnitude adversarial direct effect at
+  #   which the 95% CI on the gradient first touches zero. Solve
+  #   CI_HIGH = (gap0 - gamma) + 1.96*se >= 0 for a negative gap, giving
+  #   gamma <= gap0 + 1.96*se. NOTE THE SIGN: moving gamma toward the gap
+  #   shrinks the causal gradient, so the binding value is gap0 PLUS the
+  #   half-width, not minus it. (An earlier version subtracted, which returns
+  #   CI_LOW at gamma = 0 and overstates the bound by roughly 5.7x.)
+  #
+  # BREAKEVEN_GAMMA_ZERO: the direct effect that drives the POINT estimate to
+  #   zero, which is simply gamma = gap0 (100% of the observed gradient).
+  breakeven_sig  <- gap0 + sign(gap0) * -1 * 1.96 * se_gap
+  breakeven_zero <- gap0
+  
+  grid[, `:=`(INSTRUMENT_LABEL = instrument_label, INSTRUMENT = instrument,
+              GAP_OBSERVED = gap0, SE_GAP_OBSERVED = se_gap, SD_INSTRUMENT = sd_z,
+              GAP_PCT_PER_SD = 100 * gap0 * sd_z,
+              BREAKEVEN_GAMMA_SIG = breakeven_sig,
+              BREAKEVEN_GAMMA_ZERO = breakeven_zero,
+              # Same "percent per SD of peer exposure" scale the paper already
+              # reports RF_PERCENT_PER_SD on, so these drop straight into prose.
+              BREAKEVEN_SIG_PCT_PER_SD = 100 * breakeven_sig * sd_z,
+              BREAKEVEN_SIG_SHARE_OF_GAP = breakeven_sig / gap0,
+              BREAKEVEN_ZERO_SHARE_OF_GAP = 1)]
+  
+  # Spot-check the closed form with one actual refit at the grid midpoint.
+  mid <- gamma_grid[ceiling(length(gamma_grid) / 2)]
+  d[, Y_SHIFTED := get(outcome) - mid * get(nm_s)]
+  fit_chk <- tryCatch(feols(build_ols_formula("Y_SHIFTED", rhs, fe), data = d,
+                            cluster = build_cluster_formula(clusters), warn = FALSE, notes = FALSE),
+                      error = function(e) NULL)
+  if (!is.null(fit_chk)) {
+    chk_gap <- unname(coef(fit_chk)[nm_s]) - unname(coef(fit_chk)[nm_n])
+    closed_gap <- gap0 - mid
+    cat(sprintf("  [%s] Spot-check at gamma=%.4f: refit GAP=%.6f vs closed-form=%.6f (|diff|=%.2e)\n",
+                instrument_label, mid, chk_gap, closed_gap, abs(chk_gap - closed_gap)))
+  }
+  
+  # Verify the breakeven against the grid itself rather than trusting algebra:
+  # the smallest-|gamma| row flagged insignificant should sit at breakeven_sig.
+  edge <- grid[SIGNIFICANT == 0L & sign(GAMMA) == sign(gap0)]
+  edge_gamma <- if (nrow(edge)) edge[which.min(abs(GAMMA)), GAMMA] else NA_real_
+  cat(sprintf("  [%s] gap=%.6f se=%.6f | breakeven(sig)=%.6f (%.1f%% of gap) | grid edge=%.6f\n",
+              instrument_label, gap0, se_gap, breakeven_sig,
+              100 * breakeven_sig / gap0, edge_gamma))
+  
+  list(grid = grid, gap_observed = gap0, se_gap = se_gap,
+       breakeven_sig = breakeven_sig, breakeven_zero = breakeven_zero, fit = fit)
+}
+
+.s17_hd("SECTION 17 -- Conley exclusion-restriction sensitivity (T17)")
+
+conley_results <- cache_or_run("conley_sensitivity_v2", {
+  out <- lapply(names(MAIN_INSTRUMENTS), function(il) {
+    run_conley_sensitivity(outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                           instrument = MAIN_INSTRUMENTS[[il]], instrument_label = il)
+  })
+  names(out) <- names(MAIN_INSTRUMENTS)
+  out
+})
+
+conley_grid <- rbindlist(lapply(conley_results, `[[`, "grid"), fill = TRUE)
+save_csv(conley_grid, "T17_conley_sensitivity_grid.csv")
+
+conley_summary <- unique(conley_grid[, .(
+  INSTRUMENT_LABEL,
+  GAP_OBSERVED               = round(GAP_OBSERVED, 6),
+  SE_GAP_OBSERVED            = round(SE_GAP_OBSERVED, 6),
+  GAP_PCT_PER_SD             = round(GAP_PCT_PER_SD, 3),
+  BREAKEVEN_GAMMA_SIG        = round(BREAKEVEN_GAMMA_SIG, 6),
+  BREAKEVEN_SIG_PCT_PER_SD   = round(BREAKEVEN_SIG_PCT_PER_SD, 3),
+  BREAKEVEN_SIG_SHARE_OF_GAP = round(BREAKEVEN_SIG_SHARE_OF_GAP, 3),
+  BREAKEVEN_GAMMA_ZERO       = round(BREAKEVEN_GAMMA_ZERO, 6))])
+save_csv(conley_summary, "T17B_conley_breakeven_summary.csv")
+
+cat("\nBreakeven summary (smallest adversarial direct effect, in the units of\n",
+    "the instrument, that brings the 95% CI on the gradient to touch zero):\n", sep = "")
+.s17_show <- .s16_show
+.s17_show(conley_summary)
+cat("\nBREAKEVEN_SIG_PCT_PER_SD is on the same percent-per-SD-of-peer-exposure\n",
+    "scale as RF_PERCENT_PER_SD, so it drops into prose without conversion.\n",
+    "BREAKEVEN_SIG_SHARE_OF_GAP is the headline number: the fraction of the\n",
+    "observed reduced-form gradient that would have to be direct effect,\n",
+    "loading on shoppable services ONLY, to render the gradient insignificant.\n",
+    "BREAKEVEN_GAMMA_ZERO (= the gap itself) is the stricter threshold at which\n",
+    "the point estimate is driven to zero, i.e. 100% of the observed gradient.\n", sep = "")
+
+.s17_hd("SECTION 17 COMPLETE")
+
+
+
+###############################################################################
+# SECTION 18 -- ENFORCEMENT CONTROLS
+#
+# CMS enforcement varies by county and month and is already in the panel
+# (COUNTY_ENF_* -- confirmed present, county-month invariant, with genuine
+# within-county time variation in the diagnostic). This is a controls
+# question, not an instrument question: does the shoppability gradient
+# survive adding each enforcement measure as an additional right-hand-side
+# control in the headline interacted spec? estimate_interacted() already
+# accepts an arbitrary `controls` vector, so this reuses it unchanged with
+# BASELINE_CONTROLS extended by one enforcement variable at a time.
+###############################################################################
+
+.s18_hd <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+.s18_show <- .s16_show
+
+.s18_hd("SECTION 18 -- Enforcement controls (T18)")
+
+run_enforcement_controls <- function(panel, enforcement_vars = ENFORCEMENT_ROBUSTNESS_INSTRUMENTS,
+                                     scheme_col = "SCHEME_1_CERTAINTY",
+                                     scheme_label = "1. Procedural certainty",
+                                     instruments = MAIN_INSTRUMENTS, outcome = PRIMARY_OUTCOME) {
+  rows <- list(); tests <- list()
+  n <- length(enforcement_vars) * length(instruments); g <- 0L
+  
+  for (ev in names(enforcement_vars)) {
+    v <- enforcement_vars[[ev]]
+    if (!(v %in% names(panel))) { cat("  Missing from panel, skipped:", v, "\n"); next }
+    for (il in names(instruments)) {
+      g <- g + 1L
+      z <- instruments[[il]]
+      r <- estimate_interacted(panel, scheme_col, outcome, z, moderator_type = "categorical",
+                               label = scheme_label, instrument_label = il,
+                               moderator_label = scheme_label,
+                               controls = c(BASELINE_CONTROLS, v))
+      if (!is.null(r)) {
+        r$rows[, ENFORCEMENT_CONTROL := ev]; r$tests[, ENFORCEMENT_CONTROL := ev]
+        rows[[length(rows) + 1L]] <- r$rows; tests[[length(tests) + 1L]] <- r$tests
+      }
+      cat(sprintf("[%d/%d] %-24s %-36s done\n", g, n, ev, il))
+    }
+  }
+  er <- rbindlist(rows, fill = TRUE); et <- rbindlist(tests, fill = TRUE)
+  if (nrow(er) == 0L) stop("No enforcement-control results produced.", call. = FALSE)
+  list(rows = er, tests = et)
+}
+
+enforcement_controls <- cache_or_run("enforcement_controls",
+                                     run_enforcement_controls(outpatient))
+
+save_csv(enforcement_controls$rows,  "T18_enforcement_controls_estimates.csv")
+save_csv(enforcement_controls$tests, "T18B_enforcement_controls_heterogeneity.csv")
+
+# Baseline (no enforcement control) for the comparison column, pulled from the
+# existing T06 headline rather than re-estimated here.
+if (exists("main") && is.list(main) && "rows" %in% names(main)) {
+  .s18_headline <- main$rows[grepl("certainty", SPEC, ignore.case = TRUE),
+                             .(INSTRUMENT_LABEL, TERM, RF_PERCENT_PER_SD_NO_CONTROL = RF_PERCENT_PER_SD)]
+  .s18_cmp <- merge(
+    enforcement_controls$rows[, .(ENFORCEMENT_CONTROL, INSTRUMENT_LABEL, TERM,
+                                  RF_PERCENT_PER_SD_WITH_CONTROL = RF_PERCENT_PER_SD, RF_P)],
+    .s18_headline, by = c("INSTRUMENT_LABEL", "TERM"), all.x = TRUE)
+  .s18_cmp[, DELTA := RF_PERCENT_PER_SD_WITH_CONTROL - RF_PERCENT_PER_SD_NO_CONTROL]
+  save_csv(.s18_cmp, "T18C_enforcement_vs_no_control.csv")
+  
+  cat("\nGradient with vs. without each enforcement control",
+      "(Shoppable term, main instrument):\n")
+  .s18_show(.s18_cmp[TERM == "Shoppable" & INSTRUMENT_LABEL == names(MAIN_INSTRUMENTS)[1],
+                     .(ENFORCEMENT_CONTROL, RF_PERCENT_PER_SD_NO_CONTROL = round(RF_PERCENT_PER_SD_NO_CONTROL, 3),
+                       RF_PERCENT_PER_SD_WITH_CONTROL = round(RF_PERCENT_PER_SD_WITH_CONTROL, 3),
+                       DELTA = round(DELTA, 3), RF_P = round(RF_P, 4))])
+} else {
+  cat("`main` (the headline T06 object) is not in memory -- the comparison\n",
+      "column was skipped, but T18/T18B are saved. Run restore_session() with\n",
+      "'main_results' included, or re-source this after warm_start().\n", sep = "")
+}
+
+.s18_hd("SECTION 18 COMPLETE")
+
+
+
+
+###############################################################################
+# FIGURES FOR SECTIONS 16, 17, AND 18
+#
+#   fig16_family_forest.pdf        main.tex, Section 6.5
+#   fig17_conley_sensitivity.pdf   appendix.tex
+#   fig18_enforcement_controls.pdf appendix.tex
+#
+# Reads only the CSVs already written by HPT_sections_16_17_18.R, so this can
+# run in a fresh session after warm_start() without re-estimating anything.
+# It does not need `outpatient` in memory.
+#
+# If TABLE_DIR / FIGURE_DIR are not defined (i.e. the pipeline definitions are
+# not loaded), set them by hand at the top of this file.
+###############################################################################
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+})
+
+if (!exists("TABLE_DIR"))  stop("TABLE_DIR not defined. Run warm_start(), or set it manually.")
+if (!exists("FIGURE_DIR")) {
+  FIGURE_DIR <- file.path(dirname(TABLE_DIR), "02_Figures")
+  cat("FIGURE_DIR not defined; defaulting to:\n  ", FIGURE_DIR, "\n")
+}
+dir.create(FIGURE_DIR, showWarnings = FALSE, recursive = TRUE)
+
+# The paper's figures use a plain serif-free look; swap in your house theme
+# here if you have one so these match fig01-fig15.
+.fig_theme <- theme_bw(base_size = 10) +
+  theme(panel.grid.minor   = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.border       = element_rect(colour = "grey30", linewidth = 0.4),
+        strip.background   = element_rect(fill = "grey92", colour = "grey30"),
+        strip.text         = element_text(face = "bold", size = 9),
+        legend.position    = "bottom",
+        legend.title       = element_blank(),
+        plot.caption       = element_text(hjust = 0, size = 7.5, colour = "grey30"))
+
+SHOP_COLOURS <- c("Shoppable" = "#1b4965", "Non-shoppable" = "#bc4749")
+
+# Display names, matching the LaTeX tables.
+FAMILY_LABELS <- c(
+  MAMMOGRAPHY                 = "Mammography",
+  VASCULAR_ULTRASOUND         = "Vascular ultrasound",
+  BONE_DENSITY                = "Bone density",
+  ECHOCARDIOGRAPHY            = "Echocardiography",
+  MRI_MRA                     = "MRI / MRA",
+  LABORATORY_PATHOLOGY        = "Laboratory and pathology",
+  EVALUATION_MANAGEMENT       = "Evaluation and management",
+  DIAGNOSTIC_ULTRASOUND       = "Diagnostic ultrasound",
+  XRAY_FLUOROSCOPY            = "X-ray and fluoroscopy",
+  CT_CTA                      = "CT / CTA",
+  CRITICAL_CARE               = "Critical care",
+  BIOPSY                      = "Biopsy",
+  PROCEDURE_SURGERY           = "Procedure and surgery",
+  COLONOSCOPY_LOWER_ENDOSCOPY = "Colonoscopy / lower endoscopy",
+  EMERGENCY_DEPARTMENT        = "Emergency department",
+  UPPER_ENDOSCOPY             = "Upper endoscopy")
+
+INSTRUMENT_LABELS <- c(
+  Competitor_only_hospitals_9m         = "Competitor hospitals",
+  Primary_strict_system_IV             = "Local system",
+  Competitor_outside_CBSA_hospitals_9m = "Competitor hospitals (ex-CBSA)",
+  Competitor_outside_CBSA_counties_9m  = "Competitor counties (ex-CBSA)",
+  Competitor_systems_9m                = "Competitor systems",
+  Competitor_outside_CBSA_systems_9m   = "Competitor systems (ex-CBSA)")
+
+MAIN_THREE <- c("Competitor_only_hospitals_9m",
+                "Primary_strict_system_IV",
+                "Competitor_outside_CBSA_hospitals_9m")
+
+
+# ===========================================================================
+# FIGURE 16 -- Family-level forest plot
+#
+# Sixteen families under the primary instrument, ordered by point estimate,
+# coloured by the a-priori shoppability label. Dashed vertical lines mark the
+# precision-weighted group means, which are the quantities the permutation
+# test in Table 8 differences.
+# ===========================================================================
+
+fam <- fread(file.path(TABLE_DIR, "T16A_family_level_RF_FS_IV.csv"))
+fam <- fam[INSTRUMENT_LABEL == "Competitor_only_hospitals_9m"]
+
+if (!exists("DIAGNOSTIC_FAMILIES")) {
+  # Fallback if pipeline constants are not loaded.
+  DIAGNOSTIC_FAMILIES <- c("XRAY_FLUOROSCOPY", "MRI_MRA", "DIAGNOSTIC_ULTRASOUND",
+                           "CT_CTA", "LABORATORY_PATHOLOGY", "VASCULAR_ULTRASOUND",
+                           "EVALUATION_MANAGEMENT", "ECHOCARDIOGRAPHY",
+                           "BONE_DENSITY", "MAMMOGRAPHY")
+}
+
+fam[, CLASS := fifelse(GROUP_ID %chin% DIAGNOSTIC_FAMILIES, "Shoppable", "Non-shoppable")]
+fam[, LABEL := FAMILY_LABELS[GROUP_ID]]
+fam[, `:=`(CI_LOW  = RF_COEF - 1.96 * RF_SE,
+           CI_HIGH = RF_COEF + 1.96 * RF_SE)]
+setorder(fam, -RF_COEF)
+fam[, LABEL := factor(LABEL, levels = LABEL)]
+
+# Precision-weighted group means: the estimand of the permutation test.
+gm <- fam[, .(MEAN = sum(RF_COEF / RF_SE^2) / sum(1 / RF_SE^2)), by = CLASS]
+cat("\nPrecision-weighted group means (should match Table 8, row 1):\n")
+print(as.data.frame(gm), row.names = FALSE)
+cat("Difference:", round(gm[CLASS == "Shoppable", MEAN] -
+                           gm[CLASS == "Non-shoppable", MEAN], 6), "\n")
+
+p16 <- ggplot(fam, aes(x = RF_COEF, y = LABEL, colour = CLASS)) +
+  geom_vline(xintercept = 0, colour = "grey40", linewidth = 0.4) +
+  geom_vline(data = gm, aes(xintercept = MEAN, colour = CLASS),
+             linetype = "dashed", linewidth = 0.45, show.legend = FALSE) +
+  geom_errorbarh(aes(xmin = CI_LOW, xmax = CI_HIGH), height = 0, linewidth = 0.55) +
+  geom_point(size = 2.1) +
+  scale_colour_manual(values = SHOP_COLOURS) +
+  scale_x_continuous(breaks = seq(-0.010, 0.006, by = 0.002)) +
+  labs(x = "Reduced-form coefficient (log points)", y = NULL,
+       caption = paste("Competitor-hospital instrument. Bars are 95% confidence intervals from two-way",
+                       "clustered standard errors.\nDashed lines mark precision-weighted group means.")) +
+  .fig_theme
+
+ggsave(file.path(FIGURE_DIR, "fig16_family_forest.pdf"), p16,
+       width = 7.5, height = 5.0)
+cat("Wrote fig16_family_forest.pdf\n")
+
+
+# ===========================================================================
+# FIGURE 17 -- Conley sensitivity curves
+#
+# Causal gradient against an assumed direct effect psi, with its 95% band.
+# The band has constant width by the Frisch-Waugh-Lovell identity, which is
+# the point worth seeing: only the point estimate slides.
+# ===========================================================================
+
+cg <- fread(file.path(TABLE_DIR, "T17_conley_sensitivity_grid.csv"))
+cg <- cg[INSTRUMENT_LABEL %chin% MAIN_THREE]
+cg[, PANEL_LABEL := factor(INSTRUMENT_LABELS[INSTRUMENT_LABEL],
+                           levels = INSTRUMENT_LABELS[MAIN_THREE])]
+
+# Breakeven, recomputed from the grid rather than read, as a check on the
+# stored column. These should agree to numerical precision.
+be <- unique(cg[, .(PANEL_LABEL,
+                    STORED    = BREAKEVEN_GAMMA_SIG,
+                    RECOMPUTED = GAP_OBSERVED + 1.96 * SE_GAP,
+                    SHARE     = BREAKEVEN_SIG_SHARE_OF_GAP)])
+cat("\nConley breakeven check (stored vs recomputed):\n")
+print(as.data.frame(be), row.names = FALSE)
+stopifnot(all(abs(be$STORED - be$RECOMPUTED) < 1e-9))
+
+p17 <- ggplot(cg, aes(x = GAMMA, y = GAP_CAUSAL)) +
+  geom_ribbon(aes(ymin = CI_LOW, ymax = CI_HIGH), fill = "#1b4965", alpha = 0.16) +
+  geom_hline(yintercept = 0, colour = "grey35", linewidth = 0.4) +
+  geom_vline(data = be, aes(xintercept = STORED),
+             colour = "#bc4749", linetype = "dashed", linewidth = 0.5) +
+  geom_line(colour = "#1b4965", linewidth = 0.7) +
+  facet_wrap(~ PANEL_LABEL, nrow = 1, scales = "free_x") +
+  labs(x = expression(paste("Assumed direct effect on shoppable prices, ", psi)),
+       y = "Causal shoppability gradient (log points)",
+       caption = paste("Dashed line marks the breakeven violation at which the 95% band first covers zero.",
+                       "The band is constant-width\nbecause netting out an assumed direct effect leaves every residual unchanged.")) +
+  .fig_theme + theme(legend.position = "none")
+
+ggsave(file.path(FIGURE_DIR, "fig17_conley_sensitivity.pdf"), p17,
+       width = 8.0, height = 3.4)
+cat("Wrote fig17_conley_sensitivity.pdf\n")
+
+
+
+# ===========================================================================
+# FIGURE 18 -- Enforcement control stability
+#
+# Shoppable coefficient across the eight enforcement controls and the
+# no-control baseline, for the three main instruments. The visual claim is
+# that nothing moves.
+# ===========================================================================
+
+enf <- fread(file.path(TABLE_DIR, "T18C_enforcement_vs_no_control.csv"))
+enf <- enf[TERM == "Shoppable" & INSTRUMENT_LABEL %chin% MAIN_THREE]
+
+ENF_LABELS <- c(
+  Any_enforcement_3m_lag1 = "Any enforcement, 3M count",
+  Warning_3m_lag1         = "Warning letters, 3M count",
+  Closure_3m_lag1         = "Closure notices, 3M count",
+  Any_enforcement_ind_3m  = "Any enforcement, 3M indicator",
+  Warning_ind_3m          = "Warning letters, 3M indicator",
+  Closure_ind_3m          = "Closure notices, 3M indicator",
+  Closure_6m_lag1         = "Closure notices, 6M count",
+  Closure_ind_6m          = "Closure notices, 6M indicator")
+
+enf[, LABEL := ENF_LABELS[ENFORCEMENT_CONTROL]]
+if (anyNA(enf$LABEL)) {
+  cat("\nUnmapped enforcement labels (edit ENF_LABELS):\n")
+  print(unique(enf[is.na(LABEL), ENFORCEMENT_CONTROL]))
+  enf[is.na(LABEL), LABEL := ENFORCEMENT_CONTROL]
+}
+enf[, LABEL := factor(LABEL, levels = rev(unique(ENF_LABELS)))]
+enf[, PANEL_LABEL := factor(INSTRUMENT_LABELS[INSTRUMENT_LABEL],
+                            levels = INSTRUMENT_LABELS[MAIN_THREE])]
+
+base <- unique(enf[, .(PANEL_LABEL, BASE = RF_PERCENT_PER_SD_NO_CONTROL)])
+cat("\nBaseline shoppable coefficients (should match Table 5, Panel A):\n")
+print(as.data.frame(base), row.names = FALSE)
+cat("\nLargest displacement by instrument:\n")
+print(as.data.frame(enf[, .(MAX_ABS_DELTA = round(max(abs(DELTA)), 3)),
+                        by = PANEL_LABEL]), row.names = FALSE)
+
+p18 <- ggplot(enf, aes(x = RF_PERCENT_PER_SD_WITH_CONTROL, y = LABEL)) +
+  geom_vline(data = base, aes(xintercept = BASE),
+             colour = "grey35", linetype = "dashed", linewidth = 0.5) +
+  geom_point(colour = "#1b4965", size = 2.1) +
+  facet_wrap(~ PANEL_LABEL, nrow = 1, scales = "free_x") +
+  scale_x_continuous(expand = expansion(mult = 0.35)) +
+  labs(x = "Shoppable reduced-form coefficient (% per SD of instrument)", y = NULL,
+       caption = paste("Each point is a separate specification adding one county-level enforcement measure",
+                       "to the control set.\nDashed line marks the baseline with no enforcement control.")) +
+  .fig_theme + theme(legend.position = "none")
+
+ggsave(file.path(FIGURE_DIR, "fig18_enforcement_controls.pdf"), p18,
+       width = 8.5, height = 3.2)
+cat("Wrote fig18_enforcement_controls.pdf\n")
+
+cat("\nAll three figures written to:\n  ", FIGURE_DIR, "\n")
