@@ -26,9 +26,11 @@
 ###############################################################################
 
 HPT_PIPELINE_FILE <- file.path(
-  "/Users/danielsierra/Library/CloudStorage",
-  "OneDrive-FloridaStateUniversity",
-  "Hospital Price Transparency Paper",
+  Sys.getenv("HPT_ROOT", unset = file.path(
+    "/Users/danielsierra/Library/CloudStorage",
+    "OneDrive-FloridaStateUniversity",
+    "Hospital Price Transparency Paper"
+  )),
   "Code", "HPT_Analysis_Pipeline.R"
 )
 

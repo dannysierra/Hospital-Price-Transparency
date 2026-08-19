@@ -171,11 +171,15 @@ setFixest_estimation(mem.clean = TRUE, data.save = FALSE)
 RUN_STAGES <- c(6,7,8,9,10,11, 12)   # set explicitly before running
 USE_CACHE  <- TRUE
 
-PROJECT_ROOT <- file.path(
+# Replication: set HPT_ROOT to the project directory, e.g.
+#   Sys.setenv(HPT_ROOT = "/path/to/Hospital Price Transparency Paper")
+PROJECT_ROOT <- Sys.getenv("HPT_ROOT", unset = file.path(
   "/Users/danielsierra/Library/CloudStorage",
   "OneDrive-FloridaStateUniversity",
   "Hospital Price Transparency Paper"
-)
+))
+if (!dir.exists(PROJECT_ROOT))
+  stop("PROJECT_ROOT not found. Set HPT_ROOT to the project directory.", call. = FALSE)
 
 FINAL_DATA_ROOT <- file.path(PROJECT_ROOT, "Data", "data_final")
 PANEL_DIR       <- file.path(FINAL_DATA_ROOT, "01_R_Analysis_Panels")
@@ -572,7 +576,7 @@ wald_equality <- function(fit, terms) {
     stat <- as.numeric(t(cm %*% b) %*% inv %*% (cm %*% b))
     if (!is.finite(stat) || stat < 0) stop("non-finite Wald")
     data.table(WALD = stat, DF = rk, VCOV_FULL_RANK = as.integer(rk == nrow(cm)),
-               P_VALUE = pchisq(stat, rk, lower.tail = FALSE))
+               P_VALUE = pf(stat / rk, df1 = rk, df2 = .cluster_df(fit), lower.tail = FALSE))
   }, error = function(e) data.table())
 }
 
@@ -585,6 +589,49 @@ tidy_fixest <- function(fit, conf = 0.95) {
   data.table(term = tm, estimate = as.numeric(b[tm]), std.error = as.numeric(s[tm]),
              statistic = as.numeric(b[tm] / s[tm]), p.value = as.numeric(p[tm]),
              conf.low = as.numeric(b[tm] - z * s[tm]), conf.high = as.numeric(b[tm] + z * s[tm]))
+}
+
+# ---------------------------------------------------------------------------
+# .pval() -- p-value from a t statistic, using the SAME reference distribution
+# fixest itself uses for the given fit.
+#
+# The pipeline previously computed p-values by hand as 2 * pnorm(-abs(b/s)).
+# That is the normal approximation. With two-way clustering where one
+# dimension has only 16 levels (POST_MONTH), fixest references a
+# t-distribution instead, which has visibly fatter tails at these sample
+# sizes: a coefficient reported at p = 0.041 under pnorm is p = 0.059 under
+# the correct reference.
+#
+# Rather than hard-code a df, .cluster_df() recovers it from the fit: it
+# takes a term whose p-value fixest already computed correctly, and solves
+# for the df that reproduces it. That works regardless of how fixest derives
+# df internally, and adapts automatically to subsamples with different
+# cluster counts (CBSA, payer-class, etc.).
+#
+# Falls back to the old pnorm() behaviour if the fit is unusable, so a
+# patched line can never error where the original succeeded.
+# ---------------------------------------------------------------------------
+.cluster_df <- function(fit) {
+  if (is.null(fit)) return(Inf)
+  out <- tryCatch({
+    b <- coef(fit); s <- fixest::se(fit); p <- fixest::pvalue(fit)
+    keep <- which(is.finite(b) & is.finite(s) & s > 0 &
+                    is.finite(p) & p > 1e-12 & p < 1 - 1e-12)
+    if (!length(keep)) return(Inf)
+    i  <- keep[1L]
+    t0 <- abs(unname(b[i] / s[i]))
+    p0 <- unname(p[i])
+    if (!is.finite(t0) || t0 <= 0) return(Inf)
+    uniroot(function(df) 2 * pt(-t0, df = df) - p0, interval = c(1, 1e6))$root
+  }, error = function(e) Inf)
+  if (!is.finite(out) || out < 1) Inf else out
+}
+
+.pval <- function(tstat, fit = NULL) {
+  tstat <- unname(tstat)
+  df <- .cluster_df(fit)
+  if (!is.finite(df)) return(2 * pnorm(-abs(tstat)))
+  2 * pt(-abs(tstat), df = df)
 }
 
 # ---------------------------------------------------------------------------
@@ -1404,9 +1451,9 @@ estimate_interacted <- function(
       SPEC = label, MODERATOR = ml, MODERATOR_TYPE = moderator_type,
       INSTRUMENT_LABEL = instrument_label, INSTRUMENT = instrument,
       OUTCOME = outcome, TERM = terms_label[k],
-      RF_COEF = rf$b, RF_SE = rf$s, RF_P = 2 * pnorm(-abs(rf$b / rf$s)),
+      RF_COEF = rf$b, RF_SE = rf$s, RF_P = .pval(rf$b / rf$s, rf_fit),
       RF_PERCENT_PER_SD = 100 * (exp(rf$b * sd_z) - 1),
-      IV_COEF = iv$b, IV_SE = iv$s, IV_P = 2 * pnorm(-abs(iv$b / iv$s)),
+      IV_COEF = iv$b, IV_SE = iv$s, IV_P = .pval(iv$b / iv$s, iv_fit),
       IV_PERCENT = 100 * (exp(iv$b) - 1),
       IV_CI_LOW_PERCENT  = 100 * (exp(iv$b - 1.96 * iv$s) - 1),
       IV_CI_HIGH_PERCENT = 100 * (exp(iv$b + 1.96 * iv$s) - 1),
@@ -1424,7 +1471,7 @@ estimate_interacted <- function(
       nm <- resolve(fit, tm); if (is.na(nm)) return(data.table())
       b <- coef(fit)[nm]; s <- sqrt(vcov(fit)[nm, nm])
       data.table(WALD = unname((b / s)^2), DF = 1L, VCOV_FULL_RANK = 1L,
-                 P_VALUE = unname(2 * pnorm(-abs(b / s))))
+                 P_VALUE = unname(.pval(b / s, fit)))
     }
     rf_test <- grab(rf_fit, "RF_INTER"); iv_test <- grab(iv_fit, "TREAT_INTER")
   }
@@ -4042,7 +4089,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   if (!is.finite(v) || v <= 0) return(NULL)
   se <- sqrt(v)
   data.table(DIFF = d, DIFF_SE = se, WALD = (d / se)^2, DF = 1L,
-             P_VALUE = 2 * pnorm(-abs(d / se)))
+             P_VALUE = .pval(d / se, fit))
 }
 
 # Minimum first-stage Wald across the endogenous equations. Written defensively
@@ -4175,14 +4222,14 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
       INSTRUMENT_LABEL = instrument_label, INSTRUMENT = instrument,
       OUTCOME = outcome, CATEGORY = term_grp[i], TERM = term_lab[i],
       MODERATOR = term_mod[i],
-      RF_COEF = rf$b, RF_SE = rf$s, RF_P = 2 * pnorm(-abs(rf$b / rf$s)),
+      RF_COEF = rf$b, RF_SE = rf$s, RF_P = .pval(rf$b / rf$s, rf_fit),
       # Level terms: % price change per SD of Z.
       # Interaction terms: change in that % per 1 SD of the moderator.
       RF_PERCENT_PER_SD_Z = if (term_lab[i] == "Level")
         100 * (exp(rf$b * sd_z) - 1) else NA_real_,
       RF_SHIFT_PCT_PER_SD_MOD = if (term_lab[i] == "x Moderator" && !is.na(j))
         100 * (exp(rf$b * sd_z * mod_sd[j]) - 1) else NA_real_,
-      IV_COEF = iv$b, IV_SE = iv$s, IV_P = 2 * pnorm(-abs(iv$b / iv$s)),
+      IV_COEF = iv$b, IV_SE = iv$s, IV_P = .pval(iv$b / iv$s, iv_fit),
       IV_PERCENT = if (term_lab[i] == "Level") 100 * (exp(iv$b) - 1) else NA_real_,
       FIRST_STAGE_WALD_MIN = fs_min, CRAGG_DONALD = cd,
       N_OBSERVATIONS = n_obs, N_CONCEPTS = uniqueN(d$FINAL_CONCEPT_ID),
@@ -4669,9 +4716,9 @@ cat("\nDistribution:\n")
     a <- pull(rf, ivs[i]); b <- pull(iv, endo[i])
     data.table(SPEC = scheme_label, INSTRUMENT_LABEL = instrument_label,
                SES_BIN = grid$BIN[i], CATEGORY = grid$SHOP[i],
-               RF_COEF = a[1], RF_SE = a[2], RF_P = 2 * pnorm(-abs(a[1] / a[2])),
+               RF_COEF = a[1], RF_SE = a[2], RF_P = .pval(a[1] / a[2], rf),
                RF_PERCENT_PER_SD = 100 * (exp(a[1] * sd_z) - 1),
-               IV_COEF = b[1], IV_P = 2 * pnorm(-abs(b[1] / b[2])),
+               IV_COEF = b[1], IV_P = .pval(b[1] / b[2], iv),
                FIRST_STAGE_WALD_MIN = fsw, N_OBSERVATIONS = nobs(rf))
   }))
   
@@ -5463,9 +5510,9 @@ if (isTRUE(S15_RUN$cbsa)) {
             
             rows[[length(rows) + 1L]] <- data.table(
               INSTRUMENT_LABEL = il, OUTCOME = oc,
-              RF_COEF = rf_b, RF_P = 2 * pnorm(-abs(rf_b / rf_s)),
+              RF_COEF = rf_b, RF_P = .pval(rf_b / rf_s, rf_fit),
               IV_PERCENT = if (!is.na(iv_b)) 100 * (exp(iv_b) - 1) else NA_real_,
-              IV_P = if (!is.na(iv_b)) 2 * pnorm(-abs(iv_b / iv_s)) else NA_real_,
+              IV_P = if (!is.na(iv_b)) .pval(iv_b / iv_s, iv_fit) else NA_real_,
               FIRST_STAGE_F = if (!is.null(iv_fit))
                 suppressWarnings(as.numeric(fitstat(iv_fit, "ivf1", simplify = TRUE))[1]) else NA_real_,
               N_OBSERVATIONS = nobs(rf_fit))
@@ -7574,7 +7621,7 @@ pooled <- cache_or_run("t02_pooled_current_vintage", {
         OLS_PERCENT = 100 * (exp(b_ols) - 1),
         RF_COEF     = b_rf,
         IV_PERCENT  = 100 * (exp(b_iv) - 1),
-        IV_P        = 2 * pnorm(-abs(b_iv / s_iv)),
+        IV_P        = .pval(b_iv / s_iv, iv),
         FIRST_STAGE_F = .stat1(iv, "ivwald1"),   # was "ivf1"
         WU_HAUSMAN_P  = .stat1(iv, "wh"),
         N_OBSERVATIONS = nobs(iv))
@@ -8610,7 +8657,7 @@ run_superfamily_ses_heterogeneity <- function(panel, shop_value = "IMAGING",
     if (is.na(n1) || is.na(n2)) return(c(diff = NA_real_, se = NA_real_, p = NA_real_))
     b1 <- unname(coef(fit)[n1]); b2 <- unname(coef(fit)[n2]); V <- vcov(fit)
     dd <- b1 - b2; se_ <- sqrt(V[n1, n1] + V[n2, n2] - 2 * V[n1, n2])
-    c(diff = dd, se = se_, p = 2 * pnorm(-abs(dd / se_)))
+    c(diff = dd, se = se_, p = .pval(dd / se_, fit))
   }
   
   rf_diff <- wald_diff(rf_fit, "RF_SM", "RF_NM")
@@ -8743,12 +8790,13 @@ run_conley_sensitivity <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
   
   grid[, `:=`(INSTRUMENT_LABEL = instrument_label, INSTRUMENT = instrument,
               GAP_OBSERVED = gap0, SE_GAP_OBSERVED = se_gap, SD_INSTRUMENT = sd_z,
-              GAP_PCT_PER_SD = 100 * gap0 * sd_z,
+              GAP_PCT_PER_SD = 100 * (exp(gap0 * sd_z) - 1),
               BREAKEVEN_GAMMA_SIG = breakeven_sig,
               BREAKEVEN_GAMMA_ZERO = breakeven_zero,
-              # Same "percent per SD of peer exposure" scale the paper already
-              # reports RF_PERCENT_PER_SD on, so these drop straight into prose.
-              BREAKEVEN_SIG_PCT_PER_SD = 100 * breakeven_sig * sd_z,
+              # Same convention Table 5 (tab:headline) uses for each arm's own
+              # percent-per-SD figure, so this table's percent column is now
+              # directly comparable to Table 5's Gap row.
+              BREAKEVEN_SIG_PCT_PER_SD = 100 * (exp(breakeven_sig * sd_z) - 1),
               BREAKEVEN_SIG_SHARE_OF_GAP = breakeven_sig / gap0,
               BREAKEVEN_ZERO_SHARE_OF_GAP = 1)]
   
@@ -9121,3 +9169,1526 @@ ggsave(file.path(FIGURE_DIR, "fig18_enforcement_controls.pdf"), p18,
 cat("Wrote fig18_enforcement_controls.pdf\n")
 
 cat("\nAll three figures written to:\n  ", FIGURE_DIR, "\n")
+
+
+
+
+source("/Users/danielsierra/Library/CloudStorage/OneDrive-FloridaStateUniversity/Hospital Price Transparency Paper/Code/HPT_Section19_TierI_Diagnostics.R")
+s19 <- run_section_19(outpatient,
+                      within_family = comparability_within_family,  # T09D
+                      decomposition = decomposition_results,        # T08
+                      ses_gradient  = ses_gradient_table)           
+exists("schemes_long"); exists("concept_results")
+
+if (!exists("schemes_long"))
+  schemes_long <- readRDS(file.path(CACHE_DIR, "schemes_long.rds"))
+if (!exists("concept_results"))
+  concept_results <- readRDS(file.path(CACHE_DIR, "concept_level_6inst.rds"))
+
+measures <- cache_or_run("comparability_measures", build_comparability_measures(outpatient))
+comp_wf  <- run_comparability_within_family(concept_results, measures)
+
+meta_input <- prepare_meta_input(concept_results, schemes_long)
+meta_input[, TIER := instrument_tier(INSTRUMENT_LABEL)]
+dec <- decompose_reduced_form(meta_input, stem = "T08D_RF_vs_FS_decomposition")
+
+s19c <- run_s19c(comp_wf, dec)
+
+
+
+
+###############################################################################
+# SECTION 20 -- TIER II DIAGNOSTICS: A5, A6, A8
+#
+# Source AFTER HPT_Analysis_Pipeline.R has run through Section 9 (needs
+# `measures` and `concept_results` in memory) and after `outpatient` exists.
+# Nothing here touches Section 6's cached headline estimates.
+#
+#   20A  A6 -- is the contracting-depth result (N_PAYERS_V2) the concept-size
+#              gradient relabeled? Correlations against size, exposure, the
+#              concept's own first stage, and the precision weight used in
+#              run_comparability_within_family(); then re-estimates unweighted,
+#              with a log-size control, and with size-quartile FE layered on
+#              top of family FE.
+#   20B  A5 -- payer-mix composition. Two pieces:
+#              (i)  a balance test: does the instrument predict how many
+#                   payers a hospital reports for a concept, differentially
+#                   by shoppability? Feasible today from the payer-cell
+#                   export (HPT_PAYER_DISPERSION*.csv.gz).
+#              (ii) the headline interacted price regression with reported
+#                   payer count added as a row-level control.
+#              The FULL ask -- restrict to a fixed set of common payers and
+#              estimate at hospital x concept x payer level with payer FE --
+#              is NOT feasible from what's in this file. See the note at the
+#              bottom of this section for exactly what that would require.
+#   20C  A8 -- the fixed-effects ladder: baseline, + system FE (additive),
+#              then system x month (reproducing Section 13's own result as
+#              the third rung, so the ladder is internally consistent with
+#              Table sysmonth). Reuses Section 13's own system-resolution
+#              logic rather than assuming outpatient_r13 already exists.
+#
+# NOT ATTEMPTED HERE: the distance-based exclusion ladder from A8 (0/50/100/
+# 200-mile rings around the focal hospital). There is no latitude/longitude,
+# address, or geocode field anywhere in this pipeline -- I checked. That is a
+# Stage 1/2 data-construction task (hospital coordinates from CMS Care
+# Compare's Hospital General Information file, the AHA annual survey you
+# already cite, or an NPI registry lookup), not a diagnostic on what already
+# exists. See the note at the end of this file for a concrete next step.
+###############################################################################
+
+.s20_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+.s20_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
+
+
+# ===========================================================================
+# 20A. CONTRACTING DEPTH vs. CONCEPT SIZE                                (A6)
+# ===========================================================================
+
+s20_depth_diagnostics <- function(concept_results, measures,
+                                  moderator   = "N_PAYERS_V2",
+                                  instruments = MAIN_INSTRUMENTS) {
+  
+  cr <- as.data.table(copy(concept_results))
+  ms <- as.data.table(copy(measures))
+  
+  req_cr <- c("FINAL_CONCEPT_ID", "INSTRUMENT_LABEL", "RF_COEF", "RF_SE",
+              "FS_COEF", "N_OBSERVATIONS")
+  missing_cr <- setdiff(req_cr, names(cr))
+  if (length(missing_cr) > 0L)
+    stop("concept_results is missing: ", paste(missing_cr, collapse = ", "),
+         call. = FALSE)
+  if (!(moderator %chin% names(ms)))
+    stop(moderator, " not found in measures. Run build_comparability_measures() first.",
+         call. = FALSE)
+  
+  # Mirrors run_comparability_within_family()'s own merge and weight exactly,
+  # so this is the same object that function estimates on, not a re-derivation.
+  d <- merge(cr[is.finite(RF_COEF) & is.finite(RF_SE) & RF_SE > 0], ms,
+             by = "FINAL_CONCEPT_ID")
+  setDT(d)
+  d[, MOD   := safe_numeric(get(moderator))]
+  d <- d[is.finite(MOD)]
+  d[, W     := 1 / (RF_SE^2)]
+  d[, LOG_N := log(pmax(N_OBSERVATIONS, 1))]
+  has_mpp <- "MEAN_PRIOR_POSTERS" %chin% names(d)
+  
+  # -- correlations, per main instrument -----------------------------------
+  corr_tab <- rbindlist(lapply(names(instruments), function(il) {
+    dd <- d[INSTRUMENT_LABEL == il]
+    data.table(
+      INSTRUMENT_LABEL = il,
+      N_CONCEPTS       = nrow(dd),
+      COR_LOG_SIZE     = cor(dd$MOD, dd$LOG_N, use = "complete.obs"),
+      COR_MEAN_PRIOR   = if (has_mpp) cor(dd$MOD, dd$MEAN_PRIOR_POSTERS, use = "complete.obs") else NA_real_,
+      COR_FS_COEF      = cor(dd$MOD, dd$FS_COEF, use = "complete.obs"),
+      COR_WEIGHT       = cor(dd$MOD, dd$W, use = "complete.obs")
+    )
+  }))
+  
+  cat("\nCorrelation of", moderator, "with concept size, mean exposure, the\n",
+      "concept's own first stage, and the precision weight (1/RF_SE^2) used\n",
+      "in run_comparability_within_family():\n", sep = "")
+  print(corr_tab[, lapply(.SD, function(x) if (is.numeric(x)) round(x, 3) else x)])
+  
+  # -- re-estimation ladder --------------------------------------------------
+  d[, MODC   := (MOD - mean(MOD, na.rm = TRUE)) / sd(MOD, na.rm = TRUE)]
+  d[, SIZE_Q := cut(N_OBSERVATIONS,
+                    quantile(N_OBSERVATIONS, c(0, .25, .5, .75, 1), na.rm = TRUE),
+                    include.lowest = TRUE, labels = c("Q1", "Q2", "Q3", "Q4"))]
+  
+  specs <- list(
+    `(b) Family FE, weighted [paper's spec]` = list(f = "RF_COEF ~ MODC | CONCEPT_FAMILY", w = TRUE),
+    `(b') Family FE, unweighted`             = list(f = "RF_COEF ~ MODC | CONCEPT_FAMILY", w = FALSE),
+    `(c) + log(N_obs) control`               = list(f = "RF_COEF ~ MODC + LOG_N | CONCEPT_FAMILY", w = TRUE),
+    `(d) + size-quartile FE`                 = list(f = "RF_COEF ~ MODC | CONCEPT_FAMILY + SIZE_Q", w = TRUE)
+  )
+  
+  re_est <- rbindlist(lapply(names(instruments), function(il) {
+    dd <- d[INSTRUMENT_LABEL == il & is.finite(MODC)]
+    rbindlist(lapply(names(specs), function(sn) {
+      sp  <- specs[[sn]]
+      fit <- tryCatch(
+        if (sp$w) feols(as.formula(sp$f), data = dd, weights = ~W,
+                        cluster = ~CONCEPT_FAMILY, warn = FALSE, notes = FALSE)
+        else      feols(as.formula(sp$f), data = dd,
+                        cluster = ~CONCEPT_FAMILY, warn = FALSE, notes = FALSE),
+        error = function(e) NULL)
+      if (is.null(fit)) return(NULL)
+      td <- tidy_fixest(fit)
+      td <- td[term == "MODC"]
+      if (nrow(td) == 0L) return(NULL)
+      td[, `:=`(SPEC = sn, INSTRUMENT_LABEL = il, N = nrow(dd))]
+      td
+    }), fill = TRUE)
+  }), fill = TRUE)
+  
+  cat("\nRe-estimation ladder (term = standardized ", moderator, "):\n", sep = "")
+  print(re_est[, .(SPEC, INSTRUMENT_LABEL,
+                   estimate  = signif(estimate, 3),
+                   std.error = signif(std.error, 3),
+                   p.value   = round(p.value, 4), N)])
+  
+  save_csv(corr_tab, "T20A_depth_size_correlations.csv")
+  save_csv(re_est,   "T20A_depth_reestimation.csv")
+  list(correlations = corr_tab, reestimation = re_est)
+}
+
+
+# ===========================================================================
+# 20B. PAYER-MIX COMPOSITION                                             (A5)
+# ===========================================================================
+#
+# load_payer_dispersion() itself collapses to FINAL_CONCEPT_ID before it
+# returns (its last two lines are `loo_mean(raw, "CV_PAYER_WINSOR")` and
+# `raw[, .(N_PAYERS_V2 = mean(N_DISTINCT_PAYERS, ...)), by = FINAL_CONCEPT_ID]`),
+# so its return value has no HOSPITAL_ID or POST_MONTH, and N_DISTINCT_PAYERS
+# no longer exists under that name. That is fine for build_comparability_
+# measures(), which only needs concept-level output, but this section needs
+# the row-level file. This reimplements the read-and-filter steps up to the
+# point just before that collapse -- same files, same dedup key, same county
+# merge, same finiteness filter, same P99 winsorization -- and returns the
+# row-level table instead of aggregating it away.
+
+s20_load_payer_dispersion_rowlevel <- function() {
+  if (!requireNamespace("R.utils", quietly = TRUE)) {
+    stop("Package 'R.utils' is required to read gzipped payer dispersion files.",
+         call. = FALSE)
+  }
+  files <- list.files(PAYER_DISPERSION_DIR, pattern = PAYER_DISPERSION_PATTERN,
+                      full.names = TRUE)
+  if (length(files) == 0L)
+    stop("No payer dispersion files found matching '", PAYER_DISPERSION_PATTERN,
+         "' in ", PAYER_DISPERSION_DIR, call. = FALSE)
+  
+  raw <- rbindlist(lapply(files, function(f) {
+    tryCatch(fread(f), error = function(e) {
+      warning("Failed to read ", basename(f), ": ", e$message, call. = FALSE)
+      data.table()
+    })
+  }), fill = TRUE)
+  if (nrow(raw) == 0L)
+    stop("Payer dispersion files read but produced zero rows.", call. = FALSE)
+  
+  assert_columns(raw, c("HOSPITAL_ID", "POST_MONTH", "ANALYSIS_CONCEPT_ID",
+                        "N_DISTINCT_PAYERS", "N_PAYER_CELLS",
+                        "CV_PAYER_NEGOTIATED"), "payer dispersion file")
+  
+  raw <- unique(raw, by = c("HOSPITAL_ID", "POST_MONTH", "ANALYSIS_CONCEPT_ID"))
+  raw[, POST_MONTH := as.Date(POST_MONTH)]
+  raw[, HOSPITAL_ID := as.character(HOSPITAL_ID)]
+  setnames(raw, "ANALYSIS_CONCEPT_ID", "FINAL_CONCEPT_ID")
+  
+  hosp_county <- unique(outpatient[, .(HOSPITAL_ID, POST_MONTH, ANALYSIS_MARKET)])
+  raw <- merge(raw, hosp_county, by = c("HOSPITAL_ID", "POST_MONTH"), all.x = FALSE)
+  
+  raw <- raw[!is.na(ANALYSIS_MARKET) & is.finite(CV_PAYER_NEGOTIATED) &
+               CV_PAYER_NEGOTIATED >= 0]
+  if (nrow(raw) == 0L)
+    stop("No usable rows after county match / finiteness filter.", call. = FALSE)
+  
+  cap <- quantile(raw$CV_PAYER_NEGOTIATED, 0.99, na.rm = TRUE)
+  raw[, CV_PAYER_WINSOR := pmin(CV_PAYER_NEGOTIATED, cap)]
+  
+  cat("Row-level payer file: ", format(nrow(raw), big.mark = ","), " rows | ",
+      uniqueN(raw$HOSPITAL_ID), " hospitals | ", uniqueN(raw$FINAL_CONCEPT_ID),
+      " concepts (pre-collapse; load_payer_dispersion() itself would ",
+      "aggregate this to concept level from here)\n", sep = "")
+  raw
+}
+
+s20_build_payer_panel <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                                  instruments = MAIN_INSTRUMENTS) {
+  payer <- s20_load_payer_dispersion_rowlevel()
+  
+  # estimate_interacted() needs the endogenous variable (to build TREAT_k) and
+  # the baseline controls, not just the scheme and instrument columns -- both
+  # default to the pipeline's own globals, so if BASELINE_CONTROLS changes
+  # upstream this stays in sync automatically rather than silently dropping
+  # a control via available_columns()'s graceful-missing behavior.
+  need <- c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID", "MARKET_ID",
+            scheme_col, ENDOGENOUS_VARIABLE, BASELINE_CONTROLS, unname(instruments))
+  missing <- setdiff(need, names(panel))
+  if (length(missing) > 0L)
+    stop("panel (outpatient) is missing: ", paste(missing, collapse = ", "),
+         ". Confirm the scheme columns and instruments are already attached ",
+         "to outpatient in this session.", call. = FALSE)
+  
+  base <- unique(panel[, ..need])
+  d <- merge(payer, base, by = c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID"))
+  cat("Payer panel: ", format(nrow(d), big.mark = ","), " rows (from ",
+      format(nrow(payer), big.mark = ","), " row-level payer-file rows, matched to ",
+      scheme_col, ", ", ENDOGENOUS_VARIABLE, ", and instrument columns on outpatient)\n", sep = "")
+  d
+}
+
+s20_payer_balance <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                              instruments = MAIN_INSTRUMENTS,
+                              outcomes = c("N_DISTINCT_PAYERS", "N_PAYER_CELLS",
+                                           "CV_PAYER_WINSOR")) {
+  d <- s20_build_payer_panel(panel, scheme_col, instruments)
+  outcomes <- intersect(outcomes, names(d))
+  
+  results <- rbindlist(lapply(outcomes, function(oc) {
+    rbindlist(lapply(names(instruments), function(il) {
+      r <- tryCatch(
+        estimate_interacted(d, scheme_col, outcome = oc, instrument = instruments[[il]],
+                            moderator_type = "categorical", label = "Payer-file balance",
+                            instrument_label = il, fixed_effects = c("MARKET_ID", "POST_MONTH")),
+        error = function(e) { message("  [", oc, " / ", il, "] failed: ", e$message); NULL })
+      if (is.null(r)) return(NULL)
+      cbind(OUTCOME = oc, r$rows)
+    }), fill = TRUE)
+  }), fill = TRUE)
+  
+  cat("\nDoes peer disclosure exposure predict how many payers a hospital\n",
+      "reports for a concept, and does that differ by shoppability? A\n",
+      "significant, asymmetric effect here would mean part of the price\n",
+      "gradient could be mechanical (payer-mix expansion) rather than a\n",
+      "genuine price response.\n\n", sep = "")
+  
+  if (nrow(results) == 0L || !("TERM" %chin% names(results))) {
+    cat("All (outcome, instrument) combinations failed -- see the [FAILED]\n",
+        "messages above for the specific error. Nothing to print.\n", sep = "")
+    return(invisible(results))
+  }
+  
+  print(results[TERM %chin% c("Shoppable", "Non_shoppable"),
+                .(OUTCOME, CATEGORY = TERM, INSTRUMENT_LABEL,
+                  RF_PCT = round(RF_PERCENT_PER_SD, 3), RF_P = round(RF_P, 4))][
+                    order(OUTCOME, CATEGORY, INSTRUMENT_LABEL)])
+  
+  save_csv(results, "T20B_payer_file_balance.csv")
+  invisible(results)
+}
+
+s20_price_with_payer_control <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                                         instruments = MAIN_INSTRUMENTS,
+                                         control_var = "N_DISTINCT_PAYERS") {
+  payer <- s20_load_payer_dispersion_rowlevel()
+  if (!(control_var %chin% names(payer)))
+    stop(control_var, " not found in the row-level payer file. Available: ",
+         paste(names(payer), collapse = ", "), call. = FALSE)
+  
+  ctrl <- unique(payer[, .(HOSPITAL_ID, POST_MONTH, FINAL_CONCEPT_ID,
+                           PAYER_CTRL = safe_numeric(get(control_var)))])
+  d <- merge(panel, ctrl, by = c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID"), all.x = TRUE)
+  match_rate <- mean(!is.na(d$PAYER_CTRL))
+  cat("Matched payer-count control to ", format(sum(!is.na(d$PAYER_CTRL)), big.mark = ","),
+      " of ", format(nrow(d), big.mark = ","), " panel rows (",
+      round(100 * match_rate, 1), "%)\n", sep = "")
+  if (match_rate < 0.5)
+    warning("Less than half the panel matched a payer-count control; results ",
+            "below are on a smaller, possibly selected sample.", call. = FALSE)
+  
+  out <- rbindlist(lapply(names(instruments), function(il) {
+    ctrl_set <- available_columns(d, c(BASELINE_CONTROLS, "PAYER_CTRL"))
+    if (!("PAYER_CTRL" %chin% ctrl_set))
+      message("  [", il, "] PAYER_CTRL dropped by available_columns() -- check ",
+              "for all-NA or zero-variance values in the matched subsample.")
+    r <- tryCatch(
+      estimate_interacted(d, scheme_col, PRIMARY_OUTCOME, instruments[[il]],
+                          moderator_type = "categorical", label = "With payer-count control",
+                          instrument_label = il,
+                          controls = c(BASELINE_CONTROLS, "PAYER_CTRL"),
+                          fixed_effects = c("MARKET_ID", "POST_MONTH")),
+      error = function(e) { message("  [", il, "] failed: ", e$message); NULL })
+    if (is.null(r)) return(NULL)
+    r$rows
+  }), fill = TRUE)
+  
+  cat("\nHeadline coefficients with reported payer count held fixed at the\n",
+      "row level (compare against Table 5, Panel A):\n", sep = "")
+  
+  if (nrow(out) == 0L || !("TERM" %chin% names(out))) {
+    cat("All instruments failed -- see the [FAILED] messages above.\n")
+    return(invisible(out))
+  }
+  
+  print(out[TERM %chin% c("Shoppable", "Non_shoppable"),
+            .(CATEGORY = TERM, INSTRUMENT_LABEL,
+              RF_PCT = round(RF_PERCENT_PER_SD, 3), RF_P = round(RF_P, 4))][
+                order(CATEGORY, INSTRUMENT_LABEL)])
+  
+  save_csv(out, "T20B_price_with_payer_control.csv")
+  invisible(out)
+}
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+
+# ===========================================================================
+# 20C. FIXED-EFFECTS LADDER                                              (A8)
+# ===========================================================================
+#
+# Reuses Section 13's own system-resolution logic verbatim rather than
+# assuming outpatient_r13 already exists in memory, so this runs standalone.
+
+s20_resolve_system <- function(panel = outpatient) {
+  sys_col <- if ("SYSTEM_KEY" %chin% names(panel)) "SYSTEM_KEY" else "HEALTH_SYSTEM_ID"
+  if (!(sys_col %chin% names(panel)))
+    stop("Neither SYSTEM_KEY nor HEALTH_SYSTEM_ID found in panel.", call. = FALSE)
+  
+  resolved <- panel[!is.na(HOSPITAL_ID), .(
+    SYS_RESOLVED = { v <- get(sys_col)[!is.na(get(sys_col))]; if (length(v)) v[1L] else NA_character_ }
+  ), by = HOSPITAL_ID]
+  
+  d <- merge(panel, resolved, by = "HOSPITAL_ID", all.x = TRUE, sort = FALSE)
+  setDT(d)
+  d[, SYSTEM_MONTH := paste0(fifelse(is.na(SYS_RESOLVED), "NOSYS", SYS_RESOLVED),
+                             "_", as.character(POST_MONTH))]
+  cat("Resolved system for ", format(uniqueN(d$HOSPITAL_ID), big.mark = ","),
+      " hospitals | ", format(sum(is.na(resolved$SYS_RESOLVED)), big.mark = ","),
+      " genuinely unaffiliated | ", format(uniqueN(d$SYSTEM_MONTH), big.mark = ","),
+      " distinct system-months\n", sep = "")
+  d
+}
+
+s20_fe_ladder <- function(panel = outpatient, scheme_cols = "SCHEME_1_CERTAINTY",
+                          instruments = MAIN_INSTRUMENTS, outcome = PRIMARY_OUTCOME,
+                          use_cache = TRUE) {
+  
+  d <- s20_resolve_system(panel)
+  
+  rungs <- list(
+    `(1) Baseline (market x concept + month)` = c("MARKET_ID", "POST_MONTH"),
+    `(2) + system FE (additive)`              = c("MARKET_ID", "POST_MONTH", "SYS_RESOLVED"),
+    `(3) System x month`                      = c("MARKET_ID", "SYSTEM_MONTH")
+  )
+  rung_ids <- c("rung1_baseline", "rung2_system_fe", "rung3_sysmonth")
+  names(rung_ids) <- names(rungs)
+  
+  n_total <- length(scheme_cols) * length(rungs) * length(instruments)
+  cat("\nRunning ", length(scheme_cols), " scheme(s) x 3 rungs x ", length(instruments),
+      " instruments = ", n_total, " calls. Each prints its own elapsed time; if a\n",
+      "call hangs, note which one and interrupt -- earlier cells are already\n",
+      "cached (use_cache = TRUE) and will not be redone on a re-run. The cache\n",
+      "key includes the scheme, so running multiple schemes will not collide.\n\n", sep = "")
+  
+  out <- rbindlist(lapply(scheme_cols, function(scheme_col) {
+    rbindlist(lapply(names(rungs), function(rn) {
+      fe <- rungs[[rn]]
+      rbindlist(lapply(names(instruments), function(il) {
+        # scheme_col is part of the key -- without this, running a second
+        # scheme after the first would silently return the first scheme's
+        # cached result for every (rung, instrument) cell rather than
+        # actually re-estimating, since rung/instrument alone repeat exactly.
+        key <- paste0("s20_ladder_", scheme_col, "_", rung_ids[[rn]], "_", il)
+        cat(sprintf("  %-22s %-42s %-38s ", scheme_col, substr(rn, 1, 40), substr(il, 1, 36)))
+        t0 <- Sys.time()
+        r <- tryCatch({
+          if (use_cache) {
+            cache_or_run(key, estimate_interacted(
+              d, scheme_col, outcome, instruments[[il]],
+              moderator_type = "categorical", label = rn,
+              instrument_label = il, fixed_effects = fe))
+          } else {
+            estimate_interacted(
+              d, scheme_col, outcome, instruments[[il]],
+              moderator_type = "categorical", label = rn,
+              instrument_label = il, fixed_effects = fe)
+          }
+        }, error = function(e) { cat("FAILED: ", e$message, "\n", sep = ""); NULL })
+        cat(sprintf("%6.1fs\n", as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+        if (is.null(r)) return(NULL)
+        cbind(SCHEME = scheme_col, RUNG = rn, r$rows)
+      }), fill = TRUE)
+    }), fill = TRUE)
+  }), fill = TRUE)
+  
+  if (nrow(out) == 0L || !("TERM" %chin% names(out))) {
+    cat("\nAll scheme x rung x instrument combinations failed -- see the FAILED\n",
+        "messages above for specific errors. Nothing to print.\n", sep = "")
+    save_csv(out, "T20C_fe_ladder.csv")
+    return(invisible(out))
+  }
+  
+  cat("\nShoppable coefficient across the fixed-effects ladder, by scheme:\n")
+  print(out[TERM == "Shoppable",
+            .(SCHEME, RUNG, INSTRUMENT_LABEL, RF_PCT = round(RF_PERCENT_PER_SD, 3),
+              RF_P = round(RF_P, 4))][order(SCHEME, INSTRUMENT_LABEL, RUNG)])
+  
+  cat("\nNon-shoppable coefficient across the same ladder, by scheme:\n")
+  print(out[TERM == "Non_shoppable",
+            .(SCHEME, RUNG, INSTRUMENT_LABEL, RF_PCT = round(RF_PERCENT_PER_SD, 3),
+              RF_P = round(RF_P, 4))][order(SCHEME, INSTRUMENT_LABEL, RUNG)])
+  
+  cat("\nSummary: share of the baseline-to-rung(2) drop, by scheme (primary\n",
+      "instrument only, for a quick cross-scheme read):\n", sep = "")
+  wide <- dcast(out[TERM == "Shoppable" & INSTRUMENT_LABEL == names(MAIN_INSTRUMENTS)[1]],
+                SCHEME ~ RUNG, value.var = "RF_PERCENT_PER_SD")
+  rung_names <- names(rungs)
+  if (all(rung_names %chin% names(wide))) {
+    wide[, DROP_SHARE_AT_RUNG2 := round(1 - get(rung_names[2]) / get(rung_names[1]), 2)]
+    print(wide[, c("SCHEME", rung_names, "DROP_SHARE_AT_RUNG2"), with = FALSE])
+  }
+  
+  cat("\nHOW TO READ THIS.\n",
+      "  Rung (1) is Table 5's baseline. Rung (3) should numerically match\n",
+      "  Table sysmonth's existing reduced-form rows -- if it does not, one of\n",
+      "  the two blocks of code has drifted and that needs resolving first.\n",
+      "  Rung (2) is the new information: it absorbs average price-level\n",
+      "  differences across systems without absorbing system-specific TIME\n",
+      "  variation. If the shoppable coefficient survives rung (2) but not\n",
+      "  rung (3), the system x month result is about system-level SHOCKS in\n",
+      "  a given month, not baseline system price levels -- which favors the\n",
+      "  reading in the paper that between-system variation carries the\n",
+      "  benchmarking signal, since within-system time variation is what rung\n",
+      "  (3) additionally removes relative to rung (2).\n", sep = "")
+  
+  save_csv(out, "T20C_fe_ladder.csv")
+  invisible(out)
+}
+
+
+# ===========================================================================
+# DRIVER
+# ===========================================================================
+
+run_section_20 <- function(concept_results = NULL, measures = NULL,
+                           panel = outpatient) {
+  .s20_hd("SECTION 20 -- A5, A6, A8")
+  
+  a6 <- NULL
+  if (!is.null(concept_results) && !is.null(measures)) {
+    .s20_sub("20A -- Contracting depth vs. concept size (A6)")
+    a6 <- s20_depth_diagnostics(concept_results, measures)
+  } else {
+    cat("\n[20A skipped] Pass concept_results = and measures = (concept_results,\n",
+        "measures from Section 9) to run this.\n", sep = "")
+  }
+  
+  .s20_sub("20B -- Payer-mix composition (A5)")
+  b_balance <- tryCatch(s20_payer_balance(panel), error = function(e) {
+    message("[20B balance test failed] ", e$message); NULL
+  })
+  b_control <- tryCatch(s20_price_with_payer_control(panel), error = function(e) {
+    message("[20B control regression failed] ", e$message); NULL
+  })
+  
+  .s20_sub("20C -- Fixed-effects ladder (A8)")
+  c_ladder <- tryCatch(s20_fe_ladder(panel, scheme_cols = unname(SCHEME_COLUMNS)),
+                       error = function(e) { message("[20C failed] ", e$message); NULL })
+  
+  .s20_hd("SECTION 20 COMPLETE")
+  invisible(list(depth = a6, payer_balance = b_balance,
+                 payer_control = b_control, fe_ladder = c_ladder))
+}
+
+# s20 <- run_section_20(concept_results = concept_results, measures = measures)
+#
+# If concept_results / measures aren't in memory:
+#   measures <- cache_or_run("comparability_measures", build_comparability_measures(outpatient))
+#   s20 <- run_section_20(concept_results = concept_results, measures = measures)
+
+
+s20b <- s20_payer_balance(outpatient)
+s20b2 <- s20_price_with_payer_control(outpatient)
+s20c_all <- s20_fe_ladder(outpatient, scheme_cols = unname(SCHEME_COLUMNS))
+
+
+###############################################################################
+# COLD-START RECOVERY (v2) -- fixes a bug in the first version.
+#
+# HPT_Analysis_Pipeline.R's Section 0 begins with `rm(list = ls()); gc()`.
+# That's correct for its normal top-level use, but it means calling
+# source() on any excerpt of it from within THIS script wipes every
+# variable this script has defined too -- including `lines`, `defs_end`,
+# and anything else needed to locate the SECOND excerpt (SESSION RESTORE).
+#
+# Fix: do ALL the text-processing and write BOTH temp files to disk BEFORE
+# sourcing anything. Fixed filenames inside tempdir() survive rm(list=ls())
+# because they live on disk, not in R's variable bindings -- and tempdir()
+# itself returns the same path for the rest of this R session regardless
+# of what gets rm()'d, so the path can be reconstructed fresh after the
+# wipe without needing any variable to survive it.
+#
+# Safe to run even from your current session -- Section 0's rm(list=ls())
+# is idempotent, so re-running this from scratch just reloads cleanly.
+###############################################################################
+
+PIPELINE_PATH <- "/Users/danielsierra/Library/CloudStorage/OneDrive-FloridaStateUniversity/Hospital Price Transparency Paper/Code/HPT_Analysis_Pipeline.R"
+
+stopifnot(file.exists(PIPELINE_PATH))
+lines <- readLines(PIPELINE_PATH, warn = FALSE)
+
+defs_end <- grep("^# ORDER OF OPERATIONS", lines)[1]
+if (is.na(defs_end)) stop("Could not find '# ORDER OF OPERATIONS' marker.")
+
+restore_start    <- grep("^# SESSION RESTORE AND CACHE MANAGEMENT", lines)[1]
+warm_start_call  <- grep('source\\(.*HPT_warm_start\\.R', lines)[1]
+if (is.na(restore_start) || is.na(warm_start_call))
+  stop("Could not find the SESSION RESTORE markers.")
+
+# Fixed, reconstructable filenames -- NOT tempfile()'s random names, which
+# would be just as vulnerable to the variable wipe as anything else.
+defs_file    <- file.path(tempdir(), "hpt_defs_temp.R")
+restore_file <- file.path(tempdir(), "hpt_restore_temp.R")
+
+writeLines(lines[1:(defs_end - 1)], defs_file)
+writeLines(lines[restore_start:(warm_start_call - 1)], restore_file)
+
+cat("Definitions written to: ", defs_file, "\n",
+    "Restore block written to: ", restore_file, "\n",
+    "(Both are files on disk in a fixed location, so they survive the\n",
+    " pipeline's own rm(list=ls()) even though every R variable in this\n",
+    " script -- PIPELINE_PATH, lines, defs_file itself -- will not.)\n\n", sep = "")
+
+# -- Step 1: Sections 0-12. This runs rm(list = ls()) internally. ----------
+source(defs_file)
+cat("\nDone. RUN_STAGES, CACHE_DIR, and every helper function are now defined,\n",
+    "and nothing has been estimated.\n\n", sep = "")
+
+# -- Step 2: SESSION RESTORE block. Re-derive the path fresh -- do NOT -----
+# reference `restore_file` from above, it no longer exists.
+source(file.path(tempdir(), "hpt_restore_temp.R"))
+cat("Done. cache_status(), restore_session(), and invalidate_cache() are now\n",
+    "defined. Nothing has been loaded into memory yet.\n\n", sep = "")
+
+# -- Step 3: see what's actually on disk before loading anything -----------
+cat("--- What's cached, and how stale ---\n")
+cache_status()
+
+cat("\nIf concept_level_6inst and the other objects you need show up above\n",
+    "with reasonable sizes and recent-looking timestamps, call:\n\n",
+    "  restore_session()\n\n",
+    "That loads outpatient, concept_results, and everything else into the\n",
+    "global environment under their usual names.\n", sep = "")
+
+restore_session()
+
+stopifnot(exists("outpatient"))
+cat("outpatient:", format(nrow(outpatient), big.mark = ","), "rows,",
+    ncol(outpatient), "columns\n")
+
+need <- c("SCHEME_1_CERTAINTY", "MARKET_ID", "POST_MONTH", "ANALYSIS_MARKET",
+          "N_PRIOR_POSTERS", PRIMARY_OUTCOME, BASELINE_CONTROLS,
+          unname(MAIN_INSTRUMENTS))
+missing <- setdiff(need, names(outpatient))
+if (length(missing) > 0) {
+  cat("MISSING from outpatient:", paste(missing, collapse = ", "), "\n")
+} else {
+  cat("All columns needed for today's diagnostics are present.\n")
+}
+
+# confirm all six schemes survived, not just the headline one
+print(intersect(unname(SCHEME_COLUMNS), names(outpatient)))
+
+# sanity check the size matches what you had before — should be ~1.43M rows
+
+
+
+###############################################################################
+# SECTION 21 -- TIER II DIAGNOSTICS: A3, E1
+#
+# Source AFTER HPT_Analysis_Pipeline.R and, for A3, ideally after Section 19
+# has run once (not required, but confirms the naive comparison below).
+#
+#   21A  A3 -- exact test of pi_S = pi_N (the two OWN first-stage
+#              coefficients in the interacted system), accounting for their
+#              cross-equation covariance rather than assuming independence.
+#              A cheap naive version (independence-assumed) is included
+#              first since it needs no new computation; the exact version
+#              is the expensive fallback if the naive result isn't decisive
+#              enough to rely on.
+#   21B  E1  -- wild cluster bootstrap over POST_MONTH (16 clusters), the
+#              few-clusters check on the time dimension of two-way
+#              clustering. Requires the fwildclusterboot package, which is
+#              purpose-built for exactly this and interfaces directly with
+#              fixest objects.
+###############################################################################
+
+.s21_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+.s21_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
+
+
+# ===========================================================================
+# 21A. EXACT TEST OF pi_S = pi_N                                         (A3)
+# ===========================================================================
+
+# -- cheap version: needs nothing but numbers already in T19A -------------
+# Treats the two own-coefficient estimates as independent. This is EITHER
+# too conservative OR too liberal depending on the sign of their true
+# cross-equation covariance, which this version cannot see. Use it as a
+# first read, not a final answer.
+s21_naive_pi_test <- function(pi_n, t_n, pi_s, t_s, instrument_label = "") {
+  se_n <- pi_n / t_n
+  se_s <- pi_s / t_s
+  diff <- pi_s - pi_n
+  se_diff <- sqrt(se_n^2 + se_s^2)
+  z <- diff / se_diff
+  data.table(INSTRUMENT_LABEL = instrument_label, PI_N = pi_n, PI_S = pi_s,
+             DIFF = diff, SE_DIFF_NAIVE = se_diff, Z_NAIVE = z,
+             P_NAIVE = 2 * pnorm(-abs(z)),
+             NOTE = "independence assumed -- see 21A exact version for the real test")
+}
+
+run_s21a_naive <- function() {
+  .s21_hd("21A (cheap) -- NAIVE TEST OF pi_S = pi_N, INDEPENDENCE ASSUMED")
+  # Values transcribed from the T19A run already completed. Re-derive from
+  # the saved CSV if you want to avoid hand transcription:
+  #   pi <- fread(file.path(TABLE_DIR, "T19A_interacted_first_stage_matrix.csv"))
+  rows <- list(
+    list(il = "Competitor_only_hospitals_9m",         pi_n = 0.128546, t_n = 7.74, pi_s = 0.099785, t_s = 5.47),
+    list(il = "Primary_strict_system_IV",              pi_n = 0.123782, t_n = 8.48, pi_s = 0.096042, t_s = 5.76),
+    list(il = "Competitor_outside_CBSA_hospitals_9m",  pi_n = 0.127403, t_n = 7.34, pi_s = 0.094847, t_s = 4.92)
+  )
+  out <- rbindlist(lapply(rows, function(r)
+    s21_naive_pi_test(r$pi_n, r$t_n, r$pi_s, r$t_s, r$il)))
+  print(out[, .(INSTRUMENT_LABEL, PI_N = round(PI_N, 4), PI_S = round(PI_S, 4),
+                DIFF = round(DIFF, 4), Z = round(Z_NAIVE, 2), P = round(P_NAIVE, 3))])
+  cat("\nNone significant under independence. This is a starting point, not\n",
+      "a conclusion -- pi_N and pi_S are fit on the same underlying rows\n",
+      "(TREAT_Non and TREAT_Shop are mutually exclusive by construction on\n",
+      "any given row), so their true covariance is almost certainly nonzero\n",
+      "and could push the exact test's p-value in either direction.\n", sep = "")
+  invisible(out)
+}
+
+
+# -- exact version: joint stacked estimation -------------------------------
+#
+# Stacks the sample twice, once per category, tagged by EQ. Each equation
+# gets its OWN fixed effects (EQ-prefixed), so the point estimates exactly
+# reproduce running the two first-stage equations separately. Clustering
+# uses the ORIGINAL, non-prefixed county/month identifiers, so that EQ1 and
+# EQ2 rows sharing the same underlying market/month are correctly treated as
+# the same cluster -- this is what lets the joint vcov() capture the
+# cross-equation covariance instead of assuming it away.
+
+s21_test_pi_equality <- function(
+    data, scheme_col = "SCHEME_1_CERTAINTY", instrument, instrument_label = "",
+    endogenous = ENDOGENOUS_VARIABLE, controls = BASELINE_CONTROLS,
+    fixed_effects = BASELINE_FIXED_EFFECTS, clusters = BASELINE_CLUSTERS) {
+  
+  controls <- available_columns(data, controls)
+  fe <- available_columns(data, fixed_effects)
+  cl <- available_columns(data, clusters)
+  
+  d <- data[!is.na(get(scheme_col))]
+  d <- model_sample(d, c(endogenous, instrument, controls, fe, cl, scheme_col))
+  if (nrow(d) < MIN_MODEL_OBS) stop("Sample too small for ", instrument_label, call. = FALSE)
+  
+  d[, MOD := droplevels(factor(get(scheme_col)))]
+  keys <- levels(d$MOD)
+  if (length(keys) != 2L)
+    stop("This test assumes exactly two categories; ", scheme_col,
+         " has ", length(keys), ".", call. = FALSE)
+  k1 <- keys[1]; k2 <- keys[2]
+  
+  for (k in keys) {
+    sel <- as.integer(d$MOD == k)
+    d[, paste0("TREAT_", k) := get(endogenous) * sel]
+    d[, paste0("IV_", k)    := get(instrument) * sel]
+  }
+  
+  mk_block <- function(k, eq_label) {
+    b <- copy(d)
+    b[, EQ  := eq_label]
+    b[, DEP := get(paste0("TREAT_", k))]
+    b
+  }
+  d_stack <- rbindlist(list(mk_block(k1, "EQ1"), mk_block(k2, "EQ2")))
+  
+  # Explicit per-equation columns rather than formula-interaction syntax --
+  # avoids R's baseline+difference contrast coding, which would not give two
+  # directly-testable free coefficients.
+  d_stack[, IVk1_EQ1 := get(paste0("IV_", k1)) * as.integer(EQ == "EQ1")]
+  d_stack[, IVk2_EQ1 := get(paste0("IV_", k2)) * as.integer(EQ == "EQ1")]
+  d_stack[, IVk1_EQ2 := get(paste0("IV_", k1)) * as.integer(EQ == "EQ2")]
+  d_stack[, IVk2_EQ2 := get(paste0("IV_", k2)) * as.integer(EQ == "EQ2")]
+  for (cv in controls) {
+    d_stack[, paste0(cv, "_EQ1") := get(cv) * as.integer(EQ == "EQ1")]
+    d_stack[, paste0(cv, "_EQ2") := get(cv) * as.integer(EQ == "EQ2")]
+  }
+  d_stack[, FE_A := paste0(EQ, "_", get(fe[1]))]
+  if (length(fe) > 1L) d_stack[, FE_B := paste0(EQ, "_", get(fe[2]))]
+  
+  rhs <- c("IVk1_EQ1", "IVk2_EQ1", "IVk1_EQ2", "IVk2_EQ2",
+           if (length(controls) > 0L) paste0(rep(controls, each = 2), c("_EQ1", "_EQ2")))
+  fe_stack <- if (length(fe) > 1L) c("FE_A", "FE_B") else "FE_A"
+  
+  # Cluster on the ORIGINAL (non-EQ-prefixed) identifiers -- this is the
+  # whole point: it lets EQ1 and EQ2 rows sharing a market/month be treated
+  # as the same cluster, so the sandwich covariance captures the
+  # cross-equation correlation instead of assuming it away.
+  cl_stack <- cl
+  
+  form <- as.formula(paste("DEP ~", paste(rhs, collapse = " + "), "|",
+                           paste(fe_stack, collapse = " + ")))
+  clf  <- as.formula(paste("~", paste(cl_stack, collapse = " + ")))
+  
+  fit <- feols(form, data = d_stack, cluster = clf, warn = FALSE, notes = FALSE)
+  
+  b <- coef(fit); V <- vcov(fit)
+  nm1 <- "IVk1_EQ1"; nm2 <- "IVk2_EQ2"   # pi_{k1} and pi_{k2}, the two OWN coefficients
+  if (!all(c(nm1, nm2) %chin% names(b)))
+    stop("Expected coefficients not found -- got: ", paste(names(b), collapse = ", "),
+         call. = FALSE)
+  
+  diff    <- unname(b[nm1] - b[nm2])
+  se_diff <- sqrt(V[nm1, nm1] + V[nm2, nm2] - 2 * V[nm1, nm2])
+  z <- diff / se_diff
+  p <- .pval(z, fit)
+  
+  data.table(
+    INSTRUMENT_LABEL = instrument_label,
+    CATEGORY_1 = k1, CATEGORY_2 = k2,
+    PI_1 = unname(b[nm1]), PI_2 = unname(b[nm2]),
+    COV_12 = V[nm1, nm2],
+    DIFF = diff, SE_DIFF_EXACT = se_diff, Z_EXACT = z, P_EXACT = p,
+    N_STACKED = nrow(d_stack)
+  )
+}
+
+run_s21a_exact <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                           instruments = MAIN_INSTRUMENTS, use_cache = TRUE) {
+  .s21_hd("21A (exact) -- STACKED TEST OF pi_S = pi_N")
+  cat("\nThis fits a doubled-row, doubled-FE joint model per instrument.\n",
+      "Expect each call to take as long as, or longer than, the entire\n",
+      "9-cell ladder from Section 20C. Progress prints per instrument;\n",
+      "results are cached individually.\n\n", sep = "")
+  
+  out <- rbindlist(lapply(names(instruments), function(il) {
+    key <- paste0("s21a_pi_equality_", scheme_col, "_", il)
+    cat(sprintf("  %-38s ", il))
+    t0 <- Sys.time()
+    r <- tryCatch({
+      if (use_cache) {
+        cache_or_run(key, s21_test_pi_equality(panel, scheme_col, instruments[[il]], il))
+      } else {
+        s21_test_pi_equality(panel, scheme_col, instruments[[il]], il)
+      }
+    }, error = function(e) { cat("FAILED: ", e$message, "\n", sep = ""); NULL })
+    cat(sprintf("%6.1fs\n", as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+    r
+  }), fill = TRUE)
+  
+  if (nrow(out) > 0L) {
+    cat("\nExact test, accounting for cross-equation covariance:\n")
+    print(out[, .(INSTRUMENT_LABEL, PI_1 = round(PI_1, 4), PI_2 = round(PI_2, 4),
+                  COV = signif(COV_12, 3), DIFF = round(DIFF, 4),
+                  Z = round(Z_EXACT, 2), P = round(P_EXACT, 3))])
+  }
+  save_csv(out, "T21A_pi_equality_exact.csv")
+  invisible(out)
+}
+
+
+
+# ===========================================================================
+# 21B. WILD CLUSTER BOOTSTRAP OVER MONTHS                                (E1)
+# ===========================================================================
+#
+# Two-way clustering (county, month) with only 16 month clusters is the
+# concern. fwildclusterboot::boottest() is purpose-built for few-cluster
+# inference and works directly on a fitted feols object.
+
+s21_check_boot_package <- function() {
+  if (!requireNamespace("fwildclusterboot", quietly = TRUE)) {
+    cat("\nPackage 'fwildclusterboot' is not installed. Install with:\n",
+        "  install.packages('fwildclusterboot')\n",
+        "It is purpose-built for wild cluster bootstrap inference with few\n",
+        "clusters and interfaces directly with fixest objects -- there is no\n",
+        "good reason to hand-rolled this one.\n", sep = "")
+    return(FALSE)
+  }
+  TRUE
+}
+
+# -----------------------------------------------------------------------
+# LEAVE-ONE-MONTH-OUT: the alternative that actually runs.
+#
+# fwildclusterboot::boottest() did not complete on this panel across four
+# attempts (a direct call, a hand-rolled Frisch-Waugh-Lovell workaround with
+# three distinct bugs, and a fourth attempt using boottest()'s own fe=
+# argument), including a token B=199 run that still did not return within
+# a minute. The per-iteration cost against MARKET_ID's ~660k levels is the
+# evident wall, fe= notwithstanding. This is not worth a fifth attempt.
+#
+# This check addresses the same underlying concern -- fragility of
+# inference given only 16 month clusters -- through a much cheaper
+# mechanism: refit the headline interacted model 16 times, each time
+# excluding one month, and see how far the coefficient and SE move. It is
+# the same logic as the paper's existing leave-one-system-out check
+# (Section 8.3 / s13_leave_one_system_out), applied to months instead of
+# systems, so it fits the paper's existing robustness vocabulary rather
+# than introducing a new kind of evidence.
+# -----------------------------------------------------------------------
+
+s21_loco_month <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                           instrument, instrument_label = "",
+                           outcome = PRIMARY_OUTCOME, controls = BASELINE_CONTROLS,
+                           fixed_effects = BASELINE_FIXED_EFFECTS) {
+  controls <- available_columns(panel, controls)
+  fe <- available_columns(panel, fixed_effects)
+  
+  d <- panel[!is.na(get(scheme_col))]
+  d <- model_sample(d, c(outcome, instrument, controls, fe, "ANALYSIS_MARKET", scheme_col))
+  d[, MOD := droplevels(factor(get(scheme_col)))]
+  keys <- levels(d$MOD)
+  for (k in keys) d[, paste0("RF_", k) := get(instrument) * as.integer(MOD == k)]
+  rf_names <- paste0("RF_", keys)
+  
+  months <- sort(unique(d$POST_MONTH))
+  form <- as.formula(paste(outcome, "~", paste(c(rf_names, controls), collapse = " + "),
+                           "|", paste(fe, collapse = " + ")))
+  clf  <- as.formula(paste("~", paste(c("ANALYSIS_MARKET", "POST_MONTH"), collapse = " + ")))
+  
+  cat("Leave-one-month-out for ", instrument_label, ": refitting with each of the ",
+      length(months), " months dropped in turn.\n\n", sep = "")
+  
+  t0 <- Sys.time()
+  fit_base <- feols(form, data = d, cluster = clf, warn = FALSE, notes = FALSE)
+  cat("Baseline (all ", length(months), " months, ",
+      round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1), "s):\n", sep = "")
+  print(tidy_fixest(fit_base)[term %chin% rf_names,
+                              .(term, estimate = round(estimate, 5),
+                                std.error = round(std.error, 5), p.value = round(p.value, 4))])
+  
+  out <- rbindlist(lapply(months, function(m) {
+    t0 <- Sys.time()
+    dd <- d[POST_MONTH != m]
+    fit <- tryCatch(feols(form, data = dd, cluster = clf, warn = FALSE, notes = FALSE),
+                    error = function(e) NULL)
+    cat(sprintf("  dropped %s  (%.1fs)\n", as.character(m),
+                as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+    if (is.null(fit)) return(NULL)
+    r <- data.table(DROPPED_MONTH = as.character(m))
+    for (rn in rf_names) {
+      r[[paste0(rn, "_coef")]] <- unname(coef(fit)[rn])
+      r[[paste0(rn, "_se")]]   <- unname(fixest::se(fit)[rn])
+      r[[paste0(rn, "_p")]]    <- unname(pvalue(fit)[rn])
+    }
+    r
+  }), fill = TRUE)
+  
+  cat("\nCoefficient range across the ", length(months), " leave-one-month-out refits,\n",
+      "against the baseline (all months):\n", sep = "")
+  for (rn in rf_names) {
+    vals <- out[[paste0(rn, "_coef")]]
+    base_val <- unname(coef(fit_base)[rn])
+    cat(sprintf("  %-20s baseline %+.5f | range [%+.5f, %+.5f] | max deviation %.5f\n",
+                rn, base_val, min(vals, na.rm=TRUE), max(vals, na.rm=TRUE),
+                max(abs(vals - base_val), na.rm=TRUE)))
+  }
+  cat("\nA baseline value that stays well within this range under every single\n",
+      "month's removal is evidence no one month is driving the result -- the\n",
+      "direct analogue of what the leave-one-system-out check already shows\n",
+      "for systems.\n", sep = "")
+  
+  save_csv(out, paste0("T21B_leave_one_month_out_", instrument_label, ".csv"))
+  invisible(list(baseline = fit_base, loco = out))
+}
+
+run_s21b_loco <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                          instruments = MAIN_INSTRUMENTS) {
+  .s21_hd("21B (fallback) -- LEAVE-ONE-MONTH-OUT (item E1)")
+  out <- lapply(names(instruments), function(il) {
+    .s21_sub(il)
+    s21_loco_month(panel, scheme_col, instruments[[il]], il)
+  })
+  names(out) <- names(instruments)
+  invisible(out)
+}
+
+s21_wild_bootstrap_month <- function(
+    data, scheme_col = "SCHEME_1_CERTAINTY", instrument, instrument_label = "",
+    outcome = PRIMARY_OUTCOME, controls = BASELINE_CONTROLS,
+    fixed_effects = BASELINE_FIXED_EFFECTS, B = 999, seed = 20240101) {
+  
+  if (!s21_check_boot_package()) return(NULL)
+  
+  # Third attempt. The first two (direct call with no FE hint; manual FWL
+  # pre-demeaning) both failed for different reasons -- the direct call
+  # apparently never finished in an hour, and hand-rolled FWL hit three
+  # separate bugs (row misalignment, a Date-typed clustering variable, and
+  # joint-vs-single-FE singleton removal giving mismatched sample sizes).
+  # Dropping the manual demeaning entirely. fwildclusterboot::boottest()
+  # has its own fe= argument specifically for telling it a fixed effect is
+  # already absorbed in the fitted model, so it can use its fast algorithm
+  # to account for it during resampling rather than whatever slower path it
+  # falls back to without that hint -- which is very possibly why the
+  # original direct call never returned. B defaults small here (999, not
+  # 9999) as a timing check before committing to the full run.
+  controls <- available_columns(data, controls)
+  fe <- available_columns(data, fixed_effects)
+  if (length(fe) < 1L) stop("Need at least one fixed effect.", call. = FALSE)
+  high_card_fe <- fe[1]
+  
+  d <- data[!is.na(get(scheme_col))]
+  d <- model_sample(d, c(outcome, instrument, controls, fe, "ANALYSIS_MARKET", scheme_col))
+  d[, MOD := droplevels(factor(get(scheme_col)))]
+  keys <- levels(d$MOD)
+  for (k in keys) d[, paste0("RF_", k) := get(instrument) * as.integer(MOD == k)]
+  rf_names <- paste0("RF_", keys)
+  
+  # boottest() fails on Date-typed clustering variables ("| not defined for
+  # Date objects"); POST_MONTH must be a factor wherever it's used, whether
+  # as an FE term or as clustid.
+  d[, POST_MONTH_FCT := factor(POST_MONTH)]
+  fe_formula_terms <- ifelse(fe == "POST_MONTH", "POST_MONTH_FCT", fe)
+  
+  cat("Fitting the full two-way FE model directly. Passing fe = '", high_card_fe,
+      "' to boottest() so it uses its own fast algorithm for that fixed effect\n",
+      "rather than a slower default path.\n", sep = "")
+  
+  t0 <- Sys.time()
+  fit <- feols(as.formula(paste(outcome, "~", paste(c(rf_names, controls), collapse = " + "),
+                                "|", paste(fe_formula_terms, collapse = " + "))),
+               data = d, cluster = ~ANALYSIS_MARKET, warn = FALSE, notes = FALSE)
+  cat("Model fit took ", round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1),
+      "s\n", sep = "")
+  
+  cat("\nCounty-only clustered SEs on the full model (the 'primary' comparison ",
+      "E1 asks for -- and the fallback if the bootstrap below still doesn't\n",
+      "complete in reasonable time):\n", sep = "")
+  print(tidy_fixest(fit)[term %chin% rf_names,
+                         .(term, estimate = signif(estimate, 4),
+                           std.error = signif(std.error, 4), p.value = round(p.value, 4))])
+  
+  cat("\nStarting with B = ", B, " as a timing check before scaling up. If any\n",
+      "single term takes more than a couple of minutes, interrupt and report\n",
+      "back rather than waiting further -- at that point I'd treat the wild\n",
+      "bootstrap as intractable with this FE structure and recommend relying\n",
+      "on the county-only clustering above as the primary robustness check,\n",
+      "which is already the paper's own documented fallback.\n", sep = "")
+  
+  results <- lapply(rf_names, function(term_name) {
+    cat("\nWild cluster bootstrap (B = ", B, ") on ", term_name,
+        ", clustered on POST_MONTH_FCT (", uniqueN(d$POST_MONTH_FCT), " clusters):\n", sep = "")
+    t0 <- Sys.time()
+    set.seed(seed)
+    bt <- tryCatch(
+      fwildclusterboot::boottest(fit, param = term_name, clustid = "POST_MONTH_FCT",
+                                 fe = high_card_fe, B = B),
+      error = function(e) { cat("  FAILED: ", e$message, "\n", sep = ""); NULL })
+    cat("  (", round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1), "s)\n", sep = "")
+    if (!is.null(bt)) print(summary(bt))
+    bt
+  })
+  names(results) <- rf_names
+  
+  cat("\nHOW TO READ THIS.\n",
+      "  Compare the wild-bootstrap p-value on each term to the conventional\n",
+      "  two-way-clustered p-value already in Table 5. A p-value that moves\n",
+      "  materially, especially past 0.05, means the month dimension's few\n",
+      "  clusters were doing more work in the conventional SE than the\n",
+      "  asymptotics assume. A p-value that barely moves is a clean pass.\n", sep = "")
+  
+  invisible(results)
+}
+
+run_s21b <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
+                     instruments = MAIN_INSTRUMENTS, B = 9999) {
+  .s21_hd("21B -- WILD CLUSTER BOOTSTRAP OVER MONTHS (item E1)")
+  if (!s21_check_boot_package()) return(invisible(NULL))
+  
+  out <- lapply(names(instruments), function(il) {
+    .s21_sub(il)
+    s21_wild_bootstrap_month(panel, scheme_col, instruments[[il]], il, B = B)
+  })
+  names(out) <- names(instruments)
+  invisible(out)
+}
+
+
+# ===========================================================================
+# DRIVER
+# ===========================================================================
+
+run_section_21 <- function(panel = outpatient, run_exact_pi_test = FALSE, B = 9999) {
+  .s21_hd("SECTION 21 -- A3, E1")
+  
+  naive <- run_s21a_naive()
+  
+  exact <- NULL
+  if (run_exact_pi_test) {
+    exact <- run_s21a_exact(panel)
+  } else {
+    cat("\n[21A exact skipped] Naive test above shows no significant difference\n",
+        "for any instrument. Set run_exact_pi_test = TRUE to run the expensive\n",
+        "exact version if you want to confirm that isn't an artifact of the\n",
+        "independence assumption.\n", sep = "")
+  }
+  
+  boot <- run_s21b(panel, B = B)
+  
+  .s21_hd("SECTION 21 COMPLETE")
+  invisible(list(naive_pi_test = naive, exact_pi_test = exact, wild_boot = boot))
+}
+
+# Example:
+#   s21 <- run_section_21(outpatient, run_exact_pi_test = FALSE)   # fast: naive + wild boot
+#   s21 <- run_section_21(outpatient, run_exact_pi_test = TRUE)    # also runs the expensive exact test
+
+s21_loco <- run_s21b_loco(outpatient)
+
+
+
+
+
+
+###############################################################################
+# SECTION 22 -- TIER III DIAGNOSTICS: E2, E5
+#
+# Source AFTER HPT_Analysis_Pipeline.R (via restore_session()) has run.
+#
+#   22A  E2 -- how correlated are the 38 estimable classification
+#              partitions' shoppable coefficients? "Negative in 97% of 114
+#              specifications" is a statement about specification stability,
+#              not independent replication, and this quantifies how
+#              correlated the re-cuts actually are.
+#   22B  E5 -- family-level regression robustness: unweighted vs. the
+#              paper's weighted spec, plus a leave-one-family-out check on
+#              the precision-weighted family/shoppability difference, so the
+#              16-observation regression isn't resting on any single family.
+###############################################################################
+
+.s22_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+.s22_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
+
+
+# ===========================================================================
+# 22A. CORRELATION ACROSS THE 38 CLASSIFICATION PARTITIONS               (E2)
+# ===========================================================================
+#
+# Rebuilds the concept-level shoppable reduced-form coefficient under each
+# of the 38 estimable partitions, for the primary instrument, and reports
+# the pairwise correlation matrix's off-diagonal distribution. Uses
+# schemes_long (already restored) rather than re-deriving partitions from
+# scratch, so this is exactly the classification grid the paper's own
+# Section 6.4 sweep uses.
+
+s22_partition_correlation <- function(panel = outpatient, concept_results,
+                                      schemes_long, instrument_label = "Competitor_only_hospitals_9m") {
+  
+  scheme_cols <- names(schemes_long)
+  scheme_cols <- setdiff(scheme_cols, c("FINAL_CONCEPT_ID"))
+  # schemes_long is expected to carry one column per scheme-collapse variant,
+  # each a 2-level factor (Shoppable/Non_shoppable) after the degenerate
+  # partitions are already dropped -- if it instead carries 3-level raw
+  # scheme columns (with an Intermediate category), this filters those out
+  # by requiring exactly 2 non-NA levels, matching "estimable" as the paper
+  # defines it.
+  is_two_level <- vapply(scheme_cols, function(cn) {
+    length(unique(na.omit(schemes_long[[cn]]))) == 2L
+  }, logical(1))
+  scheme_cols <- scheme_cols[is_two_level]
+  
+  cat("Found ", length(scheme_cols), " two-level (estimable) partition columns",
+      if (length(scheme_cols) != 38) paste0(" -- expected 38, got ", length(scheme_cols),
+                                            "; check schemes_long's schema before trusting this") else "",
+      ".\n", sep = "")
+  
+  cr <- concept_results[INSTRUMENT_LABEL == instrument_label]
+  if (nrow(cr) == 0L) stop("No concept_results rows for ", instrument_label, call. = FALSE)
+  
+  d <- merge(cr[, .(FINAL_CONCEPT_ID, RF_COEF)], schemes_long, by = "FINAL_CONCEPT_ID")
+  
+  # For each partition, the "shoppable coefficient" comparison the paper
+  # reports is really a family/category contrast, but for a fast correlation
+  # check across 38 partitions the concept-level RF_COEF vector itself,
+  # signed by category, is the right object: it is what "negative in 97% of
+  # specifications" is counting sign agreement over.
+  mat <- sapply(scheme_cols, function(cn) {
+    cat_vec <- d[[cn]]
+    sign_flip <- ifelse(cat_vec == "Non_shoppable", -1, 1)
+    d$RF_COEF * sign_flip
+  })
+  colnames(mat) <- scheme_cols
+  
+  cor_mat <- cor(mat, use = "pairwise.complete.obs")
+  off_diag <- cor_mat[upper.tri(cor_mat)]
+  
+  cat("\nPairwise correlation of the (sign-adjusted) concept-level shoppable\n",
+      "coefficient across the ", length(scheme_cols), " estimable partitions:\n", sep = "")
+  cat(sprintf("  Median: %.3f | Mean: %.3f | Min: %.3f | Max: %.3f\n",
+              median(off_diag), mean(off_diag), min(off_diag), max(off_diag)))
+  
+  cat("\nHOW TO READ THIS.\n",
+      "  A high median correlation (roughly > 0.5) confirms these are highly\n",
+      "  correlated re-cuts of the same 738 concepts, not independent draws --\n",
+      "  which is expected, and is exactly the point E2 asks the paper to say\n",
+      "  explicitly rather than let '97% of 114 specifications' imply\n",
+      "  something closer to independent replication.\n", sep = "")
+  
+  save_csv(as.data.table(cor_mat, keep.rownames = "SCHEME"), "T22A_partition_correlation_matrix.csv")
+  invisible(list(cor_matrix = cor_mat, off_diagonal = off_diag))
+}
+
+
+# ===========================================================================
+# 22B. FAMILY-LEVEL ROBUSTNESS: UNWEIGHTED + LEAVE-ONE-FAMILY-OUT        (E5)
+# ===========================================================================
+#
+# Reuses whatever family-level coefficients your pipeline's own Section 16
+# already produced if available (checks for common object names first);
+# otherwise rebuilds them directly from concept_results by aggregating to
+# FINAL_FAMILY_ID, matching Appendix Table `tab:family_level`'s construction
+# (one reduced-form estimate per family, restricting the panel to that
+# family's rows, same FE and clustering as the headline spec).
+
+s22_get_family_results <- function(concept_results, panel = outpatient,
+                                   scheme_col = "SCHEME_1_CERTAINTY",
+                                   instrument_label = "Competitor_only_hospitals_9m") {
+  
+  # Try common names Section 16 might have used before rebuilding.
+  candidates <- c("s16_family_results", "family_results", "GROUP_family_results")
+  for (nm in candidates) {
+    if (exists(nm, envir = .GlobalEnv)) {
+      cat("Found existing family-level results in `", nm, "` -- using that ",
+          "rather than rebuilding.\n", sep = "")
+      return(get(nm, envir = .GlobalEnv))
+    }
+  }
+  
+  cat("No existing family-level results object found under a common name; ",
+      "rebuilding directly from concept_results (matching Appendix Table ",
+      "family_level's construction: one estimate per family, restricting the ",
+      "panel to that family's rows, headline FE and clustering).\n", sep = "")
+  
+  instrument <- MAIN_INSTRUMENTS[[instrument_label]]
+  families <- unique(panel$FINAL_FAMILY_ID)
+  families <- families[!is.na(families)]
+  
+  out <- rbindlist(lapply(families, function(fam) {
+    dd <- panel[FINAL_FAMILY_ID == fam & !is.na(get(scheme_col))]
+    dd <- model_sample(dd, c(PRIMARY_OUTCOME, instrument, BASELINE_CONTROLS,
+                             BASELINE_FIXED_EFFECTS, BASELINE_CLUSTERS))
+    if (nrow(dd) < MIN_MODEL_OBS) return(NULL)
+    fit <- tryCatch(
+      feols(as.formula(paste(PRIMARY_OUTCOME, "~", instrument, "+", BASELINE_CONTROLS,
+                             "|", paste(BASELINE_FIXED_EFFECTS, collapse = " + "))),
+            data = dd, cluster = as.formula(paste("~", paste(BASELINE_CLUSTERS, collapse = "+"))),
+            warn = FALSE, notes = FALSE),
+      error = function(e) NULL)
+    if (is.null(fit) || !(instrument %chin% names(coef(fit)))) return(NULL)
+    scheme_val <- unique(dd[[scheme_col]])
+    data.table(FINAL_FAMILY_ID = fam,
+               SHOPPABLE = if (length(scheme_val) == 1) scheme_val else NA_character_,
+               RF_COEF = unname(coef(fit)[instrument]),
+               RF_SE   = unname(fixest::se(fit)[instrument]),
+               N = nobs(fit))
+  }), fill = TRUE)
+  out
+}
+
+s22_family_robustness <- function(family_results) {
+  fr <- as.data.table(copy(family_results))
+  need <- c("FINAL_FAMILY_ID", "SHOPPABLE", "RF_COEF", "RF_SE")
+  missing <- setdiff(need, names(fr))
+  if (length(missing) > 0L)
+    stop("family_results is missing: ", paste(missing, collapse = ", "),
+         ". Check s22_get_family_results()'s column names against whatever ",
+         "object it found or built.", call. = FALSE)
+  
+  fr <- fr[is.finite(RF_COEF) & is.finite(RF_SE) & RF_SE > 0]
+  fr[, W := 1 / (RF_SE^2)]
+  fr[, SHOP01 := as.integer(SHOPPABLE == "Shoppable")]
+  
+  cat("Family-level count: ", nrow(fr), " (expect 16)\n\n", sep = "")
+  
+  # -- weighted (paper's spec) vs unweighted -------------------------------
+  fit_w  <- lm(RF_COEF ~ SHOP01, data = fr, weights = W)
+  fit_uw <- lm(RF_COEF ~ SHOP01, data = fr)
+  
+  cat("Weighted (precision-weighted, paper's spec):\n")
+  print(coef(summary(fit_w)))
+  cat("\nUnweighted:\n")
+  print(coef(summary(fit_uw)))
+  
+  # -- leave-one-family-out on the weighted difference --------------------
+  cat("\nLeave-one-family-out, weighted difference (Shoppable - Non-shoppable):\n")
+  loo <- rbindlist(lapply(fr$FINAL_FAMILY_ID, function(fam) {
+    dd <- fr[FINAL_FAMILY_ID != fam]
+    fit <- tryCatch(lm(RF_COEF ~ SHOP01, data = dd, weights = W), error = function(e) NULL)
+    if (is.null(fit)) return(NULL)
+    data.table(DROPPED_FAMILY = fam, DIFF = unname(coef(fit)["SHOP01"]))
+  }), fill = TRUE)
+  
+  full_diff <- unname(coef(fit_w)["SHOP01"])
+  cat(sprintf("Full-sample weighted difference: %.5f\n", full_diff))
+  cat(sprintf("Leave-one-out range: [%.5f, %.5f]\n", min(loo$DIFF), max(loo$DIFF)))
+  print(loo[order(DIFF)])
+  
+  cat("\nHOW TO READ THIS.\n",
+      "  If the unweighted regression tells a similar story to the weighted\n",
+      "  one, and the LOO range stays comfortably negative throughout, no\n",
+      "  single family (out of just sixteen) is carrying the result. If either\n",
+      "  check disagrees sharply, that is worth knowing before leaning further\n",
+      "  on the family-level regression as reported.\n", sep = "")
+  
+  save_csv(fr,  "T22B_family_level_input.csv")
+  save_csv(loo, "T22B_leave_one_family_out.csv")
+  invisible(list(weighted = fit_w, unweighted = fit_uw, loo = loo))
+}
+
+
+# ===========================================================================
+# DRIVER
+# ===========================================================================
+
+run_section_22 <- function(panel = outpatient, concept_results, schemes_long,
+                           scheme_col = "SCHEME_1_CERTAINTY",
+                           instrument_label = "Competitor_only_hospitals_9m") {
+  .s22_hd("SECTION 22 -- E2, E5")
+  
+  .s22_sub("22A -- Partition correlation (E2)")
+  a <- tryCatch(s22_partition_correlation(panel, concept_results, schemes_long, instrument_label),
+                error = function(e) { message("[22A failed] ", e$message); NULL })
+  
+  .s22_sub("22B -- Family-level robustness (E5)")
+  fam <- s22_get_family_results(concept_results, panel, scheme_col, instrument_label)
+  b <- tryCatch(s22_family_robustness(fam),
+                error = function(e) { message("[22B failed] ", e$message); NULL })
+  
+  .s22_hd("SECTION 22 COMPLETE")
+  invisible(list(partition_corr = a, family_robustness = b))
+}
+
+# Example:
+#   s22 <- run_section_22(outpatient, concept_results, schemes_long)
+
+
+
+
+
+
+###############################################################################
+# SECTION 23 -- P-VALUE RECOMPUTATION CHECK
+#
+# estimate_interacted() computes RF_P and IV_P via 2 * pnorm(-abs(b/s)) --
+# a normal-distribution p-value -- rather than fixest's own p-value, which
+# would apply a cluster-adjusted t-distribution. With month clustering at
+# only 16 levels, that distinction is not cosmetic: t(15) has meaningfully
+# fatter tails than normal, so borderline cells can flip significance.
+#
+# Three parts, in increasing order of rigor and cost:
+#
+#   23A  Instant. Recomputes p under t(df) directly from the RF_COEF/RF_SE
+#        already sitting in main$rows -- no new regressions, seconds to run.
+#        Relies on an ASSUMED df (15, i.e. month clusters - 1), which is the
+#        standard convention but not verified against what fixest itself
+#        would compute for this exact two-way-clustered, FE-nested setup.
+#
+#   23B  Rigorous. Refits every one of the 18 scheme x instrument
+#        specifications underlying Table 5's 36 rows, and extracts
+#        fixest's OWN p-value via tidy_fixest() -- the same call already
+#        used correctly throughout today's other diagnostics. No df
+#        assumption; this is whatever cluster-adjusted reference
+#        distribution fixest actually applies given the real FE and
+#        cluster structure. ~18 regressions, comparable cost to Section
+#        20C's ladder, so a couple of minutes.
+#
+#   23C  Merges 23B against main$rows directly, with a coefficient/SE
+#        match check before trusting any p-value comparison, and reports
+#        the definitive count of significance flips.
+#
+# Run 23A first for an immediate read; run 23B/23C for the number that
+# actually settles this.
+###############################################################################
+
+.s23_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+.s23_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
+
+# Confirmed against main$rows' actual SPEC strings, printed earlier this
+# session -- not a guess. Order matches SCHEME_COLUMNS as verified in
+# Section 20C, where all six schemes' numbers reproduced the paper's
+# existing Table sysmonth_full exactly under this same mapping.
+S23_SCHEME_MAP <- c(
+  "1. Procedural certainty"    = "SCHEME_1_CERTAINTY",
+  "2. Theory-Based V2"         = "SCHEME_2_THEORYV2",
+  "3. Imaging vs Procedural"   = "SCHEME_3_IMAGING",
+  "4. CMS Statutory List"      = "SCHEME_4_CMS70",
+  "5. Upfront Cash-Market"     = "SCHEME_5_MDSAVE",
+  "6. Within Modality"         = "SCHEME_6_WITHINMOD"
+)
+
+
+# ===========================================================================
+# 23A. INSTANT CHECK -- t(df) applied directly to main$rows               
+# ===========================================================================
+
+s23_recompute_p_t15 <- function(main_rows, df = 15) {
+  d <- as.data.table(copy(main_rows))
+  
+  d[, RF_T     := RF_COEF / RF_SE]
+  d[, RF_P_T   := 2 * pt(-abs(RF_T), df = df)]
+  d[, IV_T     := IV_COEF / IV_SE]
+  d[, IV_P_T   := 2 * pt(-abs(IV_T), df = df)]
+  
+  d[, SIG_05_ORIG := RF_P   < 0.05]
+  d[, SIG_05_T     := RF_P_T < 0.05]
+  d[, SIG_10_ORIG := RF_P   < 0.10]
+  d[, SIG_10_T     := RF_P_T < 0.10]
+  d[, FLIPPED_05  := SIG_05_ORIG != SIG_05_T]
+  d[, FLIPPED_10  := SIG_10_ORIG != SIG_10_T]
+  
+  cat("Recomputing RF_P and IV_P under t(df=", df, ") directly from the\n",
+      "RF_COEF/RF_SE already in main$rows -- instant, no new regressions.\n",
+      "This ASSUMES df = ", df, " (month clusters - 1); 23B/23C verify against\n",
+      "fixest's own computed p-value rather than this assumption.\n\n", sep = "")
+  
+  cat("Reduced-form: cells where 5% significance flips:\n")
+  print(d[FLIPPED_05 == TRUE, .(SPEC, INSTRUMENT_LABEL, TERM,
+                                RF_P_ORIGINAL = round(RF_P, 4),
+                                RF_P_T15      = round(RF_P_T, 4))])
+  
+  cat("\nReduced-form: cells where 10% significance flips:\n")
+  print(d[FLIPPED_10 == TRUE, .(SPEC, INSTRUMENT_LABEL, TERM,
+                                RF_P_ORIGINAL = round(RF_P, 4),
+                                RF_P_T15      = round(RF_P_T, 4))])
+  
+  cat("\nSummary (reduced form, all 36 rows):\n")
+  cat("  Significant at 5% under original (pnorm):", sum(d$SIG_05_ORIG, na.rm = TRUE), "of", nrow(d), "\n")
+  cat("  Significant at 5% under t(", df, "):        ", sum(d$SIG_05_T, na.rm = TRUE), " of ", nrow(d), "\n", sep = "")
+  cat("  Flipped at 5% threshold: ", sum(d$FLIPPED_05, na.rm = TRUE), "\n", sep = "")
+  cat("  Flipped at 10% threshold:", sum(d$FLIPPED_10, na.rm = TRUE), "\n", sep = "")
+  
+  save_csv(d, "T23A_p_value_recompute_t_approx.csv")
+  invisible(d)
+}
+
+
+# ===========================================================================
+# 23B. RIGOROUS CHECK -- refit and extract fixest's own p-value
+# ===========================================================================
+
+s23_recompute_p_exact <- function(panel = outpatient, scheme_map = S23_SCHEME_MAP,
+                                  instruments = MAIN_INSTRUMENTS,
+                                  outcome = PRIMARY_OUTCOME, controls = BASELINE_CONTROLS,
+                                  fixed_effects = BASELINE_FIXED_EFFECTS,
+                                  clusters = BASELINE_CLUSTERS, use_cache = TRUE) {
+  
+  controls_avail <- available_columns(panel, controls)
+  fe_avail       <- available_columns(panel, fixed_effects)
+  cl_avail       <- available_columns(panel, clusters)
+  
+  n_total <- length(scheme_map) * length(instruments)
+  cat("Refitting ", length(scheme_map), " schemes x ", length(instruments),
+      " instruments = ", n_total, " regressions, extracting fixest's own\n",
+      "p-value (whatever cluster-adjusted reference distribution it actually\n",
+      "applies) rather than assuming a specific df.\n\n", sep = "")
+  
+  out <- rbindlist(lapply(names(scheme_map), function(spec_label) {
+    scheme_col <- scheme_map[[spec_label]]
+    rbindlist(lapply(names(instruments), function(il) {
+      key <- paste0("s23_exact_p_", scheme_col, "_", il)
+      cat(sprintf("  %-28s %-38s ", spec_label, il))
+      t0 <- Sys.time()
+      
+      compute <- function() {
+        d <- panel[!is.na(get(scheme_col))]
+        d <- model_sample(d, c(outcome, instruments[[il]], controls_avail, fe_avail,
+                               cl_avail, scheme_col))
+        d[, MOD := droplevels(factor(get(scheme_col)))]
+        keys <- levels(d$MOD)
+        for (k in keys) d[, paste0("RF_", k) := get(instruments[[il]]) * as.integer(MOD == k)]
+        fit <- feols(as.formula(paste(outcome, "~",
+                                      paste(c(paste0("RF_", keys), controls_avail), collapse = " + "),
+                                      "|", paste(fe_avail, collapse = " + "))),
+                     data = d, cluster = as.formula(paste("~", paste(cl_avail, collapse = "+"))),
+                     warn = FALSE, notes = FALSE)
+        td <- tidy_fixest(fit)
+        td[grepl("^RF_", term), .(TERM = sub("^RF_", "", term),
+                                  RF_COEF_CHECK = estimate,
+                                  RF_SE_CHECK   = std.error,
+                                  RF_P_EXACT    = p.value)]
+      }
+      
+      result <- tryCatch(
+        if (use_cache) cache_or_run(key, compute()) else compute(),
+        error = function(e) { cat("FAILED: ", e$message, "\n", sep = ""); NULL }
+      )
+      cat(sprintf("%6.1fs\n", as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+      if (is.null(result)) return(NULL)
+      cbind(SPEC = spec_label, INSTRUMENT_LABEL = il, result)
+    }), fill = TRUE)
+  }), fill = TRUE)
+  
+  save_csv(out, "T23B_p_value_recompute_exact.csv")
+  invisible(out)
+}
+
+
+# ===========================================================================
+# 23C. FINAL COMPARISON -- merge against main$rows, report the real count
+# ===========================================================================
+
+s23_compare_exact <- function(main_rows, exact_results) {
+  m <- as.data.table(copy(main_rows))
+  e <- as.data.table(copy(exact_results))
+  
+  merged <- merge(m[, .(SPEC, INSTRUMENT_LABEL, TERM, RF_COEF, RF_SE, RF_P)],
+                  e[, .(SPEC, INSTRUMENT_LABEL, TERM, RF_COEF_CHECK, RF_SE_CHECK, RF_P_EXACT)],
+                  by = c("SPEC", "INSTRUMENT_LABEL", "TERM"))
+  
+  if (nrow(merged) == 0L)
+    stop("Merge produced zero rows -- SPEC strings in main$rows and ",
+         "S23_SCHEME_MAP's names must match exactly. Check for whitespace ",
+         "or formatting differences before trusting anything downstream.",
+         call. = FALSE)
+  
+  merged[, COEF_MATCH := abs(RF_COEF - RF_COEF_CHECK) < 1e-6]
+  merged[, SE_MATCH    := abs(RF_SE   - RF_SE_CHECK)   < 1e-6]
+  
+  cat("\n=== Coefficient/SE match check (must pass before trusting the ===\n",
+      "=== p-value comparison below) ===\n", sep = "")
+  cat("Coefficients matching: ", sum(merged$COEF_MATCH), " of ", nrow(merged), "\n",
+      "SEs matching:          ", sum(merged$SE_MATCH),   " of ", nrow(merged), "\n", sep = "")
+  if (!all(merged$COEF_MATCH) || !all(merged$SE_MATCH)) {
+    cat("\nMISMATCH DETECTED -- do not trust the p-value comparison below until\n",
+        "this is resolved. Print merged[COEF_MATCH == FALSE | SE_MATCH == FALSE]\n",
+        "to see which cells differ and by how much.\n", sep = "")
+  }
+  
+  merged[, SIG_05_ORIG  := RF_P       < 0.05]
+  merged[, SIG_05_EXACT := RF_P_EXACT < 0.05]
+  merged[, FLIPPED_05   := SIG_05_ORIG != SIG_05_EXACT]
+  
+  cat("\n=== DEFINITIVE COMPARISON: original (pnorm) vs fixest-native p-value ===\n\n")
+  cat("Cells where 5% significance flips:\n")
+  print(merged[FLIPPED_05 == TRUE, .(SPEC, INSTRUMENT_LABEL, TERM,
+                                     RF_P_ORIGINAL = round(RF_P, 4),
+                                     RF_P_EXACT    = round(RF_P_EXACT, 4))])
+  
+  cat("\nOriginally significant at 5% (pnorm):        ", sum(merged$SIG_05_ORIG), " of ", nrow(merged), "\n",
+      "Significant at 5% under fixest's own p-value: ", sum(merged$SIG_05_EXACT), " of ", nrow(merged), "\n",
+      "Flipped:                                      ", sum(merged$FLIPPED_05), "\n", sep = "")
+  
+  save_csv(merged, "T23C_p_value_comparison_final.csv")
+  invisible(merged)
+}
+
+
+# ===========================================================================
+# DRIVER
+# ===========================================================================
+
+run_section_23 <- function(main_rows, panel = outpatient, run_exact = FALSE) {
+  .s23_hd("SECTION 23 -- P-VALUE RECOMPUTATION")
+  
+  .s23_sub("23A -- instant t(15) approximation")
+  a <- s23_recompute_p_t15(main_rows)
+  
+  b <- NULL; c_out <- NULL
+  if (run_exact) {
+    .s23_sub("23B -- rigorous refit")
+    b <- s23_recompute_p_exact(panel)
+    .s23_sub("23C -- final comparison")
+    c_out <- s23_compare_exact(main_rows, b)
+  } else {
+    cat("\n[23B/23C skipped] Set run_exact = TRUE to run the rigorous refit-based\n",
+        "check once you've looked at 23A's output above.\n", sep = "")
+  }
+  
+  .s23_hd("SECTION 23 COMPLETE")
+  invisible(list(approx = a, exact = b, comparison = c_out))
+}
+
+# Example:
+s23 <- run_section_23(main$rows, outpatient, run_exact = FALSE)  # instant only
+s23 <- run_section_23(main$rows, outpatient, run_exact = TRUE)   # + rigorous check
+
+
+

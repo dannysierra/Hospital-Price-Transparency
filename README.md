@@ -59,6 +59,76 @@ Each stage's decisions are final. Stage 2 never re-derives a concept; stage 3 ne
 
 ---
 
+## Before you run anything
+
+### Project root
+
+Every path in stage 3 derives from a single `PROJECT_ROOT`. Set it once, via environment variable, and nothing else needs editing:
+
+```r
+Sys.setenv(HPT_ROOT = "/path/to/Hospital Price Transparency Paper")
+```
+
+The pipeline falls back to the author's local path if `HPT_ROOT` is unset, and stops with a clear message if neither resolves to an existing directory.
+
+The expected directory layout under `PROJECT_ROOT`:
+
+```
+Hospital Price Transparency Paper/
+├── Code/                       this repository's Code/ folder
+└── Data/
+    └── data_final/
+        ├── 01_R_Analysis_Panels/       ← written by stage 2
+        ├── 02_Treatments_and_Instruments/
+        ├── 03_Controls/
+        ├── 04_Coverage/
+        ├── 05_QA_and_Dictionaries/
+        └── 06_R_Analysis_Results/      ← written by stage 3
+            ├── 01_Tables_CSV/
+            ├── 03_Figures/
+            ├── 04_Model_Objects/
+            ├── 05_R_QA/
+            ├── 07_Cache/
+            └── 08_Coverage/
+```
+
+### R packages
+
+```r
+install.packages(c(
+  "data.table", "fixest", "dplyr", "stringr", "lubridate", "arrow",
+  "ggplot2", "ggpattern", "patchwork", "scales",
+  "sf", "tigris", "tidycensus"
+))
+```
+
+`tidycensus` needs a free Census API key, requested at
+<https://api.census.gov/data/key_signup.html>:
+
+```r
+tidycensus::census_api_key("YOUR_KEY", install = TRUE)
+```
+
+Additional packages are checked at point of use and only needed for specific blocks: `MASS`, `R.utils`, `ggrepel`, `magick`. Requires R 4.4+.
+
+### Runtime
+
+Stage 3 is not a twenty-minute job. On a 2023 Apple Silicon laptop with the cache empty:
+
+| Block | Approximate time |
+|---|---|
+| Sections 0–12 (definitions only) | seconds |
+| BUILD + preflight | 2–3 minutes |
+| Stage 6, concept-level sweep | **~8 hours** |
+| Stage 7, main interacted results | 30–45 minutes |
+| Stages 8–11 | ~1 hour |
+| Sections 13, 15, 18 | ~1 hour |
+| Figures, coverage, LaTeX builds | ~15 minutes |
+
+A full cold run is best treated as an overnight job. Every expensive step is wrapped in `cache_or_run()`, so a second pass over already-computed stages completes in seconds. Run stage 6 once and leave its cache in place.
+
+---
+
 ## Data
 
 The negotiated-rate data are licensed and are **not** redistributed here. The code is published for methodological transparency and to document every specification decision; it is not runnable end to end without data access.
@@ -75,7 +145,7 @@ The negotiated-rate data are licensed and are **not** redistributed here. The co
 | **IPUMS ACS / tidycensus** | County demographics | Public |
 | **Census county population estimates** | Coverage denominators | Public |
 
-**Study window.** July 2024 through October 2025, spanning six OPPS quarters and three MS-DRG fiscal years.
+**Study window.** July 2024 through October 2025, spanning six OPPS quarters and three MS-DRG fiscal years. The window is set by data access rather than by the mandate's compliance timeline: the academic-tier Turquoise license covers a fixed sixteen-month window, and the full historical archive back to the rule's 2021 effective date sits behind a commercial license.
 
 **Panel.** The analysis panel is at the **hospital × clinical concept × post-month** level: roughly 1.4 million observations covering about 3,700 hospitals and 738 clinical concepts across 16 clinical families. A "concept" is a clinically coherent service defined in the stage 1 codebook, sitting between the individual billing code and the broad modality — *MRI Brain* rather than either CPT 70552 or *MRI*.
 
@@ -94,6 +164,17 @@ ln(P_ihct) = β · N_PRIOR_POSTERS_ht + γ · ln(Beds_h) + δ_mc + τ_t + ε_ihc
 ```
 
 with `δ_mc` a county × concept market fixed effect (`MARKET_ID`), `τ_t` a post-month fixed effect, and standard errors two-way clustered on county and post-month. `N_PRIOR_POSTERS` counts hospitals in the same market that have already disclosed, and is instrumented by out-of-market disclosure rollout among competitor health systems.
+
+### Inference conventions
+
+All *p*-values reference the **t (or F) distribution implied by the two-way clustering**, with degrees of freedom set by the smaller cluster dimension — sixteen posting months, so 15 degrees of freedom. This is more conservative than the normal or chi-square approximation and it matters at the margin: a coefficient at *p* = 0.024 under the normal reference is *p* = 0.040 under the correct one.
+
+Two helpers implement this and are used throughout:
+
+- `.pval(tstat, fit)` recovers the degrees of freedom `fixest` itself applies to the given fit — by solving for the df that reproduces a p-value `fixest` already computed correctly on some term in the model — and applies that same reference to whatever statistic it is handed. It adapts automatically to subsamples with different cluster counts (CBSA, payer-class) rather than hardcoding 15.
+- `wald_equality()` references `F(rk, df)` rather than `chi-square(rk)` for the shoppable-versus-non-shoppable equality test. For the one-restriction case this is identical to `t(df)²`.
+
+**One disclosure.** Three appendix robustness tables — leave-one-system-out, the system-affiliation control, and the superfamily joint tests — report the chi-square convention rather than the finite-sample correction, because regenerating them required a full re-run of the concept-level sweep that was not worth the compute. The difference moves those *p*-values by roughly a factor of two and changes no conclusion in any of them. Every main-text table uses the corrected convention.
 
 ### Four design decisions, fixed throughout
 
@@ -143,9 +224,11 @@ Three rules govern the construction:
 | `SCHEME_5_MDSAVE` | Upfront cash-market |
 | `SCHEME_6_WITHINMOD` | High vs. low within modality |
 
+`build_schemes()` reads one static input, the concept codebook, and returns a category for every concept as a function of billing-code attributes, official CMS descriptors, and clinical-family identifiers alone. No price, panel, or estimation output is read by that function or by anything it calls, so no scheme can have been influenced by an estimated coefficient. It writes three audit files (`QA02`–`QA04`) at the moment it runs, before any regression is estimated.
+
 Because several schemes induce the *same* partition of the concept universe, `deduplicate_partitions()` fingerprints each scheme–collapse variant on its estimated coefficient vector and keeps one representative per distinct partition. The paper reports the number of genuinely distinct specifications, not the number of labels.
 
-### Inference
+### Inference at the classification level
 
 Shoppability is assigned to roughly 16 clinical **families**, not to 738 independent concepts. Concept-level clustered standard errors would treat 168 biopsy concepts as 168 independent observations when a single labelling decision covers all of them.
 
@@ -160,14 +243,19 @@ Shoppability is assigned to roughly 16 clinical **families**, not to 738 indepen
 ├── .gitignore
 ├── README.md
 ├── SQL/
-│   ├── 01_Phase1_Codebook.sql          stage 1a — clinical codebook
-│   ├── 02_Phase2to4_Prices.sql         stage 1b — prices and exports
-│   └── 03_Supplementary_Analyses.sql   stage 1c — supporting analyses
+│   ├── 01_Phase1_Codebook.sql              stage 1a — clinical codebook
+│   ├── 02_Phase2to4_Prices.sql             stage 1b — prices and exports
+│   └── 03_Supplementary_Analyses.sql       stage 1c — supporting analyses
 ├── Notebooks/
-│   └── HPT_Python_Pipeline.ipynb       stage 2 — controls and instruments
+│   └── HPT_Python_Pipeline.ipynb           stage 2 — controls and instruments
 └── Code/
-    └── HPT_Analysis_Pipeline.R         stage 3 — estimation
+    ├── HPT_Analysis_Pipeline.R             stage 3 — estimation (main file)
+    ├── HPT_warm_start.R                    session helper, sourced by stage 3
+    ├── HPT_diagnostic_for_family_levels.R  family-level diagnostic, sourced by stage 3
+    └── HPT_Section19_TierI_Diagnostics.R   Tier I diagnostics, sourced by stage 3
 ```
+
+The three additional files in `Code/` are **not optional** — `HPT_Analysis_Pipeline.R` sources each of them by name and will fail without them.
 
 ---
 
@@ -291,7 +379,7 @@ Sections 0–12 define constants and functions and load in seconds. Everything a
 | Section | Contents |
 |---|---|
 | **0** | Paths, baseline specification, instrument registry, scheme registry, sample screens. Everything configurable lives here |
-| **1** | Helpers: coefficient extraction, first-stage diagnostics, formula builders, the `cache_or_run()` gate |
+| **1** | Helpers: coefficient extraction, first-stage diagnostics, formula builders, `.pval()`, `wald_equality()`, the `cache_or_run()` gate |
 | **2** | Panel loading. Every function returns data rather than mutating a global, so `outpatient` is assigned exactly once from a visible call chain |
 | **3** | Shoppability scheme construction, concept merges, scheme inheritance |
 | **4** | Estimators, including `estimate_interacted()` |
@@ -318,6 +406,8 @@ Keeping the first stage separately in section 6 is what makes the section 8 deco
 | **Section 12 / 12B** | Demographic heterogeneity in the *gradient*; SES terciles |
 | **Section 13** | System × month FE, leave-one-system-out, construction ladder, randomisation inference |
 | **Section 15** | CBSA market definition, instrument window ladder, payer-conditional |
+| **Section 18** | Enforcement controls added directly to the headline specification |
+| **Sections 19–23** | Referee-style diagnostics: Tier I checks, the fixed-effects ladder, the exact π_S = π_N test, leave-one-month-out, partition correlation, and the p-value convention audit |
 | **Figures** | Publication figures 1–8 and robustness figures 10–20, read back from output CSVs so they run standalone |
 | **Coverage** | County and population coverage on the *estimation sample*, plus a print-safe map |
 | **LaTeX builds** | Summary statistics, family-level scheme assignment, shoppable-share inputs |
@@ -325,6 +415,9 @@ Keeping the first stage separately in section 6 is what makes the section 8 deco
 ### Running stage 3
 
 ```r
+# Step 0 — point the pipeline at your project directory
+Sys.setenv(HPT_ROOT = "/path/to/Hospital Price Transparency Paper")
+
 # Step 1 — load Sections 0-12 (seconds)
 
 # Step 2 — build and validate. run_preflight() must pass before anything else.
@@ -342,9 +435,9 @@ RUN_STAGES <- c(8, 9, 10)
 
 Every expensive step is wrapped in `cache_or_run()`. **A step producing zero rows never overwrites a good cache** — it stops instead, so a silent upstream failure cannot destroy hours of completed estimation. The stage 6 loader independently verifies that cached concept-level results were estimated on the panel currently in memory.
 
-A few blocks are labelled **interactive checkpoints**. They duplicate what the BUILD block and stage 6 loader do, and exist so individual stages can be re-run without stepping through the whole file. Skip them on a cold `source()`.
+`cache_status()` lists what is cached and when it was written; `restore_session()` reloads every cached object into the global environment; `invalidate_cache(keys, dry_run = TRUE)` reports what would be deleted before anything is. Together these make it possible to resume a partially completed run without recomputing stage 6.
 
-Requires R 4.4+. Core: `arrow`, `data.table`, `fixest`, `dplyr`, `ggplot2`, `stringr`, `lubridate`, `MASS`. Optional, checked at point of use: `R.utils`, `tidycensus`, `ggrepel`, `patchwork`, `sf`, `tigris`, `ggpattern`, `magick`.
+A few blocks are labelled **interactive checkpoints**. They duplicate what the BUILD block and stage 6 loader do, and exist so individual stages can be re-run without stepping through the whole file. Skip them on a cold `source()`.
 
 ---
 
@@ -356,6 +449,7 @@ Stage 3 results are written as CSV under `RESULT_ROOT`, prefixed by the section 
 
 | File | Contents |
 |---|---|
+| `T01` / `T01B` | Summary statistics and sample structure |
 | `T02_instrument_first_stage_screen` | First stage and reduced form for every candidate instrument |
 | `T03_pooled_OLS_RF_IV_all_outcomes` | Pooled estimates across all five price outcomes |
 | `T05_concept_level_RF_FS_IV` | Concept-level RF, FS, and IV — the meta-regression input |
@@ -371,7 +465,10 @@ Stage 3 results are written as CSV under `RESULT_ROOT`, prefixed by the section 
 | `T11*` | Balance, placebo outcome, IN_SYSTEM robustness |
 | `T12T_*` / `T12Q_*` | Demographic interaction in the gradient; SES terciles |
 | `T13A`–`T13D` | System × month FE, leave-one-system-out, construction ladder, randomisation inference |
-| `T15A` / `T15C` | CBSA market definition, payer-conditional |
+| `T15A` / `T15B` / `T15C` | CBSA market definition, instrument window ladder, payer-conditional |
+| `T18` / `T18B` / `T18C` | Enforcement controls: estimates, heterogeneity tests, comparison against no control |
+| `T20C_fe_ladder` | Fixed-effects ladder across all six schemes |
+| `T21B_leave_one_month_out_*` | Leave-one-month-out, one file per instrument |
 
 ### Audit tables
 
@@ -382,11 +479,12 @@ Stage 3 results are written as CSV under `RESULT_ROOT`, prefixed by the section 
 | `QA03` / `QA04` | Scheme 1 concept assignments; procedural concepts flagged inside the shoppable group |
 | `QA05`–`QA08` | Instrument audit: strength, sign stability, headline result under all six |
 | `QA09_moderator_screen` | Comparability moderator screen, with the reason for every drop |
+| `QA10_ses_index_loadings` | Socioeconomic index principal-component loadings |
 | `QA11_shoppable_shares` | Shoppable shares for the magnitude calculation |
 
 ### Figures
 
-`fig01_headline_shoppability` · `fig02_scheme_robustness` · `fig03_transform_ladder` · `fig04_concept_distribution` · `fig05_instrument_tiers` · `fig06_decomposition` · `fig07_mechanism` · `fig08_size_gradient` · `fig10_window_ladder` · `fig11_construction` · `fig12_leave_one_out` · `fig13_sysmonth` · `fig14_randinf` · `fig15_payer` · `fig16_cbsa` · `fig17_ses_gradient` · `fig18_ses_terciles` · `fig19_demo_moderators` · `fig20_franchise`
+`fig01_headline_shoppability` · `fig02_scheme_robustness` · `fig03_transform_ladder` · `fig04_concept_distribution` · `fig05_instrument_tiers` · `fig06_decomposition` · `fig07_mechanism` · `fig08_size_gradient` · `fig09_permutation_null` · `fig10_window_ladder` · `fig11_construction` · `fig12_leave_one_out` · `fig13_sysmonth` · `fig14_randinf` · `fig15_payer` · `fig16_cbsa` · `fig17_ses_gradient` · `fig18_ses_terciles` · `fig19_demo_moderators` · `fig20_franchise`
 
 ---
 
@@ -398,12 +496,8 @@ Recorded here rather than papered over.
 
 Separately, `Competitor_systems_9m` currently sits in CONFIRMING, but its shoppability differential in `T08F` is unstable across scheme variants even though its level coefficient is sign-stable. That is the criterion defining the DISCREPANT tier, so the assignment is under review.
 
-**Concept count.** The panel carries 738 concepts. The concept-level sweep estimates only those clearing `MIN_SERVICE_OBS`, `MIN_SERVICE_MARKETS`, and `MIN_SERVICE_MONTHS`, so the estimable count reported in `T05` and `T06` differs from the panel count and from each other. The screens are in section 0 and the per-table counts are in the `N_CONCEPTS` column.
+**Wild cluster bootstrap.** The month dimension has only sixteen clusters, and a wild cluster bootstrap over months is the standard remedy. `fwildclusterboot::boottest()` did not complete in reasonable time against this specification's fixed-effect structure — the market fixed effect carries roughly 660,000 levels, and the per-draw cost against a fixed effect that large is the binding constraint. Section 21 retains both the attempted implementation and the leave-one-month-out check used in its place, so the attempt is documented rather than hidden.
 
-**Demographic heterogeneity.** Section 12 estimates demographic variation in the shoppability *gradient*. An earlier specification interacted the instrument with demographics alone, which measures variation in the pooled response — a quantity the paper disowns. Any table generated under the earlier specification should not be read as evidence about the gradient.
+**Two figure directories.** `FIGURE_DIR` resolves to `03_Figures` and `FIG_DIR` to `02_Figures`. Published figures are written to the former. The latter is a legacy path and is a candidate for removal.
 
----
-
-## Citation
-
-> Sierra, Danny. "When Transparency Works: Service Shoppability, Contracting Depth, and the Price Effects of Hospital Disclosure." Working Paper, 2026.
+**Estimation sample audit written twice.** `QA01_estimation_sample_audit` is produced by both the preflight block and the pooled-estimates block, and the two report fixed-effect cell counts on different definitions. The paper's Appendix table reports the preflight figures (666,473 cells, 30.2% of rows in singleton cells). The two blocks should be reconciled to a single definition.
