@@ -16087,6 +16087,79 @@ s33_meta_horserace <- function(d, usable, dep = "RF_COEF",
 
 
 # ============================================================================
+# 33R  RESTORE FROM DISK -- loads Section 33's saved output, computes nothing
+# ============================================================================
+#
+# s33_meta_univariate(), s33_meta_joint() and s33_meta_horserace() only ever
+# WRITE their CSVs; none of the three checks whether a current one already
+# exists before re-running its regressions. HPT_CONCEPT_CHARS <- TRUE forces
+# the whole of Section 33 to rebuild every time regardless. This function is
+# the read path that was missing: it loads what 33C/33D already wrote,
+# reassembles s33_panel by simple merge and z-score (no regression), and sets
+# every object 33's run block would have set. Nothing here calls feols().
+#
+# Requires concept_results in the session (from a plain warm start) and the
+# four Section 33 CSVs on disk from a prior HPT_CONCEPT_CHARS <- TRUE run.
+# Takes a few seconds regardless of how many characteristics or instruments
+# that prior run covered.
+
+restore_section33 <- function() {
+  .s33_hd("33R. RESTORING SECTION 33 FROM SAVED OUTPUT")
+  
+  if (!exists("concept_results")) {
+    stop("concept_results not in session -- run a warm start first.", call. = FALSE)
+  }
+  
+  # Self-contained on purpose: read_table() only exists when HPT_RUN$figures
+  # is TRUE (it is defined inside that guard, lines 7388-7786), which is FALSE
+  # under a plain warm start. This function must not depend on it.
+  .s33_read <- function(fn, dir = TABLE_DIR) {
+    p <- file.path(dir, fn)
+    if (!file.exists(p)) { message("SKIP: ", fn, " not found in ", dir); return(NULL) }
+    fread(p)
+  }
+  
+  s33_chars <- .s33_read("T33A_concept_characteristics.csv")
+  if (is.null(s33_chars)) {
+    stop("T33A_concept_characteristics.csv not found in TABLE_DIR. ",
+         "Run with HPT_CONCEPT_CHARS <- TRUE at least once first.", call. = FALSE)
+  }
+  s33_chars <- as.data.table(s33_chars)
+  
+  s33_cov <- .s33_read("QA33C_characteristic_coverage.csv", dir = QA_DIR)
+  if (is.null(s33_cov)) {
+    stop("QA33C_characteristic_coverage.csv not found in QA_DIR.", call. = FALSE)
+  }
+  s33_usable <- s33_cov[STATUS == "USABLE", CHARACTERISTIC]
+  
+  s33_uni   <- .s33_read("T33B_meta_univariate_sweep.csv")
+  s33_joint <- .s33_read("T33C_meta_joint_model.csv")
+  s33_race  <- .s33_read("T33D_meta_horserace_vs_shoppability.csv")
+  
+  s33_panel <- s33_assemble(concept_results, s33_chars, dep = "RF_COEF")
+  s33_panel <- s33_zscore(s33_panel, unique(c(s33_usable, S33_SIZE_CONTROLS)))
+  
+  cat(sprintf(
+    "Restored: %d usable characteristics | s33_panel %s rows | uni %s | joint %s | race %s\n",
+    length(s33_usable), format(nrow(s33_panel), big.mark = ","),
+    if (is.null(s33_uni)) "MISSING" else format(nrow(s33_uni), big.mark = ","),
+    if (is.null(s33_joint)) "MISSING" else format(nrow(s33_joint), big.mark = ","),
+    if (is.null(s33_race)) "MISSING" else format(nrow(s33_race), big.mark = ",")))
+  cat("No regression was re-estimated. Objects match names from a live Section 33 run:\n",
+      "  s33_chars, s33_usable, s33_panel, s33_uni, s33_joint, s33_race\n", sep = "")
+  
+  assign("s33_chars",  s33_chars,  envir = .GlobalEnv)
+  assign("s33_usable", s33_usable, envir = .GlobalEnv)
+  assign("s33_panel",  s33_panel,  envir = .GlobalEnv)
+  assign("s33_uni",    s33_uni,    envir = .GlobalEnv)
+  assign("s33_joint",  s33_joint,  envir = .GlobalEnv)
+  assign("s33_race",   s33_race,   envir = .GlobalEnv)
+  invisible(list(chars = s33_chars, usable = s33_usable, panel = s33_panel,
+                 uni = s33_uni, joint = s33_joint, race = s33_race))
+}
+
+
+# ============================================================================
 # 33  RUN BLOCK. Each block is checked before the next is run.
 # ============================================================================
 
