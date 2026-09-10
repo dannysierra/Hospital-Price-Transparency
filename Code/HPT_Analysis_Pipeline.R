@@ -3607,10 +3607,27 @@ if (isTRUE(HPT_WARM_START)) {
   # Fresh session on a completed run. Every object the run blocks produce is
   # read from CACHE_DIR and assigned into the global environment under its
   # usual name. Nothing is estimated and nothing is written.
+  #
+  # HPT_WARM_START_KEYS, if set before sourcing, restricts this to a subset of
+  # CACHE_REGISTRY's keys instead of all 25. Added because reading a large
+  # .rds (outpatient_panel, cbsa_panel, s15_payer_class_panel) spikes memory
+  # well above its final resident size during decompression, and on an 8GB
+  # machine that spike does not reliably get released even after the object
+  # is later rm()'d -- confirmed directly: removing 23 of the 25 restored
+  # objects after the fact recovered only ~1.2GB of the ~15GB in use. Section
+  # 33/34 work needs only concept_level_6inst, so:
+  #   HPT_WARM_START_KEYS <- "concept_level_6inst"
+  # restores only concept_results and never opens the large files at all.
+  # Unset (the default), behavior is unchanged: every key is restored.
+  restore_keys <- if (exists("HPT_WARM_START_KEYS")) HPT_WARM_START_KEYS
+                  else names(CACHE_REGISTRY)
   cat("\n", strrep("-", 70),
       "\nWARM START -- restoring cached objects, estimating nothing\n",
+      if (length(restore_keys) < length(CACHE_REGISTRY))
+        paste0("Restricted to: ", paste(restore_keys, collapse = ", "), "\n")
+      else "",
       strrep("-", 70), "\n", sep = "")
-  restore_session()
+  restore_session(keys = restore_keys)
 
   # Section 12's .t12_* helpers are defined inside a stage block, so they are
   # not in scope after a warm start. HPT_warm_start.R supplies
@@ -15367,6 +15384,34 @@ S33_SPECS        <- c("RAW", "SIZE", "FAMILY")
 S33_ALT_PATTERN <- "^HPT_ALT_CONCEPT.*\\.csv(\\.gz)?$"
 S33_CODEBOOK_PATTERN <- "^HPT_CODEBOOK\\.csv$"
 
+# Three code-keyed supplemental sources, none of them concept-keyed. Each is
+# joined onto the codebook's BILLING_CODE -> ANALYSIS_CONCEPT_ID crosswalk,
+# then collapsed through s33_to_canonical() exactly like every other source
+# in this section, so a code that belongs to a merged concept (mammography
+# tomosynthesis, the MRI/CT abdomen variants) still lands correctly.
+#
+# Addendum A is NOT built here. It has no HCPCS-code column at all -- it is
+# keyed on APC number -- and HPT_CODEBOOK.csv carries no APC column to join
+# it through (checked directly: OPPS_STATUS_INDICATORS is the only OPPS
+# field that made it into the export). Building this needs either a fresh
+# SQL pull that retains APC number per code, or Addendum B's own code-to-APC
+# mapping pulled separately. Deferred, not abandoned.
+S33_PFS_RVU_PATTERN <- "^PPRRVU.*\\.xlsx$"
+S33_ASC_BB_PATTERN  <- "Addendum[ _-]?BB.*\\.txt$"
+S33_GEO_PATTERN      <- "^MUP_PHY.*Geo\\.csv$"
+
+# Shared by all three code-keyed loaders below: BILLING_CODE -> concept.
+s33_code_to_concept_map <- function() {
+  cb <- s33_read_all(S33_CODEBOOK_PATTERN)
+  if (is.null(cb)) cb <- tryCatch(fread(FILES$codebook), error = function(e) NULL)
+  if (is.null(cb) || !all(c("BILLING_CODE", "ANALYSIS_CONCEPT_ID") %in% names(cb)))
+    return(NULL)
+  cb <- s33_to_canonical(cb[, .(BILLING_CODE, ANALYSIS_CONCEPT_ID)], "ANALYSIS_CONCEPT_ID")
+  setnames(cb, "BILLING_CODE", "HCPCS_CODE")
+  cb[, HCPCS_CODE := toupper(trimws(HCPCS_CODE))]
+  unique(cb, by = "HCPCS_CODE")
+}
+
 # OPPS status indicators, grouped by what each implies for whether a posted
 # per-code price is a standalone price. Editable here rather than inline.
 #
@@ -15455,7 +15500,29 @@ S33_CHAR_REGISTRY <- list(
        note = "Contracting depth at concept level. The same object as PD_PAYER_V2, aggregated up."),
   list(name = "MEAN_N_PAYERS",        label = "Mean distinct payers per cell",
        outcome_derived = FALSE,
-       note = "Thickness of contracting. Counts, not prices.")
+       note = "Thickness of contracting. Counts, not prices."),
+  
+  # ---- PFS RVU (PPRRVU25_JAN), ASC Addendum BB, and Medicare geography/
+  #      volume file. All three administratively set or externally observed,
+  #      none outcome-derived.
+  list(name = "SHARE_PCTC_SPLIT",     label = "Share of codes with a PC/TC split (PFS PCTC IND = 1)",
+       outcome_derived = FALSE,
+       note = "The posted price is half the bill: a separate professional-component invoice exists that the patient does not see when comparing hospital prices."),
+  list(name = "SHARE_GLOB_SURGICAL",  label = "Share of codes carrying a global-surgery package (PFS GLOB DAYS in 000/010/090)",
+       outcome_derived = FALSE,
+       note = "The posted price bundles a period of follow-up care rather than one visit; XXX/ZZZ concepts have no such bundling."),
+  list(name = "SHARE_ASC_ANCILLARY_PACKAGED", label = "Share of codes packaged under the ASC ancillary schedule (Addendum BB, N1)",
+       outcome_derived = FALSE,
+       note = "Independent packaging signal from a different payment system than OPPS -- corroborates or contradicts SHARE_SI_PACKAGED without sharing its source."),
+  list(name = "LN_NATIONAL_VOLUME",   label = "Log national Medicare FFS volume (services/year, geography-and-service file)",
+       outcome_derived = FALSE,
+       note = "How often the service is actually performed nationally. A code with near-zero volume is not something any patient realistically shops."),
+  list(name = "N_PROVIDERS_NATIONAL", label = "National count of distinct rendering providers",
+       outcome_derived = FALSE,
+       note = "Breadth of supply. A direct measure of whether an alternative provider exists to shop toward."),
+  list(name = "SHARE_VOL_FACILITY",   label = "Share of national volume billed in a facility place of service",
+       outcome_derived = FALSE,
+       note = "If most volume happens in physician offices rather than hospital outpatient departments, the hospital's posted price is largely irrelevant to what most patients actually pay for this service.")
 )
 
 S33_CHAR_NAMES    <- vapply(S33_CHAR_REGISTRY, `[[`, character(1), "name")
@@ -15872,6 +15939,189 @@ s33_chars_from_payer_dispersion <- function() {
   out
 }
 
+# --- source 5: PFS RVU file (PPRRVU) -- PC/TC split and global period -------
+#
+# Global row only (blank modifier): a code with PCTC IND = 1 has separate 26/
+# TC rows in addition to the global row, and the global row is the one whose
+# RVUs match what a payer negotiates against, so it is the row that answers
+# "does a PC/TC split exist for this code" without double-counting.
+#
+# Columns are addressed by position, not name: CMS's header row repeats the
+# literal string "INDICATOR" three times (NA indicators, physician
+# supervision) and the PCTC/GLOB columns carry only the fragment "IND"/"DAYS"
+# after their header wraps across two spreadsheet rows. Position 1/2/14/15
+# is the verified CY2025 January-release layout; a released quarter with a
+# different column count changes this and should be re-checked before reuse.
+s33_chars_from_pfs_rvu <- function() {
+  f <- s33_find_files(S33_PFS_RVU_PATTERN)
+  if (length(f) == 0L) {
+    cat("  PFS RVU file not found; SHARE_PCTC_SPLIT and SHARE_GLOB_SURGICAL skipped.\n")
+    return(NULL)
+  }
+  if (length(f) > 1L)
+    cat("  Multiple PFS RVU files matched; using ", basename(f[1L]), "\n", sep = "")
+  
+  if (!requireNamespace("readxl", quietly = TRUE)) {
+    cat("  readxl not installed (install.packages(\"readxl\")); PFS RVU skipped.\n")
+    return(NULL)
+  }
+  raw <- tryCatch(readxl::read_excel(f[1L], skip = 9, col_names = TRUE,
+                                     .name_repair = "unique_quiet"),
+                  error = function(e) NULL)
+  if (is.null(raw) || ncol(raw) < 15) {
+    cat("  PFS RVU file unreadable or an unexpected layout; skipped.\n")
+    return(NULL)
+  }
+  dt <- as.data.table(raw)
+  setnames(dt, old = names(dt)[c(1L, 2L, 14L, 15L)],
+           new = c("HCPCS_CODE", "MODIFIER", "PCTC_IND", "GLOB_DAYS"))
+  
+  dt[, HCPCS_CODE := toupper(trimws(as.character(HCPCS_CODE)))]
+  dt[, MODIFIER    := toupper(trimws(as.character(MODIFIER)))]
+  dt[, PCTC_IND    := safe_numeric(PCTC_IND)]
+  dt[, GLOB_DAYS   := toupper(trimws(as.character(GLOB_DAYS)))]
+  dt <- dt[!is.na(HCPCS_CODE) & nzchar(HCPCS_CODE) & (is.na(MODIFIER) | MODIFIER == "")]
+  
+  map <- s33_code_to_concept_map()
+  if (is.null(map)) {
+    cat("  codebook unavailable; PFS RVU cannot be joined to concepts.\n")
+    return(NULL)
+  }
+  m <- merge(dt, map, by = "HCPCS_CODE")
+  if (nrow(m) == 0L) {
+    cat("  No PFS RVU rows matched the codebook; skipped.\n")
+    return(NULL)
+  }
+  
+  out <- m[, .(
+    SHARE_PCTC_SPLIT    = mean(PCTC_IND == 1, na.rm = TRUE),
+    SHARE_GLOB_SURGICAL = mean(GLOB_DAYS %chin% c("000", "010", "090"), na.rm = TRUE)
+  ), by = FINAL_CONCEPT_ID]
+  
+  cat("  PFS RVU: ", nrow(out), " concepts, ", nrow(m), " matched codes\n", sep = "")
+  out
+}
+
+# --- source 6: ASC Addendum BB -- ancillary packaging status ---------------
+#
+# Both years read and row-bound (AA/BB rarely reclassify a code between
+# vintages -- confirmed directly: 410 vs 412 matched codes across 2024/2025),
+# then deduplicated on code+indicator. A code whose indicator genuinely
+# changed between years keeps both rows, which lets the concept-level share
+# reflect that ambiguity honestly rather than picking one year arbitrarily.
+s33_chars_from_asc_bb <- function() {
+  f <- s33_find_files(S33_ASC_BB_PATTERN)
+  if (length(f) == 0L) {
+    cat("  ASC Addendum BB not found; SHARE_ASC_ANCILLARY_PACKAGED skipped.\n")
+    return(NULL)
+  }
+  
+  read_one <- function(path) {
+    raw <- tryCatch(readLines(path, encoding = "latin1", warn = FALSE),
+                    error = function(e) NULL)
+    if (is.null(raw) || length(raw) < 5L) return(NULL)
+    hdr_idx <- which(grepl("HCPCS Code", raw, ignore.case = TRUE))[1L]
+    if (is.na(hdr_idx)) return(NULL)
+    tryCatch(fread(text = paste(raw[hdr_idx:length(raw)], collapse = "\n"),
+                   sep = "\t", header = TRUE, fill = TRUE, encoding = "Latin-1"),
+             error = function(e) NULL)
+  }
+  parts <- Filter(Negate(is.null), lapply(f, read_one))
+  if (length(parts) == 0L) {
+    cat("  ASC Addendum BB unreadable; skipped.\n")
+    return(NULL)
+  }
+  bb <- rbindlist(parts, fill = TRUE, use.names = TRUE)
+  
+  code_col <- grep("HCPCS", names(bb), ignore.case = TRUE, value = TRUE)[1L]
+  pi_cands <- grep("Payment Indicator", names(bb), ignore.case = TRUE, value = TRUE)
+  pi_col   <- pi_cands[grepl("Final", pi_cands, ignore.case = TRUE)][1L]
+  if (is.na(code_col) || is.na(pi_col)) {
+    cat("  ASC Addendum BB: expected columns not found; skipped.\n")
+    return(NULL)
+  }
+  setnames(bb, c(code_col, pi_col), c("HCPCS_CODE", "PAYMENT_INDICATOR"))
+  bb[, HCPCS_CODE       := toupper(trimws(as.character(HCPCS_CODE)))]
+  bb[, PAYMENT_INDICATOR := toupper(trimws(as.character(PAYMENT_INDICATOR)))]
+  bb <- unique(bb[nzchar(HCPCS_CODE), .(HCPCS_CODE, PAYMENT_INDICATOR)])
+  
+  map <- s33_code_to_concept_map()
+  if (is.null(map)) {
+    cat("  codebook unavailable; ASC BB cannot be joined to concepts.\n")
+    return(NULL)
+  }
+  m <- merge(bb, map, by = "HCPCS_CODE")
+  if (nrow(m) == 0L) {
+    cat("  No ASC Addendum BB rows matched the codebook; skipped.\n")
+    return(NULL)
+  }
+  
+  out <- m[, .(SHARE_ASC_ANCILLARY_PACKAGED = mean(PAYMENT_INDICATOR == "N1", na.rm = TRUE)),
+           by = FINAL_CONCEPT_ID]
+  cat("  ASC Addendum BB: ", nrow(out), " concepts\n", sep = "")
+  out
+}
+
+# --- source 7: Medicare Physician & Other Practitioners, Geography/Service -
+#
+# National-level rows only (excludes the ~255K state-level rows the file also
+# carries). Volume and provider count are summed across the codes making up
+# a concept, not averaged -- a concept's total national volume is the sum of
+# its constituent codes' volumes, matching how N_CODES_IN_CONCEPT already
+# treats code-level counts elsewhere in this section.
+s33_chars_from_geo_volume <- function() {
+  f <- s33_find_files(S33_GEO_PATTERN)
+  if (length(f) == 0L) {
+    cat("  Medicare geography/volume file not found; LN_NATIONAL_VOLUME, ",
+        "N_PROVIDERS_NATIONAL and SHARE_VOL_FACILITY skipped.\n", sep = "")
+    return(NULL)
+  }
+  geo <- tryCatch(fread(f[1L], select = c("Rndrng_Prvdr_Geo_Lvl", "HCPCS_Cd",
+                                          "Place_Of_Srvc", "Tot_Rndrng_Prvdrs",
+                                          "Tot_Srvcs")),
+                  error = function(e) NULL)
+  if (is.null(geo)) {
+    cat("  Geography/volume file unreadable; skipped.\n")
+    return(NULL)
+  }
+  geo <- geo[Rndrng_Prvdr_Geo_Lvl == "National"]
+  if (nrow(geo) == 0L) {
+    cat("  No National-level rows in the geography/volume file; skipped.\n")
+    return(NULL)
+  }
+  geo[, HCPCS_CODE     := toupper(trimws(HCPCS_Cd))]
+  geo[, Place_Of_Srvc  := toupper(trimws(Place_Of_Srvc))]
+  geo[, Tot_Rndrng_Prvdrs := safe_numeric(Tot_Rndrng_Prvdrs)]
+  geo[, Tot_Srvcs         := safe_numeric(Tot_Srvcs)]
+  
+  code_level <- geo[, .(
+    VOLUME_NATIONAL = sum(Tot_Srvcs, na.rm = TRUE),
+    N_PROVIDERS     = sum(Tot_Rndrng_Prvdrs, na.rm = TRUE),
+    VOL_FACILITY    = sum(Tot_Srvcs[Place_Of_Srvc == "F"], na.rm = TRUE)
+  ), by = HCPCS_CODE]
+  
+  map <- s33_code_to_concept_map()
+  if (is.null(map)) {
+    cat("  codebook unavailable; geography/volume file cannot be joined to concepts.\n")
+    return(NULL)
+  }
+  m <- merge(code_level, map, by = "HCPCS_CODE")
+  if (nrow(m) == 0L) {
+    cat("  No geography/volume rows matched the codebook; skipped.\n")
+    return(NULL)
+  }
+  
+  out <- m[, .(
+    LN_NATIONAL_VOLUME   = log(pmax(sum(VOLUME_NATIONAL, na.rm = TRUE), 1)),
+    N_PROVIDERS_NATIONAL = sum(N_PROVIDERS, na.rm = TRUE),
+    SHARE_VOL_FACILITY   = sum(VOL_FACILITY, na.rm = TRUE) /
+                            pmax(sum(VOLUME_NATIONAL, na.rm = TRUE), 1)
+  ), by = FINAL_CONCEPT_ID]
+  
+  cat("  geography/volume: ", nrow(out), " concepts\n", sep = "")
+  out
+}
+
 # Deliberately NOT wrapped in cache_or_run(). This takes seconds, and caching
 # it would serve a stale characteristic table the first time the codebook or
 # the alt-price shards are re-downloaded, which is exactly the iteration this
@@ -15882,7 +16132,10 @@ s33_build_characteristics <- function(panel, concepts_keep = NULL) {
     s33_chars_from_codebook(),
     s33_chars_from_panel(panel),
     s33_chars_from_alt_prices(),
-    s33_chars_from_payer_dispersion()))
+    s33_chars_from_payer_dispersion(),
+    s33_chars_from_pfs_rvu(),
+    s33_chars_from_asc_bb(),
+    s33_chars_from_geo_volume()))
   if (length(pieces) == 0L)
     stop("No characteristic source could be built. Check 33A.", call. = FALSE)
   
@@ -16389,4 +16642,859 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 }   # end interactive scratch
 
 
+
+
+###############################################################################
+#
+#   SECTION 34 -- CODE-KEYED SUPPLEMENTAL CHARACTERISTICS
+#
+#   Adds three externally sourced characteristic sets to the Section 33
+#   framework. Additive and non-destructive: Section 33's own objects and its
+#   T33*/QA33* outputs are left untouched, and everything here writes under a
+#   T34/QA34 prefix. If the new characteristics turn out to be uninformative,
+#   nothing has to be undone.
+#
+#   Requires a live session with Section 33 already loaded, via either
+#   HPT_CONCEPT_CHARS <- TRUE or restore_section33(). Specifically needs
+#   concept_results, s33_chars, s33_usable, and the s33_* helper functions.
+#
+#   ---------------------------------------------------------------------------
+#   THE THREE SOURCES, AND WHY EACH IS KEYED DIFFERENTLY FROM SECTION 33
+#   ---------------------------------------------------------------------------
+#
+#   Every Section 33 source is concept-keyed already (the codebook is
+#   collapsed to concept before use; the alt-price and payer-dispersion files
+#   arrive keyed on ANALYSIS_CONCEPT_ID). All three sources here are keyed on
+#   HCPCS CODE instead, so each is joined through the codebook's
+#   BILLING_CODE -> ANALYSIS_CONCEPT_ID crosswalk and then collapsed with
+#   s33_to_canonical(), which is what keeps a code belonging to one of the six
+#   MERGE_GROUPS concepts (mammography tomosynthesis, the MRI/CT abdomen
+#   variants) landing on the same canonical concept the rest of the paper is
+#   estimated on.
+#
+#   PFS RVU (PPRRVU)        PC/TC split and global-surgery period. A code with
+#                           PCTC IND = 1 is billed as separate professional and
+#                           technical components, so the hospital's posted
+#                           price is only part of what the patient owes. None
+#                           of the Section 33 characteristics express this.
+#
+#   ASC Addendum BB         Packaging status for covered ancillary services,
+#                           from the ASC payment system rather than OPPS. This
+#                           is an independent second reading of "is this
+#                           service separately priced," which makes it a
+#                           corroboration check on SHARE_SI_PACKAGED rather
+#                           than a restatement of it.
+#
+#   Geography and Service   National Medicare FFS volume, distinct provider
+#                           count, and the facility share of volume. Volume and
+#                           supply breadth are absent from Section 33 entirely.
+#
+#   ---------------------------------------------------------------------------
+#   WHAT IS NOT HERE
+#   ---------------------------------------------------------------------------
+#
+#   OPPS Addendum A is not built. It is keyed on APC number, and
+#   HPT_CODEBOOK.csv carries no APC column to join it through
+#   (OPPS_STATUS_INDICATORS is the only OPPS field in that export). Adding it
+#   requires either a fresh Phase 1 SQL pull that retains APC per code, or
+#   Addendum B's own code-to-APC mapping loaded separately.
+#
+#   ---------------------------------------------------------------------------
+#   OUTPUTS
+#   ---------------------------------------------------------------------------
+#     QA34A_supplemental_coverage.csv    per-characteristic coverage and SD
+#     T34A_concept_characteristics.csv   Section 33 table plus the new columns
+#     T34B_meta_univariate_sweep.csv
+#     T34C_meta_joint_model.csv
+#     T34D_meta_horserace_vs_shoppability.csv
+#
+###############################################################################
+
+
+# ============================================================================
+# 34.0  FILE PATTERNS
+# ============================================================================
+#
+# s33_find_files() passes ignore.case = TRUE to list.files(), which uses POSIX
+# regex. A PCRE inline flag such as (?i) would be read as four literal
+# characters and match nothing, so case handling is left to that argument.
+
+S34_PFS_RVU_PATTERN <- "^PPRRVU.*\\.xlsx$"
+S34_ASC_BB_PATTERN  <- "Addendum[ _-]?BB.*\\.txt$"
+S34_GEO_PATTERN     <- "^MUP_PHY.*Geo\\.csv$"
+
+# S33's own s33_find_files() is not recursive, which is correct for Section
+# 33's four sources -- they sit flat in PANEL_DIR. Section 34's three sources
+# each unzipped into their own subfolder, so this is a separate function
+# rather than a change to s33_find_files(), to avoid touching anything
+# Section 33 already depends on.
+s34_find_files <- function(pattern, dir = PANEL_DIR)
+  list.files(dir, pattern = pattern, full.names = TRUE, ignore.case = TRUE,
+             recursive = TRUE)
+
+.s34_hd <- function(x)
+  cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
+
+
+# ============================================================================
+# 34.1  BILLING_CODE -> CONCEPT CROSSWALK, SHARED BY ALL THREE LOADERS
+# ============================================================================
+
+s34_code_to_concept_map <- function() {
+  cb <- s33_read_all(S33_CODEBOOK_PATTERN)
+  if (is.null(cb)) cb <- tryCatch(fread(FILES$codebook), error = function(e) NULL)
+  if (is.null(cb) || !all(c("BILLING_CODE", "ANALYSIS_CONCEPT_ID") %in% names(cb))) {
+    cat("  codebook unavailable or missing BILLING_CODE/ANALYSIS_CONCEPT_ID.\n")
+    return(NULL)
+  }
+  cb <- as.data.table(cb)
+  m  <- s33_to_canonical(cb[, .(BILLING_CODE, ANALYSIS_CONCEPT_ID)], "ANALYSIS_CONCEPT_ID")
+  setnames(m, "BILLING_CODE", "HCPCS_CODE")
+  m[, HCPCS_CODE := toupper(trimws(as.character(HCPCS_CODE)))]
+  unique(m[nzchar(HCPCS_CODE)], by = "HCPCS_CODE")
+}
+
+
+# ============================================================================
+# 34.2  SOURCE LOADERS
+# ============================================================================
+
+# --- PFS RVU: PC/TC split and global-surgery period -------------------------
+#
+# Global row only, meaning a blank modifier. A code with PCTC IND = 1 also has
+# separate -26 and -TC rows; the global row is the one whose RVUs correspond to
+# the whole service, so restricting to it answers "does a split exist for this
+# code" once rather than three times.
+#
+# Columns are addressed by position because the header is unusable by name:
+# CMS wraps it across spreadsheet rows 9 and 10, leaving the literal string
+# "INDICATOR" repeated three times and the PCTC and GLOB columns carrying only
+# the fragments "IND" and "DAYS". Positions 1, 2, 14, 15 are verified against
+# the CY2025 January release. A quarter with a different column count would
+# need this re-checked.
+s34_chars_from_pfs_rvu <- function() {
+  f <- s34_find_files(S34_PFS_RVU_PATTERN)
+  if (length(f) == 0L) {
+    cat("  PFS RVU file not found; SHARE_PCTC_SPLIT and SHARE_GLOB_SURGICAL skipped.\n")
+    return(NULL)
+  }
+  if (length(f) > 1L)
+    cat("  Multiple PFS RVU files matched; using ", basename(f[1L]), "\n", sep = "")
+  
+  if (!requireNamespace("readxl", quietly = TRUE)) {
+    cat("  readxl not installed (install.packages(\"readxl\")); PFS RVU skipped.\n")
+    return(NULL)
+  }
+  raw <- tryCatch(
+    readxl::read_excel(f[1L], skip = 9L, col_names = TRUE, .name_repair = "minimal"),
+    error = function(e) NULL)
+  if (is.null(raw) || ncol(raw) < 15L) {
+    cat("  PFS RVU file unreadable or unexpected layout; skipped.\n")
+    return(NULL)
+  }
+  
+  dt <- as.data.table(raw)
+  keep <- dt[, c(1L, 2L, 14L, 15L), with = FALSE]
+  setnames(keep, c("HCPCS_CODE", "MODIFIER", "PCTC_IND", "GLOB_DAYS"))
+  
+  keep[, HCPCS_CODE := toupper(trimws(as.character(HCPCS_CODE)))]
+  keep[, MODIFIER   := toupper(trimws(as.character(MODIFIER)))]
+  keep[, PCTC_IND   := safe_numeric(PCTC_IND)]
+  keep[, GLOB_DAYS  := toupper(trimws(as.character(GLOB_DAYS)))]
+  keep <- keep[!is.na(HCPCS_CODE) & nzchar(HCPCS_CODE) &
+                 (is.na(MODIFIER) | MODIFIER == "" | MODIFIER == "NA")]
+  
+  map <- s34_code_to_concept_map()
+  if (is.null(map)) return(NULL)
+  m <- merge(keep, map, by = "HCPCS_CODE")
+  if (nrow(m) == 0L) {
+    cat("  No PFS RVU rows matched the codebook; skipped.\n")
+    return(NULL)
+  }
+  
+  out <- m[, .(
+    SHARE_PCTC_SPLIT    = mean(PCTC_IND == 1, na.rm = TRUE),
+    SHARE_GLOB_SURGICAL = mean(GLOB_DAYS %chin% c("000", "010", "090"), na.rm = TRUE)
+  ), by = FINAL_CONCEPT_ID]
+  
+  cat("  PFS RVU: ", nrow(out), " concepts from ", nrow(m), " matched codes\n", sep = "")
+  out
+}
+
+# --- ASC Addendum BB: ancillary packaging status ---------------------------
+#
+# Every matching vintage is read and row-bound, then deduplicated on code and
+# indicator together. A code whose indicator genuinely changed between years
+# therefore keeps both rows, and the concept-level share reflects that
+# ambiguity rather than silently taking whichever year sorted first.
+s34_chars_from_asc_bb <- function() {
+  f <- s34_find_files(S34_ASC_BB_PATTERN)
+  if (length(f) == 0L) {
+    cat("  ASC Addendum BB not found; SHARE_ASC_ANCILLARY_PACKAGED skipped.\n")
+    return(NULL)
+  }
+  
+  read_one <- function(path) {
+    raw <- tryCatch({
+      con <- file(path, encoding = "latin1")
+      on.exit(close(con), add = TRUE)
+      readLines(con, warn = FALSE)
+    }, error = function(e) NULL)
+    if (is.null(raw) || length(raw) < 5L) return(NULL)
+    hdr <- which(grepl("HCPCS", raw, ignore.case = TRUE))
+    if (length(hdr) == 0L) return(NULL)
+    tryCatch(fread(text = paste(raw[hdr[1L]:length(raw)], collapse = "\n"),
+                   sep = "\t", header = TRUE, fill = TRUE),
+             error = function(e) NULL)
+  }
+  parts <- Filter(Negate(is.null), lapply(f, read_one))
+  if (length(parts) == 0L) {
+    cat("  ASC Addendum BB unreadable; skipped.\n")
+    return(NULL)
+  }
+  bb <- rbindlist(parts, fill = TRUE, use.names = TRUE)
+  
+  code_col <- grep("HCPCS", names(bb), ignore.case = TRUE, value = TRUE)
+  pi_all   <- grep("Payment Indicator", names(bb), ignore.case = TRUE, value = TRUE)
+  pi_final <- pi_all[grepl("Final", pi_all, ignore.case = TRUE)]
+  pi_col   <- if (length(pi_final)) pi_final[1L] else
+    if (length(pi_all))   pi_all[1L]   else character(0)
+  if (length(code_col) == 0L || length(pi_col) == 0L) {
+    cat("  ASC Addendum BB: expected columns not found; skipped.\n")
+    return(NULL)
+  }
+  
+  bb <- bb[, c(code_col[1L], pi_col), with = FALSE]
+  setnames(bb, c("HCPCS_CODE", "PAYMENT_INDICATOR"))
+  bb[, HCPCS_CODE        := toupper(trimws(as.character(HCPCS_CODE)))]
+  bb[, PAYMENT_INDICATOR := toupper(trimws(as.character(PAYMENT_INDICATOR)))]
+  bb <- unique(bb[nzchar(HCPCS_CODE)])
+  
+  map <- s34_code_to_concept_map()
+  if (is.null(map)) return(NULL)
+  m <- merge(bb, map, by = "HCPCS_CODE")
+  if (nrow(m) == 0L) {
+    cat("  No ASC Addendum BB rows matched the codebook; skipped.\n")
+    return(NULL)
+  }
+  
+  out <- m[, .(SHARE_ASC_ANCILLARY_PACKAGED =
+                 mean(PAYMENT_INDICATOR == "N1", na.rm = TRUE)),
+           by = FINAL_CONCEPT_ID]
+  cat("  ASC Addendum BB: ", nrow(out), " concepts from ", length(f),
+      " vintage(s)\n", sep = "")
+  out
+}
+
+# --- Geography and Service: national volume, providers, facility share -----
+#
+# National rows only. The file also carries roughly 255,000 state-level rows,
+# which are the same services counted again per state and would double-count
+# every total below.
+#
+# Volume and provider counts are SUMMED across the codes making up a concept
+# rather than averaged: a concept's national volume is the total of its
+# constituent codes' volumes, the same way N_CODES_IN_CONCEPT already treats
+# code-level counts in Section 33.
+s34_chars_from_geo_volume <- function() {
+  f <- s34_find_files(S34_GEO_PATTERN)
+  if (length(f) == 0L) {
+    cat("  Geography/volume file not found; LN_NATIONAL_VOLUME, ",
+        "N_PROVIDERS_NATIONAL and SHARE_VOL_FACILITY skipped.\n", sep = "")
+    return(NULL)
+  }
+  need <- c("Rndrng_Prvdr_Geo_Lvl", "HCPCS_Cd", "Place_Of_Srvc",
+            "Tot_Rndrng_Prvdrs", "Tot_Srvcs")
+  geo <- tryCatch(fread(f[1L], select = need), error = function(e) NULL)
+  if (is.null(geo)) {
+    cat("  Geography/volume file unreadable or missing expected columns; skipped.\n")
+    return(NULL)
+  }
+  
+  geo <- geo[Rndrng_Prvdr_Geo_Lvl == "National"]
+  if (nrow(geo) == 0L) {
+    cat("  No National-level rows in the geography/volume file; skipped.\n")
+    return(NULL)
+  }
+  geo[, HCPCS_CODE        := toupper(trimws(as.character(HCPCS_Cd)))]
+  geo[, POS               := toupper(trimws(as.character(Place_Of_Srvc)))]
+  geo[, Tot_Rndrng_Prvdrs := safe_numeric(Tot_Rndrng_Prvdrs)]
+  geo[, Tot_Srvcs         := safe_numeric(Tot_Srvcs)]
+  
+  code_level <- geo[, .(
+    VOL   = sum(Tot_Srvcs, na.rm = TRUE),
+    PRVDR = sum(Tot_Rndrng_Prvdrs, na.rm = TRUE),
+    VOL_F = sum(Tot_Srvcs[POS == "F"], na.rm = TRUE)
+  ), by = HCPCS_CODE]
+  
+  map <- s34_code_to_concept_map()
+  if (is.null(map)) return(NULL)
+  m <- merge(code_level, map, by = "HCPCS_CODE")
+  if (nrow(m) == 0L) {
+    cat("  No geography/volume rows matched the codebook; skipped.\n")
+    return(NULL)
+  }
+  
+  out <- m[, {
+    v <- sum(VOL, na.rm = TRUE)
+    list(LN_NATIONAL_VOLUME   = log(pmax(v, 1)),
+         N_PROVIDERS_NATIONAL = sum(PRVDR, na.rm = TRUE),
+         SHARE_VOL_FACILITY   = if (v > 0) sum(VOL_F, na.rm = TRUE) / v else NA_real_)
+  }, by = FINAL_CONCEPT_ID]
+  
+  cat("  geography/volume: ", nrow(out), " concepts from ", nrow(m),
+      " matched codes\n", sep = "")
+  out
+}
+
+
+# ============================================================================
+# 34.3  REGISTRY EXTENSION
+# ============================================================================
+#
+# s33_registry_dt() reads S33_CHAR_REGISTRY at call time, so appending here is
+# enough for the LABEL/OUTCOME_DERIVED merge in the univariate sweep and for
+# the horse race's OUTCOME_DERIVED == 0 filter to see the new entries. None of
+# the six is built from the negotiated price, so all are outcome_derived =
+# FALSE and all are eligible for the horse race.
+#
+# The guard makes re-pasting this block harmless: without it, a second paste
+# would append duplicate entries and every new characteristic would appear
+# twice in the sweep.
+
+S34_CHAR_REGISTRY <- list(
+  list(name = "SHARE_PCTC_SPLIT",
+       label = "Share of codes with a PC/TC split (PFS PCTC IND = 1)",
+       outcome_derived = FALSE,
+       note = "The posted price is part of the bill: a separate professional-component invoice exists that a patient comparing hospital prices does not see."),
+  list(name = "SHARE_GLOB_SURGICAL",
+       label = "Share of codes with a global-surgery package (PFS GLOB DAYS 000/010/090)",
+       outcome_derived = FALSE,
+       note = "The posted price bundles a defined follow-up period rather than a single encounter. XXX and ZZZ codes carry no such bundle."),
+  list(name = "SHARE_ASC_ANCILLARY_PACKAGED",
+       label = "Share of codes packaged under the ASC ancillary schedule (Addendum BB, N1)",
+       outcome_derived = FALSE,
+       note = "Packaging status from the ASC payment system rather than OPPS, so it corroborates or contradicts SHARE_SI_PACKAGED without sharing a source with it."),
+  list(name = "LN_NATIONAL_VOLUME",
+       label = "Log national Medicare FFS volume",
+       outcome_derived = FALSE,
+       note = "How often the service is performed nationally. A near-zero-volume code is not something patients realistically shop for."),
+  list(name = "N_PROVIDERS_NATIONAL",
+       label = "National count of distinct rendering providers",
+       outcome_derived = FALSE,
+       note = "Breadth of supply, and a direct measure of whether an alternative provider exists to shop toward."),
+  list(name = "SHARE_VOL_FACILITY",
+       label = "Share of national volume in a facility place of service",
+       outcome_derived = FALSE,
+       note = "Where most volume is billed in physician offices rather than hospital outpatient departments, a hospital's posted price is largely irrelevant to what patients actually pay.")
+)
+
+S34_CHAR_NAMES <- vapply(S34_CHAR_REGISTRY, `[[`, character(1), "name")
+
+if (!all(S34_CHAR_NAMES %in% vapply(S33_CHAR_REGISTRY, `[[`, character(1), "name"))) {
+  S33_CHAR_REGISTRY <- c(S33_CHAR_REGISTRY, S34_CHAR_REGISTRY)
+  S33_CHAR_NAMES    <- vapply(S33_CHAR_REGISTRY, `[[`, character(1), "name")
+  cat("Section 34: registry extended to ", length(S33_CHAR_NAMES),
+      " characteristics.\n", sep = "")
+} else {
+  cat("Section 34: registry already extended; left unchanged.\n")
+}
+
+
+# ============================================================================
+# 34.4  META-REGRESSIONS WRITING UNDER A T34 PREFIX
+# ============================================================================
+#
+# Structurally identical to s33_meta_univariate/_joint/_horserace, including
+# the same s33_fit_one() call, the same spec and weighting loops, and the same
+# .pval() reference. The only difference is the output filename, so that
+# Section 33's T33B/C/D remain on disk and restore_section33() keeps working
+# against the 19-characteristic set while these run alongside it.
+
+s34_meta_univariate <- function(d, usable, dep = "RF_COEF",
+                                instruments = names(MAIN_INSTRUMENTS)) {
+  rows <- list()
+  cat("  univariate sweep: ", length(intersect(instruments, unique(d$INSTRUMENT_LABEL))),
+      " instrument(s), ", length(usable), " characteristics\n", sep = "")
+  for (il in intersect(instruments, unique(d$INSTRUMENT_LABEL))) {
+    t0 <- Sys.time()
+    di <- d[INSTRUMENT_LABEL == il]
+    n_fit <- 0L
+    for (v in usable) for (sp in S33_SPECS) for (w in META_WEIGHTINGS) {
+      r <- s33_fit_one(di, dep, v, sp, w)
+      if (is.null(r)) next
+      r[, `:=`(INSTRUMENT_LABEL = il, CHARACTERISTIC = v)]
+      rows[[length(rows) + 1L]] <- r
+      n_fit <- n_fit + 1L
+    }
+    cat(sprintf("    %-38s %3d fits | %.1fs\n", il, n_fit,
+                as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+  }
+  out <- rbindlist(rows, fill = TRUE)
+  if (nrow(out) == 0L) stop("No univariate meta-regressions estimated.", call. = FALSE)
+  out <- merge(out, s33_registry_dt()[, .(CHARACTERISTIC, LABEL, OUTCOME_DERIVED)],
+               by = "CHARACTERISTIC", all.x = TRUE, sort = FALSE)
+  setorder(out, DEPENDENT, INSTRUMENT_LABEL, SPEC, P_T)
+  save_csv(out, "T34B_meta_univariate_sweep.csv")
+  out
+}
+
+s34_meta_joint <- function(d, usable, dep = "RF_COEF",
+                           instruments = names(MAIN_INSTRUMENTS)) {
+  rows <- list()
+  cat("  joint model:\n")
+  for (il in intersect(instruments, unique(d$INSTRUMENT_LABEL))) {
+    t0 <- Sys.time()
+    di <- d[INSTRUMENT_LABEL == il]
+    for (sp in S33_SPECS) {
+      r <- s33_fit_one(di, dep, usable, sp, "Inverse variance")
+      if (is.null(r)) next
+      r[, INSTRUMENT_LABEL := il]
+      rows[[length(rows) + 1L]] <- r
+    }
+    cat(sprintf("    %-38s %.1fs\n", il,
+                as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+  }
+  out <- rbindlist(rows, fill = TRUE)
+  if (nrow(out) == 0L) {
+    warning("Joint model did not estimate; too few complete cases across all ",
+            "characteristics at once.", call. = FALSE)
+    return(data.table())
+  }
+  setnames(out, "term", "CHARACTERISTIC", skip_absent = TRUE)
+  setorder(out, DEPENDENT, INSTRUMENT_LABEL, SPEC, P_T)
+  save_csv(out, "T34C_meta_joint_model.csv")
+  out
+}
+
+s34_meta_horserace <- function(d, usable, dep = "RF_COEF",
+                               instruments = names(MAIN_INSTRUMENTS)) {
+  clean <- intersect(usable, s33_registry_dt()[OUTCOME_DERIVED == 0, CHARACTERISTIC])
+  if (length(clean) == 0L) {
+    warning("No non-outcome-derived characteristics usable; horse race skipped.",
+            call. = FALSE)
+    return(data.table())
+  }
+  models <- list(
+    `1. Shoppability only`              = "SHOP_CERTAINTY",
+    `2. Characteristics only`           = clean,
+    `3. Shoppability + characteristics` = c("SHOP_CERTAINTY", clean))
+  
+  rows <- list()
+  cat("  horse race:\n")
+  for (il in intersect(instruments, unique(d$INSTRUMENT_LABEL))) {
+    t0 <- Sys.time()
+    di <- d[INSTRUMENT_LABEL == il]
+    for (mn in names(models)) for (sp in c("RAW", "SIZE")) {
+      r <- s33_fit_one(di, dep, models[[mn]], sp, "Inverse variance")
+      if (is.null(r)) next
+      r[, `:=`(INSTRUMENT_LABEL = il, MODEL = mn)]
+      rows[[length(rows) + 1L]] <- r
+    }
+    cat(sprintf("    %-38s %.1fs\n", il,
+                as.numeric(difftime(Sys.time(), t0, units = "secs"))))
+  }
+  out <- rbindlist(rows, fill = TRUE)
+  if (nrow(out) == 0L) {
+    warning("Horse race did not estimate.", call. = FALSE)
+    return(data.table())
+  }
+  setnames(out, "term", "CHARACTERISTIC", skip_absent = TRUE)
+  setorder(out, DEPENDENT, INSTRUMENT_LABEL, MODEL, SPEC, P_T)
+  save_csv(out, "T34D_meta_horserace_vs_shoppability.csv")
+  out
+}
+
+
+# ============================================================================
+# 34.5  DRIVER
+# ============================================================================
+#
+# Merges the three new sources onto whatever s33_chars currently holds,
+# recomputes the coverage/usable classification across the full extended set
+# using the same STATUS rule Section 33 applies, reassembles the panel, and
+# re-runs the three meta-regressions. Section 33's objects are read but never
+# overwritten; everything new lands under an s34_ name.
+
+run_section34 <- function(chars = NULL, dep = "RF_COEF") {
+  
+  if (!exists("concept_results"))
+    stop("concept_results not in session. Warm start first.", call. = FALSE)
+  if (is.null(chars)) {
+    if (!exists("s33_chars"))
+      stop("s33_chars not in session. Run restore_section33() or a live ",
+           "Section 33 first.", call. = FALSE)
+    chars <- get("s33_chars", envir = .GlobalEnv)
+  }
+  chars <- as.data.table(copy(chars))
+  
+  .s34_hd("34A. SUPPLEMENTAL SOURCES")
+  pieces <- Filter(Negate(is.null), list(
+    s34_chars_from_pfs_rvu(),
+    s34_chars_from_asc_bb(),
+    s34_chars_from_geo_volume()))
+  
+  if (length(pieces) == 0L)
+    stop("No supplemental source could be built. Check that the files are in ",
+         PANEL_DIR, call. = FALSE)
+  
+  for (p in pieces) {
+    dup <- setdiff(intersect(names(p), names(chars)), "FINAL_CONCEPT_ID")
+    if (length(dup)) chars[, (dup) := NULL]
+    chars <- merge(chars, p, by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
+  }
+  
+  .s34_hd("34B. COVERAGE ACROSS THE EXTENDED CHARACTERISTIC SET")
+  cov <- rbindlist(lapply(S33_CHAR_NAMES, function(v) {
+    if (!(v %in% names(chars)))
+      return(data.table(CHARACTERISTIC = v, STATUS = "NOT BUILT",
+                        N_NONMISSING = 0L, SHARE_NONMISSING = 0, SD = NA_real_))
+    x   <- safe_numeric(chars[[v]])
+    sdx <- sd(x, na.rm = TRUE)
+    data.table(CHARACTERISTIC = v,
+               STATUS = fcase(sum(is.finite(x)) < S33_MIN_CONCEPTS, "TOO FEW",
+                              !is.finite(sdx) || sdx == 0,          "NO VARIATION",
+                              default = "USABLE"),
+               N_NONMISSING = sum(is.finite(x)),
+               SHARE_NONMISSING = round(mean(is.finite(x)), 3), SD = sdx)
+  }))
+  cov <- merge(s33_registry_dt(), cov, by = "CHARACTERISTIC", all = TRUE, sort = FALSE)
+  cov[, IS_NEW_IN_S34 := as.integer(CHARACTERISTIC %chin% S34_CHAR_NAMES)]
+  save_qa_csv(cov, "QA34A_supplemental_coverage.csv")
+  
+  cat("\nThe six characteristics added by Section 34:\n")
+  print(as.data.frame(cov[IS_NEW_IN_S34 == 1L,
+                          .(CHARACTERISTIC, STATUS, N_NONMISSING,
+                            SHARE_NONMISSING, SD = round(SD, 4))]))
+  
+  usable <- cov[STATUS == "USABLE", CHARACTERISTIC]
+  cat("\nUsable characteristics: ", length(usable),
+      " (Section 33 alone had ", length(get("s33_usable", envir = .GlobalEnv)),
+      ")\n", sep = "")
+  dropped <- cov[STATUS != "USABLE"]
+  if (nrow(dropped)) {
+    cat("Dropped:\n")
+    print(as.data.frame(dropped[, .(CHARACTERISTIC, STATUS, N_NONMISSING)]))
+  }
+  save_csv(chars, "T34A_concept_characteristics.csv")
+  
+  .s34_hd("34C. META-REGRESSIONS, EXTENDED CHARACTERISTIC SET")
+  panel <- s33_assemble(concept_results, chars, dep = dep)
+  panel <- s33_zscore(panel, unique(c(usable, S33_SIZE_CONTROLS)))
+  
+  uni <- s34_meta_univariate(panel, usable, dep = dep)
+  cat("\nUnivariate sweep, primary instrument, inverse-variance weighted,\n",
+      "FAMILY spec only. New characteristics are flagged.\n\n", sep = "")
+  fam <- uni[INSTRUMENT_LABEL == names(MAIN_INSTRUMENTS)[1L] &
+               WEIGHTING == "Inverse variance" & SPEC == "FAMILY"]
+  fam[, NEW := fifelse(CHARACTERISTIC %chin% S34_CHAR_NAMES, "<- new", "")]
+  print(as.data.frame(fam[, .(CHARACTERISTIC,
+                              EST_PCT = round(ESTIMATE_PCT, 3),
+                              SE_PCT  = round(SE_PCT, 3),
+                              P = round(P_T, 4), STARS, N_CONCEPTS, NEW)]))
+  
+  joint <- s34_meta_joint(panel, usable, dep = dep)
+  race  <- s34_meta_horserace(panel, usable, dep = dep)
+  
+  assign("s34_chars",  chars,  envir = .GlobalEnv)
+  assign("s34_usable", usable, envir = .GlobalEnv)
+  assign("s34_panel",  panel,  envir = .GlobalEnv)
+  assign("s34_uni",    uni,    envir = .GlobalEnv)
+  assign("s34_joint",  joint,  envir = .GlobalEnv)
+  assign("s34_race",   race,   envir = .GlobalEnv)
+  
+  cat("\nSection 34 complete. New objects: s34_chars, s34_usable, s34_panel,\n",
+      "s34_uni, s34_joint, s34_race. Section 33's objects are unchanged.\n", sep = "")
+  invisible(list(chars = chars, usable = usable, panel = panel,
+                 uni = uni, joint = joint, race = race))
+}
+
+
+# ============================================================================
+# 34.6  RESTORE FROM DISK
+# ============================================================================
+#
+# The Section 34 counterpart to restore_section33(). Reads what run_section34()
+# wrote and reassembles the panel by merge and z-score, estimating nothing.
+# Requires concept_results in the session and a prior run_section34().
+
+restore_section34 <- function(dep = "RF_COEF") {
+  .s34_hd("34R. RESTORING SECTION 34 FROM SAVED OUTPUT")
+  
+  if (!exists("concept_results"))
+    stop("concept_results not in session. Warm start first.", call. = FALSE)
+  
+  .s34_read <- function(fn, dir = TABLE_DIR) {
+    p <- file.path(dir, fn)
+    if (!file.exists(p)) { message("SKIP: ", fn, " not found in ", dir); return(NULL) }
+    fread(p)
+  }
+  
+  chars <- .s34_read("T34A_concept_characteristics.csv")
+  if (is.null(chars))
+    stop("T34A_concept_characteristics.csv not found. Run run_section34() first.",
+         call. = FALSE)
+  chars <- as.data.table(chars)
+  
+  cov <- .s34_read("QA34A_supplemental_coverage.csv", dir = QA_DIR)
+  if (is.null(cov))
+    stop("QA34A_supplemental_coverage.csv not found in QA_DIR.", call. = FALSE)
+  usable <- cov[STATUS == "USABLE", CHARACTERISTIC]
+  
+  uni   <- .s34_read("T34B_meta_univariate_sweep.csv")
+  joint <- .s34_read("T34C_meta_joint_model.csv")
+  race  <- .s34_read("T34D_meta_horserace_vs_shoppability.csv")
+  
+  panel <- s33_assemble(concept_results, chars, dep = dep)
+  panel <- s33_zscore(panel, unique(c(usable, S33_SIZE_CONTROLS)))
+  
+  cat(sprintf("Restored: %d usable characteristics | s34_panel %s rows | uni %s | joint %s | race %s\n",
+              length(usable), format(nrow(panel), big.mark = ","),
+              if (is.null(uni))   "MISSING" else format(nrow(uni), big.mark = ","),
+              if (is.null(joint)) "MISSING" else format(nrow(joint), big.mark = ","),
+              if (is.null(race))  "MISSING" else format(nrow(race), big.mark = ",")))
+  cat("No regression was re-estimated.\n")
+  
+  assign("s34_chars",  chars,  envir = .GlobalEnv)
+  assign("s34_usable", usable, envir = .GlobalEnv)
+  assign("s34_panel",  panel,  envir = .GlobalEnv)
+  assign("s34_uni",    uni,    envir = .GlobalEnv)
+  assign("s34_joint",  joint,  envir = .GlobalEnv)
+  assign("s34_race",   race,   envir = .GlobalEnv)
+  invisible(list(chars = chars, usable = usable, panel = panel,
+                 uni = uni, joint = joint, race = race))
+}
+
+cat("Section 34 loaded. Run:  run_section34()\n")
+
+
+# ===========================================================================
+# 34F  INTERACTIVE CHECKS AND THE ONE-STEP PROMOTION
+# ===========================================================================
+#
+# Everything below is run by hand, not by run_section34(). Two separate
+# exercises share this space.
+#
+#   34F.1  Loader smoke tests. Each of the three code-level sources is built
+#          on its own before the merged table is trusted, so a failure names
+#          the file that caused it.
+#
+#   34F.2  SHARE_SI_PACKAGED estimated one-step on the row-level panel rather
+#          than two-step on concept summaries, then re-estimated netting out
+#          shoppability.
+#
+# 34F.2 needs `outpatient`, which restore_section33() does not load and which
+# is the largest object in the session. Start from a full warm start, not
+# HPT_WARM_START_KEYS <- "concept_level_6inst".
+
+
+# ---------------------------------------------------------------------------
+# 34F.1  Loader smoke tests
+# ---------------------------------------------------------------------------
+#
+# Expected on the CY2025/2024 files, checked against HPT_CODEBOOK.csv:
+#   PFS RVU    753 concepts from 877 of 915 codes. The 38 unmatched are all
+#              C-prefix OPPS pass-through codes, which by definition never
+#              appear on the physician fee schedule.
+#   ASC BB     340 concepts, read from both vintages. Two concepts return NaN
+#              because every matched code has a blank payment indicator in
+#              CMS's own file; is.finite() drops them downstream, correctly.
+#   Geo/volume 698 concepts from 813 codes, National rows only.
+#
+# readxl emits ~50 type-guessing warnings on the PFS file. They name columns
+# E, H and X; the loader reads 1, 2, 14 and 15. Ignore them.
+
+test_pfs <- s34_chars_from_pfs_rvu()
+nrow(test_pfs)
+head(test_pfs)
+
+test_bb <- s34_chars_from_asc_bb()
+nrow(test_bb)
+head(test_bb)
+
+test_geo <- s34_chars_from_geo_volume()
+nrow(test_geo)
+head(test_geo)
+
+
+# ---------------------------------------------------------------------------
+# 34F.2a  SHARE_SI_PACKAGED, one-step, all three main instruments
+# ---------------------------------------------------------------------------
+#
+# Section 33 regresses concept-level RF_COEF estimates on characteristics.
+# This asks the same question of the 1.4M-row panel directly: does the
+# disclosure response differ by packaging within county x concept cells,
+# with the moderator entering as a continuous interaction rather than as a
+# regressor in a second-stage summary regression.
+#
+# `op` is the panel with the concept-level moderator merged on:
+#   op <- merge(outpatient, s33_chars[, .(FINAL_CONCEPT_ID, SHARE_SI_PACKAGED)],
+#               by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
+#
+# The moderator is demeaned inside estimate_interacted(), so the Main row is
+# the response at average packaging and should reproduce the pooled estimate
+# already in the paper. It does: -3.06% IV against POOLED_IV = -3.07.
+# That agreement is a specification check, not a new result.
+#
+# Roughly 3 minutes per instrument.
+
+r_all <- rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
+  t0 <- Sys.time()
+  res <- estimate_interacted(
+    op, moderator = "SHARE_SI_PACKAGED", moderator_type = "continuous",
+    instrument = MAIN_INSTRUMENTS[[il]], instrument_label = il,
+    label = "SHARE_SI_PACKAGED, one-step")
+  cat(sprintf("  %-38s %.1f min\n", il,
+              as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+  if (is.null(res)) return(NULL)
+  cbind(INSTRUMENT_LABEL = il, res$rows)
+}), fill = TRUE)
+
+# The "x Moderator" row is the object of interest. Read RF, not IV: first-stage
+# Wald runs 6.8 to 8.6 here, below the conventional threshold, so the IV
+# columns carry the usual weak-instrument caveat while the reduced form is the
+# Anderson-Rubin-equivalent test.
+#
+# Result: -0.00495 (p = .018), -0.00427 (p = .037), -0.00430 (p = .062).
+# Sign and magnitude near-identical across instruments; the marginal third is
+# also the weakest first stage, which is internally consistent.
+r_all[TERM == "x Moderator",
+      .(INSTRUMENT_LABEL, RF_COEF, RF_P, RF_PERCENT_PER_SD, IV_PERCENT, IV_P,
+        FIRST_STAGE_WALD_MIN, N_OBSERVATIONS)]
+
+saveRDS(r_all, file.path(CACHE_DIR, "share_si_packaged_onestep_all_instruments.rds"))
+
+
+# ---------------------------------------------------------------------------
+# 34F.2b  Netting out shoppability
+# ---------------------------------------------------------------------------
+#
+# Packaged codes are concentrated in the shoppable group (36 of 439 shoppable
+# concepts vs 8 of 297 non-shoppable), so 34F.2a leaves open whether the
+# packaging interaction is shoppability in another guise. This is the one-step
+# analogue of the concept-level horse race.
+#
+# estimate_interacted() takes a single moderator, so this rebuilds its
+# continuous branch with two. Nothing else changes: same outcome, controls,
+# fixed effects and clustering as everywhere else in the paper.
+#
+# Neither moderator's own level enters as a regressor. Both are concept-level
+# and time-invariant, so county x concept absorbs them entirely; only the
+# interaction with Z is identified. Both are demeaned, so Main stays readable
+# as the response at the sample average of both.
+
+s34_net_shoppability <- function(panel, instrument_label, instrument,
+                                 moderator1 = "SHARE_SI_PACKAGED",
+                                 moderator2 = "SHOP_DUMMY",
+                                 outcome = PRIMARY_OUTCOME,
+                                 endogenous = ENDOGENOUS_VARIABLE,
+                                 controls = BASELINE_CONTROLS,
+                                 fixed_effects = BASELINE_FIXED_EFFECTS,
+                                 clusters = BASELINE_CLUSTERS) {
+  
+  ctl <- available_columns(panel, controls)
+  fe  <- available_columns(panel, fixed_effects)
+  cl  <- available_columns(panel, clusters)
+  
+  d <- panel[!is.na(get(moderator1)) & !is.na(get(moderator2))]
+  d <- model_sample(d, c(outcome, endogenous, instrument, ctl, fe, cl, moderator1, moderator2))
+  if (nrow(d) < MIN_MODEL_OBS) return(NULL)
+  
+  d[, MOD1 := safe_numeric(get(moderator1))]; d[, MOD1 := MOD1 - mean(MOD1, na.rm = TRUE)]
+  d[, MOD2 := safe_numeric(get(moderator2))]; d[, MOD2 := MOD2 - mean(MOD2, na.rm = TRUE)]
+  
+  # Three terms per equation: level, packaging interaction, shoppability
+  # interaction. RF and IV columns are built in parallel so the same three
+  # rows come back for both.
+  d[, `:=`(RF_MAIN = get(instrument), RF_PACKAGED = get(instrument) * MOD1,
+           RF_SHOP = get(instrument) * MOD2,
+           TREAT_MAIN = get(endogenous), TREAT_PACKAGED = get(endogenous) * MOD1,
+           TREAT_SHOP = get(endogenous) * MOD2,
+           IV_MAIN = get(instrument), IV_PACKAGED = get(instrument) * MOD1,
+           IV_SHOP = get(instrument) * MOD2)]
+  
+  rfs  <- c("RF_MAIN", "RF_PACKAGED", "RF_SHOP")
+  endo <- c("TREAT_MAIN", "TREAT_PACKAGED", "TREAT_SHOP")
+  ivs  <- c("IV_MAIN", "IV_PACKAGED", "IV_SHOP")
+  
+  rf_fit <- tryCatch(feols(build_ols_formula(outcome, c(rfs, ctl), fe), data = d,
+                           cluster = build_cluster_formula(cl), warn = FALSE, notes = FALSE),
+                     error = function(e) NULL)
+  iv_fit <- tryCatch(feols(build_iv_formula(outcome, endo, ivs, ctl, fe), data = d,
+                           cluster = build_cluster_formula(cl), warn = FALSE, notes = FALSE),
+                     error = function(e) NULL)
+  if (is.null(rf_fit)) return(NULL)
+  
+  fsw <- first_stage_wald(iv_fit)
+  fs_min <- if (nrow(fsw) > 0L) min(fsw$WALD, na.rm = TRUE) else NA_real_
+  
+  # fixest prefixes IV coefficient names with "fit_"; try both forms.
+  pull <- function(fit, tm) {
+    if (is.null(fit)) return(list(b = NA_real_, s = NA_real_))
+    cand <- c(paste0("fit_", tm), tm); hit <- cand[cand %in% names(coef(fit))]
+    if (length(hit) == 0L) return(list(b = NA_real_, s = NA_real_))
+    list(b = unname(coef(fit)[hit[1L]]), s = unname(sqrt(vcov(fit)[hit[1L], hit[1L]])))
+  }
+  sd_z <- sd(d[[instrument]], na.rm = TRUE)
+  
+  out <- rbindlist(lapply(
+    list(c("Main", "RF_MAIN", "TREAT_MAIN"),
+         c("x SHARE_SI_PACKAGED", "RF_PACKAGED", "TREAT_PACKAGED"),
+         c("x Shoppable", "RF_SHOP", "TREAT_SHOP")),
+    function(spec) {
+      rf <- pull(rf_fit, spec[2]); iv <- pull(iv_fit, spec[3])
+      data.table(TERM = spec[1], RF_COEF = rf$b, RF_SE = rf$s,
+                 RF_P = .pval(rf$b / rf$s, rf_fit),
+                 RF_PERCENT_PER_SD = 100 * (exp(rf$b * sd_z) - 1),
+                 IV_COEF = iv$b, IV_SE = iv$s, IV_P = .pval(iv$b / iv$s, iv_fit),
+                 IV_PERCENT = 100 * (exp(iv$b) - 1))
+    }))
+  out[, `:=`(INSTRUMENT_LABEL = instrument_label, FIRST_STAGE_WALD_MIN = fs_min,
+             N_OBSERVATIONS = nobs(rf_fit))]
+  out[]
+}
+
+# SHOP_CERTAINTY lives on s33_panel, which is concept-level. The panel-native
+# column is SCHEME_1_CERTAINTY, the same field every Section 28-30
+# specification uses.
+op[, SHOP_DUMMY := as.numeric(SCHEME_1_CERTAINTY == "Shoppable")]
+
+# Single instrument first, to confirm the specification runs before spending
+# three times the wall clock on the full set.
+t0 <- Sys.time()
+r_net <- s34_net_shoppability(op, "Competitor_only_hospitals_9m",
+                              MAIN_INSTRUMENTS[["Competitor_only_hospitals_9m"]])
+cat("Elapsed:", round(difftime(Sys.time(), t0, units = "mins"), 1), "min\n")
+r_net[, .(TERM, RF_COEF, RF_P, RF_PERCENT_PER_SD, IV_PERCENT, IV_P,
+          FIRST_STAGE_WALD_MIN, N_OBSERVATIONS)]
+
+r_net_all <- rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
+  t0 <- Sys.time()
+  res <- s34_net_shoppability(op, il, MAIN_INSTRUMENTS[[il]])
+  cat(sprintf("  %-38s %.1f min\n", il,
+              as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+  res
+}), fill = TRUE)
+
+# What this returns, and it is the honest version of the result:
+#
+#   instrument            x SHARE_SI_PACKAGED    x Shoppable
+#   Competitor hospitals  -0.00415 (p = .053)    -0.00284 (p = .024)
+#   Primary strict system -0.00364 (p = .084)    -0.00221 (p = .043)
+#   Competitor ex-CBSA    -0.00330 (p = .168)    -0.00337 (p = .018)
+#
+# Shoppability is robust across all three. Packaging holds its sign and rough
+# magnitude but weakens as the instrument weakens, and is not distinguishable
+# from zero under the third, which is also the weakest first stage in the
+# paper (5.7). Attenuation from 34F.2a is 16% on the primary instrument.
+#
+# The two-step horse race in Section 33 had packaging clearing p < .02 on
+# every instrument. This one-step version, on the real panel rather than 736
+# concept summaries, is the more rigorous test and is less favourable. Where
+# they disagree, this one governs.
+r_net_all[TERM != "Main",
+          .(INSTRUMENT_LABEL, TERM, RF_COEF, RF_P, RF_PERCENT_PER_SD,
+            IV_PERCENT, IV_P, FIRST_STAGE_WALD_MIN, N_OBSERVATIONS)]
+
+saveRDS(r_net_all, file.path(CACHE_DIR, "share_si_packaged_net_shoppability_all.rds"))
 
