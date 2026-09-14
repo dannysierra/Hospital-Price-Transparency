@@ -605,7 +605,8 @@ if (nrow(md_subsample_results) > 0L) {
 # WHAT THIS DOES INSTEAD. Runs the SAME concept-level estimator the headline
 # uses (estimate_concept_level -> run_meta_regressions) once per geography.
 # Two things come for free from reusing that machinery:
-#   - every concept gets its own IV coefficient, ~738 of them per geography
+#   - every concept gets its own IV coefficient per instrument, so roughly
+#     738 concepts x 3 instruments ~ 2,200 rows per geography
 #   - run_meta_regressions() loops over EVERY SCHEME_ID in schemes_long, so
 #     all 18 shoppability schemes are covered, not just SCHEME_1
 #
@@ -615,27 +616,42 @@ if (nrow(md_subsample_results) > 0L) {
 # behaves like a referral-catchment service. Then check whether that delta
 # tracks shoppability. That is the cross-over, at the right granularity.
 
-# Instruments: scoped deliberately. The headline concept run used 6
-# (CONCEPT_INSTRUMENTS). Market definition and instrument choice are separate
-# axes, and Part 6 already validated IV06 vs IV15 at county level, so running
-# all 6 at every geography answers a question not being asked here and costs
-# ~6x. Start with the primary; widen only if the result warrants it.
+# Instruments: MAIN_INSTRUMENTS (3), not the 6 used in the headline concept
+# run (CONCEPT_INSTRUMENTS = MAIN + SUPPORTING). Market definition and
+# instrument choice are separate axes, and Part 6 already validated IV06 vs
+# IV15 at county level, so re-running all 6 at every geography answers a
+# question not being asked here. Three covers the credibility-tier "Main"
+# instruments at roughly half the cost. NOTE for table notes: the headline
+# -2.603pp gradient is a 6-instrument number, so these are not directly
+# comparable to it without that caveat stated.
 CONCEPT_INSTRUMENTS_MD <- MAIN_INSTRUMENTS
+
+# Cache and output keys encode the instrument COUNT, mirroring the original
+# pipeline's "concept_level_6inst". cache_or_run() keys purely on the string,
+# so without this a later run with a different instrument set would return
+# tonight's 3-instrument object and announce "Cache hit" as though correct.
+# The output CSVs carry the same suffix so two vintages never overwrite each
+# other unnoticed.
+md_key <- function(stem, level, instruments = CONCEPT_INSTRUMENTS_MD) {
+  sprintf("%s_%s_%dinst", stem, tolower(level), length(instruments))
+}
 
 md_run_concept_level <- function(level, instruments = CONCEPT_INSTRUMENTS_MD) {
   cat("\n", strrep("=", 70), "\n", sep = "")
   cat("CONCEPT-LEVEL:", level, "| instruments:", length(instruments), "\n")
+  cat("  ", paste(names(instruments), collapse = "\n   "), "\n", sep = "")
   cat(strrep("=", 70), "\n", sep = "")
   
   t_start <- Sys.time()
   p <- md_load_panel(level)
   
   cr <- cache_or_run(
-    paste0("md_concept_level_", tolower(level)),
+    md_key("md_concept_level", level, instruments),
     estimate_concept_level(
       build_concept_panel(p, instruments = instruments),
       instruments = instruments,
-      save_stem   = paste0("MD13_concept_level_", tolower(level))
+      save_stem   = paste0("MD13_concept_level_", tolower(level),
+                           "_", length(instruments), "inst")
     ))
   
   cat("\nConcept-level done for", level, "--",
@@ -644,20 +660,22 @@ md_run_concept_level <- function(level, instruments = CONCEPT_INSTRUMENTS_MD) {
       sprintf("%.1f min\n", as.numeric(difftime(Sys.time(), t_start, units = "mins"))))
   
   cr[, MARKET_DEFINITION := level]
+  cr[, N_INSTRUMENTS_USED := length(instruments)]
   
-  meta_rf_g <- cache_or_run(paste0("md_meta_rf_", tolower(level)),
+  meta_rf_g <- cache_or_run(md_key("md_meta_rf", level, instruments),
                             run_meta_regressions(prepare_meta_input(cr, md_schemes_long),
                                                  md_schemes_long, dep = "RF_COEF", se = "RF_SE"))
-  meta_iv_g <- cache_or_run(paste0("md_meta_iv_", tolower(level)),
+  meta_iv_g <- cache_or_run(md_key("md_meta_iv", level, instruments),
                             run_meta_regressions(prepare_meta_input(cr, md_schemes_long),
                                                  md_schemes_long, dep = "IV_COEF", se = "IV_SE"))
   
-  meta_rf_g[, MARKET_DEFINITION := level]
-  meta_iv_g[, MARKET_DEFINITION := level]
+  meta_rf_g[, `:=`(MARKET_DEFINITION = level, N_INSTRUMENTS_USED = length(instruments))]
+  meta_iv_g[, `:=`(MARKET_DEFINITION = level, N_INSTRUMENTS_USED = length(instruments))]
   
-  save_csv(cr,        paste0("MD13_concept_level_", tolower(level), ".csv"))
-  save_csv(meta_rf_g, paste0("MD14_meta_rf_", tolower(level), ".csv"))
-  save_csv(meta_iv_g, paste0("MD15_meta_iv_", tolower(level), ".csv"))
+  suffix <- sprintf("_%s_%dinst.csv", tolower(level), length(instruments))
+  save_csv(cr,        paste0("MD13_concept_level", suffix))
+  save_csv(meta_rf_g, paste0("MD14_meta_rf",       suffix))
+  save_csv(meta_iv_g, paste0("MD15_meta_iv",       suffix))
   
   rm(p); invisible(gc())
   list(concept = cr, meta_rf = meta_rf_g, meta_iv = meta_iv_g)
@@ -685,14 +703,19 @@ print(md_hrr$meta_iv)
 # ---------------------------------------------------------------------------
 # 9C -- THE CROSS-OVER TEST: per-concept HSA vs HRR delta
 # ---------------------------------------------------------------------------
+#
+# Both sides carry one row per concept x instrument, so the merge is keyed on
+# BOTH, not on concept alone. Merging on concept alone would fan out to
+# 3 x 3 = 9 rows per concept and silently corrupt every downstream mean.
+
 md_delta <- merge(
-  md_hsa$concept[, .(FINAL_CONCEPT_ID, FINAL_FAMILY_ID, SERVICE_LABEL,
+  md_hsa$concept[, .(FINAL_CONCEPT_ID, INSTRUMENT_LABEL, FINAL_FAMILY_ID, SERVICE_LABEL,
                      IV_HSA = IV_COEF, IV_SE_HSA = IV_SE, IV_P_HSA = IV_P,
                      FS_F_HSA = FS_F, N_OBS_HSA = N_OBSERVATIONS)],
-  md_hrr$concept[, .(FINAL_CONCEPT_ID,
+  md_hrr$concept[, .(FINAL_CONCEPT_ID, INSTRUMENT_LABEL,
                      IV_HRR = IV_COEF, IV_SE_HRR = IV_SE, IV_P_HRR = IV_P,
                      FS_F_HRR = FS_F, N_OBS_HRR = N_OBSERVATIONS)],
-  by = "FINAL_CONCEPT_ID")
+  by = c("FINAL_CONCEPT_ID", "INSTRUMENT_LABEL"))
 
 # Negative delta: HSA gives a more negative (stronger) price response than
 # HRR for this concept -> routine, local-catchment behaviour.
@@ -703,8 +726,10 @@ md_delta[, IV_DELTA_HSA_MINUS_HRR := IV_HSA - IV_HRR]
 md_delta_ok <- md_delta[is.finite(IV_DELTA_HSA_MINUS_HRR) &
                           FS_F_HSA >= 10 & FS_F_HRR >= 10]
 
-cat(sprintf("\nConcepts in both geographies: %d | with F>=10 on both sides: %d\n",
+cat(sprintf("\nConcept x instrument pairs in both geographies: %d | F>=10 both sides: %d\n",
             nrow(md_delta), nrow(md_delta_ok)))
+cat("Distinct concepts surviving:", uniqueN(md_delta_ok$FINAL_CONCEPT_ID), "\n")
+print(md_delta_ok[, .N, by = INSTRUMENT_LABEL])
 
 # Attach every scheme's classification, then test the delta against each.
 md_delta_schemes <- copy(md_delta_ok)
@@ -723,38 +748,43 @@ md_crossover_test <- rbindlist(lapply(unique(md_schemes_long$SCHEME_ID), functio
   d <- md_delta_schemes[!is.na(get(ccol))]
   if (uniqueN(d[[ccol]]) < 2L || nrow(d) < MIN_CONCEPTS_META) return(NULL)
   
-  out <- d[, .(SCHEME_ID = sid,
-               N_CONCEPTS = .N,
-               MEAN_DELTA = round(mean(IV_DELTA_HSA_MINUS_HRR, na.rm = TRUE), 4),
-               MEDIAN_DELTA = round(median(IV_DELTA_HSA_MINUS_HRR, na.rm = TRUE), 4),
-               SHARE_HSA_STRONGER = round(mean(IV_DELTA_HSA_MINUS_HRR < 0, na.rm = TRUE), 3)),
-           by = c(CATEGORY = ccol)]
-  out
+  d[, .(SCHEME_ID = sid,
+        N_CONCEPTS = .N,
+        MEAN_DELTA = round(mean(IV_DELTA_HSA_MINUS_HRR, na.rm = TRUE), 4),
+        MEDIAN_DELTA = round(median(IV_DELTA_HSA_MINUS_HRR, na.rm = TRUE), 4),
+        SHARE_HSA_STRONGER = round(mean(IV_DELTA_HSA_MINUS_HRR < 0, na.rm = TRUE), 3)),
+    by = c(CATEGORY = ccol, INSTRUMENT = "INSTRUMENT_LABEL")]
 }), fill = TRUE)
 
 # The sharper version: regress the per-concept delta on the ordinal
-# shoppability score, once per scheme. A negative slope means more-shoppable
-# concepts have more negative deltas, i.e. HSA disciplines them more than HRR
-# does -- which is the cross-over the hypothesis predicts.
+# shoppability score, once per scheme x instrument. A negative slope means
+# more-shoppable concepts have more negative deltas, i.e. HSA disciplines them
+# more than HRR does -- which is the cross-over the hypothesis predicts.
 md_crossover_slope <- rbindlist(lapply(unique(md_schemes_long$SCHEME_ID), function(sid) {
   ocol <- paste0("ORD_", sid)
   if (!(ocol %in% names(md_delta_schemes))) return(NULL)
-  d <- md_delta_schemes[is.finite(get(ocol)) & is.finite(IV_DELTA_HSA_MINUS_HRR)]
-  if (nrow(d) < MIN_CONCEPTS_META || !has_usable_variation(d[[ocol]])) return(NULL)
   
-  fit <- tryCatch(lm(IV_DELTA_HSA_MINUS_HRR ~ d[[ocol]], data = d), error = function(e) NULL)
-  if (is.null(fit)) return(NULL)
-  s <- summary(fit)$coefficients
-  if (nrow(s) < 2L) return(NULL)
-  
-  data.table(SCHEME_ID = sid, N_CONCEPTS = nrow(d),
-             SLOPE = round(s[2, 1], 5), SE = round(s[2, 2], 5),
-             P_VALUE = round(s[2, 4], 4))
+  rbindlist(lapply(unique(md_delta_schemes$INSTRUMENT_LABEL), function(il) {
+    d <- md_delta_schemes[INSTRUMENT_LABEL == il &
+                            is.finite(get(ocol)) & is.finite(IV_DELTA_HSA_MINUS_HRR)]
+    if (nrow(d) < MIN_CONCEPTS_META || !has_usable_variation(d[[ocol]])) return(NULL)
+    
+    y <- d$IV_DELTA_HSA_MINUS_HRR; x <- d[[ocol]]
+    fit <- tryCatch(lm(y ~ x), error = function(e) NULL)
+    if (is.null(fit)) return(NULL)
+    s <- summary(fit)$coefficients
+    if (nrow(s) < 2L) return(NULL)
+    
+    data.table(SCHEME_ID = sid, INSTRUMENT = il, N_CONCEPTS = nrow(d),
+               SLOPE = round(s[2, 1], 5), SE = round(s[2, 2], 5),
+               P_VALUE = round(s[2, 4], 4))
+  }), fill = TRUE)
 }), fill = TRUE)
 
-save_csv(md_delta,           "MD16_concept_hsa_hrr_delta.csv")
-save_csv(md_crossover_test,  "MD17_crossover_by_scheme.csv")
-save_csv(md_crossover_slope, "MD17B_crossover_slope_by_scheme.csv")
+isuf <- sprintf("_%dinst.csv", length(CONCEPT_INSTRUMENTS_MD))
+save_csv(md_delta,           paste0("MD16_concept_hsa_hrr_delta", isuf))
+save_csv(md_crossover_test,  paste0("MD17_crossover_by_scheme", isuf))
+save_csv(md_crossover_slope, paste0("MD17B_crossover_slope_by_scheme", isuf))
 
 cat("\n=== CROSS-OVER: mean HSA-minus-HRR delta by scheme category ===\n")
 cat("Negative = HSA stronger (routine/local). Positive = HRR stronger (referral).\n\n")
@@ -763,6 +793,18 @@ print(md_crossover_test)
 cat("\n=== CROSS-OVER SLOPE: delta regressed on ordinal shoppability ===\n")
 cat("Negative slope = more shoppable concepts favour HSA. That is the prediction.\n\n")
 print(md_crossover_slope)
+
+# Family-level view: which clinical families lean local vs referral?
+md_family_delta <- md_delta_ok[, .(
+  N_PAIRS      = .N,
+  MEAN_DELTA   = round(mean(IV_DELTA_HSA_MINUS_HRR, na.rm = TRUE), 4),
+  MEDIAN_DELTA = round(median(IV_DELTA_HSA_MINUS_HRR, na.rm = TRUE), 4),
+  SHARE_HSA_STRONGER = round(mean(IV_DELTA_HSA_MINUS_HRR < 0, na.rm = TRUE), 3)
+), by = .(FINAL_FAMILY_ID, INSTRUMENT_LABEL)][order(MEDIAN_DELTA)]
+
+save_csv(md_family_delta, paste0("MD18_family_hsa_hrr_delta", isuf))
+cat("\n=== BY CLINICAL FAMILY (sorted: most HSA-favouring first) ===\n")
+print(md_family_delta)
 
 
 
