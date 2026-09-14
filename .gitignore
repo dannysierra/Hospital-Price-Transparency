@@ -45,6 +45,7 @@ SQL/*
 !LICENSE
 
 !Code/HPT_Analysis_Pipeline.R
+!Code/HPT_market_definition_analysis.R
 !Code/HPT_warm_start.R
 !Code/HPT_diagnostic_for_family_levels.R
 !Code/HPT_Section19_TierI_Diagnostics.R

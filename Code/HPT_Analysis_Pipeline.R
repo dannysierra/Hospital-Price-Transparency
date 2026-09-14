@@ -17476,7 +17476,7 @@ r_net_all <- rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
   res
 }), fill = TRUE)
 
-# What this returns, and it is the honest version of the result:
+# What this returns:
 #
 #   instrument            x SHARE_SI_PACKAGED    x Shoppable
 #   Competitor hospitals  -0.00415 (p = .053)    -0.00284 (p = .024)
@@ -17497,4 +17497,7 @@ r_net_all[TERM != "Main",
             IV_PERCENT, IV_P, FIRST_STAGE_WALD_MIN, N_OBSERVATIONS)]
 
 saveRDS(r_net_all, file.path(CACHE_DIR, "share_si_packaged_net_shoppability_all.rds"))
+
+
+
 
