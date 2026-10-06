@@ -3,218 +3,201 @@
 #   WHEN TRANSPARENCY WORKS: SERVICE SHOPPABILITY, CONTRACTING DEPTH, AND
 #   THE PRICE EFFECTS OF HOSPITAL DISCLOSURE
 #
-#   Replication code -- estimation stage
+#   Replication code: estimation stage
 #
 #   Danny Sierra
 #   Department of Economics, Florida State University
 #   Ds22c@fsu.edu
 #
-# ===========================================================================
+###############################################################################
+#
 # HOW TO RUN
-# ===========================================================================
+# -----------------------------------------------------------------------------
+#   1. Place these four files in <HPT_ROOT>/Code (CODE_DIR in PART 1.2):
+#        HPT_Analysis_Pipeline.R              this file
+#        HPT_warm_start.R                     sourced in PART 3
+#        HPT_diagnostic_for_family_levels.R   sourced in PART 6
+#        HPT_Section19_TierI_Diagnostics.R    sourced in PART 6
 #
-#   1. Put these four files in one directory:
-#        HPT_Analysis_Pipeline.R              (this file)
-#        HPT_warm_start.R
-#        HPT_diagnostic_for_family_levels.R
-#        HPT_Section19_TierI_Diagnostics.R
-#
-#   2. Point HPT_ROOT at the project directory, which must contain
-#      Data/data_final/01_R_Analysis_Panels with the inputs listed below:
+#   2. Set HPT_ROOT to the project directory. The input panels listed under
+#      INPUTS must be in <HPT_ROOT>/Data/data_final/01_R_Analysis_Panels.
 #
 #        Sys.setenv(HPT_ROOT = "/path/to/Hospital Price Transparency Paper")
 #
 #   3. source("HPT_Analysis_Pipeline.R")
 #
-# That is the whole procedure. There are no absolute paths in this file. Every
-# path derives from HPT_ROOT, and the three companion files are located
-# relative to CODE_DIR.
+# Every path is built from HPT_ROOT. If HPT_ROOT is not set, PART 1.2 falls
+# back to the author's local project folder, which will not exist elsewhere.
 #
-# ---------------------------------------------------------------------------
-# CONTROLLING WHAT RUNS
-# ---------------------------------------------------------------------------
-# RUN_STAGES and HPT_RUN, both set in PART 1, decide which blocks execute. The
-# defaults reproduce every table and figure in the paper from the shipped
-# cache WITHOUT re-running the eight-hour concept-level sweep. To rebuild that
-# from scratch, add 6 to RUN_STAGES and set USE_CACHE <- FALSE.
+# Results are written under <HPT_ROOT>/Data/data_final/06_R_Analysis_Results:
+#   01_Tables_CSV      CSV tables                       TABLE_DIR
+#   02_Figures         PDF figures                      FIGURE_DIR (= FIG_DIR)
+#   02_Tables_TEX      LaTeX tables                     OUT_TEX
+#   04_Model_Objects   created, not currently written   MODEL_DIR
+#   05_R_QA            QA and diagnostic CSVs           QA_DIR
+#   07_Cache           .rds caches                      CACHE_DIR
+#   08_Coverage        county coverage files and map    COVERAGE_DIR
 #
-# Approximate runtimes from a warm cache:
+# WHAT RUNS
+# -----------------------------------------------------------------------------
+# RUN_STAGES, USE_CACHE, and HPT_RUN (PART 1.3) select the blocks that execute.
+# With the defaults and a populated cache, sourcing the file reproduces the
+# tables and figures without re-running the concept-level sweep (stage 6),
+# with two exceptions: the coverage map is off (HPT_RUN$coverage_map), and
+# T05 and T05C, which Figures 4 and 8 need, are written only by stage 6 (with
+# a populated cache, adding 6 to RUN_STAGES reloads the sweep).
+#
+# The BUILD block in PART 3 loads the concept-level results through
+# cache_or_run("concept_level_6inst", ...) whether or not stage 6 is selected.
+# If 07_Cache/concept_level_6inst.rds is missing, that call runs the full
+# sweep (about eight hours). To rebuild the sweep, delete that file, or run
+# invalidate_cache("concept_level_6inst", dry_run = FALSE), which also deletes
+# the stage 8 meta-regression caches built from it, and source the file
+# again. USE_CACHE <- FALSE recomputes every cached step; with 6 also in
+# RUN_STAGES, the sweep then runs twice (once in BUILD, once in stage 6).
+#
+# Flags read when the file is sourced. Set them in the global environment
+# before calling source(); all are optional.
+#   HPT_WARM_START <- TRUE       load functions and cached results only;
+#                                estimate nothing (PART 1.3, PART 3)
+#   HPT_WARM_START_KEYS <- ...   restrict a warm start to some cache keys
+#   HPT_TABLES <- TRUE           run the PART 5 table blocks (also after a
+#                                warm start)
+#   HPT_TIER2 <- TRUE            run the Section 20 diagnostics
+#   S20_RUN <- c("20A", ...)     choose Section 20 blocks (default 20A, 20B)
+#   HPT_CONCEPT_CHARS <- TRUE    run Section 33 (default: TRUE unless a warm
+#                                start)
+#   HPT_SCRATCH <- TRUE          run the interactive blocks in Sections 26-34
+#
+# Approximate runtimes with a populated cache:
 #   PART 2  definitions            seconds
 #   PART 3  build and preflight    minutes
 #   PART 4  estimation             ~6 hours   (~14 with stage 6)
 #   PART 5  tables and figures     minutes
 #   PART 6  diagnostics            ~2 hours   (off by default)
 #
-# ---------------------------------------------------------------------------
 # STRUCTURE
-# ---------------------------------------------------------------------------
-#   PART 1  Configuration          paths, packages, input check, constants
-#   PART 2  Definitions            functions only, nothing estimated
-#   PART 3  Build and preflight    the gate everything else depends on
-#   PART 4  Estimation             stages 5 through 18
-#   PART 5  Outputs                tables, LaTeX, figures, coverage map
-#   PART 6  Diagnostics            referee-response checks, off by default
-#   PART 7  Scratch                interactive code, commented out
+# -----------------------------------------------------------------------------
+#   PART 1  Configuration        paths, packages, run switches, constants
+#   PART 2  Definitions          Sections 1-12 and cache management; functions
+#                                and constants only, nothing is estimated
+#   PART 3  Build and preflight  panel construction and checks, or warm start
+#   PART 4  Estimation           stages 5-11 and Sections 12-18
+#   PART 5  Outputs              figures, tables, LaTeX, coverage map
+#   PART 6  Diagnostics          Sections 19-25, off by default
+#   PART 7  End of the pipeline  writes sessionInfo.txt
+#   Sections 26-34               analyses that follow PART 7. Their functions
+#                                are defined on every source. Section 33 runs
+#                                by default (HPT_CONCEPT_CHARS); the run
+#                                blocks of the others need HPT_SCRATCH,
+#                                except 34F (see KNOWN ISSUES).
 #
-# Nothing between the top of the file and the end of PART 2 touches data, so
-# the file can be sourced that far to get every function into scope in seconds
-# without estimating anything. That is what warm_start() relies on.
+# Two sections carry the number 12: the preflight checks in PART 2 and the
+# county demographic analysis in PART 4. Messages printed by the code use
+# both numbers, so neither was renumbered. There is no Section 14, 27, or 32.
 #
-# ---------------------------------------------------------------------------
+# Sourcing the file through the end of PART 2 defines the functions of
+# Sections 1-12 and the cache tools without reading any data. Functions
+# defined inside the switched blocks of PARTS 4-6 exist only after those
+# blocks have run.
+#
 # INPUTS
-# ---------------------------------------------------------------------------
-# Four required, under Data/data_final/01_R_Analysis_Panels:
+# -----------------------------------------------------------------------------
+# Required, in Data/data_final/01_R_Analysis_Panels:
 #   HPT_R_MAIN_PRIMARY_COUNTY_OUTPATIENT_CONCEPT.parquet
 #   HPT_R_MAIN_PRIMARY_COUNTY_INPATIENT_CONCEPT.parquet
 #   HPT_R_MAIN_PRIMARY_COUNTY_OUTPATIENT_EXACT_CODE.parquet
 #   HPT_CODEBOOK_FOR_SHOPPABILITY_SCHEMES.csv
 #
-# Four optional, each gating one robustness section rather than the run:
-#   HPT_R_MAIN_ROBUSTNESS_CBSA_OUTPATIENT_CONCEPT.parquet     (Section 15A)
-#   HPT_R_MAIN_ROBUSTNESS_CBSA_OUTPATIENT_EXACT_CODE.parquet  (Section 15A)
-#   HPT_PAYER_DISPERSION*.csv.gz                              (Section 9)
-#   HPT_CONCEPT_PAYER_CLASS*.csv                              (Section 15C)
+# Optional, same folder. Each enables the sections listed. Where a file is
+# missing, most sections print a message and skip what needs it; Section 15
+# stops instead (see KNOWN ISSUES).
+#   File                                                      Sections
+#   HPT_R_MAIN_ROBUSTNESS_CBSA_OUTPATIENT_CONCEPT.parquet     15A
+#   HPT_R_MAIN_ROBUSTNESS_CBSA_OUTPATIENT_EXACT_CODE.parquet  15A
+#   HPT_PAYER_DISPERSION*.csv.gz                              9, 20, 33
+#   HPT_CONCEPT_PAYER_CLASS*.csv(.gz)                         15C
+#   HPT_ALT_CONCEPT*.csv.gz                                   28-30, 33
+#   HPT_CODEBOOK.csv                                          33-34
+#   PPRRVU*.xlsx, Addendum BB *.txt, MUP_PHY*Geo.csv          33-34
 #
-# The price data are licensed from Turquoise Health and are not redistributed.
-# The ACS blocks additionally need a Census API key.
+# The price data are licensed from Turquoise Health and are not
+# redistributed. The ACS block (PART 4) needs a Census API key, and the
+# coverage map (PART 5) downloads Census population estimates and shapefiles.
 #
-# ---------------------------------------------------------------------------
 # DESIGN DECISIONS
-# ---------------------------------------------------------------------------
-# Four choices are fixed throughout and are not re-litigated section by
-# section. Each is defended in the paper; the short version is here so the code
-# reads the way the design is specified.
+# -----------------------------------------------------------------------------
+# Four choices hold throughout the code. Each is discussed in the paper.
 #
-# 1. TREATMENT ENTERS LINEARLY. Concave transforms of N_PRIOR_POSTERS inflate
-#    the IV coefficient by shrinking Cov(T, Z) in the Wald denominator,
-#    monotonically in how much they compress the treatment. The reduced-form
-#    numerator does not move. The linear first stage runs F = 43 in both
-#    interacted equations, so there is no weak-instrument problem for a
-#    transform to solve. The transform ladder is robustness, never a headline.
+# 1. The treatment enters linearly. A concave transform of N_PRIOR_POSTERS
+#    compresses the treatment, which shrinks Cov(T, Z) in the IV denominator
+#    and inflates the IV coefficient; the reduced form is unaffected. The
+#    linear first-stage F is 43 in both interacted equations. The transform
+#    ladder (stage 7) is a robustness check only.
 #
-# 2. THE REDUCED FORM IS THE PRIMARY ESTIMATOR. IV is a ratio; the reduced form
-#    is its numerator, and it carries no treatment variable, no functional-form
-#    choice, and no first-stage noise in the standard error. Because every
-#    model here is exactly identified, the Anderson-Rubin weak-instrument-
-#    robust test is numerically identical to the t-test on the reduced-form
-#    coefficient, so the reported RF p-values are already robust p-values.
+# 2. The reduced form is the primary estimator. It is the numerator of the IV
+#    ratio and involves no treatment variable and no first-stage sampling
+#    error. Every model is exactly identified, so the Anderson-Rubin test
+#    coincides with the t-test on the reduced-form coefficient and the
+#    reduced-form p-values are weak-instrument robust.
 #
-# 3. HETEROGENEITY IS ESTIMATED BY INTERACTION, NEVER BY SAMPLE SPLIT. The
-#    fixed effects absorb most of the instrument's effect on the treatment
-#    within any single subsample, so splitting destroys identification.
-#    estimate_interacted() is the single estimator behind every heterogeneity
-#    result in the paper.
+# 3. Heterogeneity is estimated with interactions, not by splitting the
+#    sample. Within a single subsample the fixed effects absorb most of the
+#    instrument's effect on the treatment. estimate_interacted() (Section 4)
+#    produces most heterogeneity estimates; Sections 12 and 12B and a few
+#    later sections fit their own interacted models.
 #
-# 4. NO EVENT STUDY IS POSSIBLE. 3,721 of 3,723 hospitals appear at exactly one
-#    posting month, so there is no within-hospital timing variation to exploit.
-#    The selection concern is addressed structurally instead: the non-shoppable
-#    service group is a within-hospital placebo.
+# 4. There is no event study. 3,721 of 3,723 hospitals appear at exactly one
+#    posting month, so there is no within-hospital timing variation. The
+#    non-shoppable services serve as a within-hospital placebo instead.
 #
-# ---------------------------------------------------------------------------
-# INFERENCE NOTE
-# ---------------------------------------------------------------------------
-# With two-way clustering where the month dimension has only 16 levels, fixest
-# references a t distribution rather than a normal. .pval() in PART 2 recovers
-# the correct degrees of freedom from the fit rather than assuming them. Any
-# hand-computed 2 * pnorm(-abs(b/s)) is wrong here by roughly the difference
-# between p = 0.041 and p = 0.059 at the margin. Two places still used a normal
-# or chi-square reference; both are fixed, and the CHANGELOG records where.
+# INFERENCE
+# -----------------------------------------------------------------------------
+# Standard errors are clustered two ways, by county (ANALYSIS_MARKET) and by
+# month (POST_MONTH). With 16 month clusters, fixest uses a t reference
+# distribution. .pval() (Section 1) computes p-values with the degrees of
+# freedom implied by the fit. wald_equality() (Section 1) uses an F(q, df)
+# reference with df from the fit; .s14_contrast() (Section 12B) uses
+# F(q, 15).
 #
-# ---------------------------------------------------------------------------
+# The cached stage 7 results store p-values computed with a normal reference
+# by an earlier version of the code (see Sections 23 and 25). Three places
+# convert stored values to a t(15) reference with
+# 2 * pt(-qnorm(1 - p / 2), df = 15): the T06G block and the Figure 11 block
+# in PART 5, and Section 25. If the stage 7 caches are rebuilt with the
+# current code, their p-values already use the t reference and these
+# conversions should not be applied. The Figure 11 block converts only when
+# it detects normal-reference values; the other two always convert.
+#
 # CACHING
-# ---------------------------------------------------------------------------
-# Every expensive step is wrapped in cache_or_run(), which writes an .rds to
-# CACHE_DIR and reloads it on later runs. A step producing zero rows never
-# overwrites a good cache. Set USE_CACHE <- FALSE to force recomputation, or
-# call invalidate_cache() (PART 2) to delete selectively; it knows the
-# dependency order and cascades by default, so editing a scheme rule
-# invalidates everything downstream rather than leaving a half-updated cache.
+# -----------------------------------------------------------------------------
+# Most expensive steps are wrapped in cache_or_run() (Section 1), which loads
+# 07_Cache/<key>.rds when it exists and otherwise computes and saves the
+# result. invalidate_cache() (end of PART 2) deletes cache files and, by
+# default, the registered caches computed from them (CACHE_DEPENDENTS), so a
+# changed input does not leave those partly updated. Caches outside
+# CACHE_REGISTRY, such as those of Sections 16-18, are not covered. To reload
+# a completed run in a fresh session, set HPT_WARM_START <- TRUE before
+# sourcing.
 #
-# To resume a completed run in a fresh session: source this file with
-# RUN_STAGES <- integer(0) and every HPT_RUN switch FALSE, then call
-# restore_session().
 #
-# ===========================================================================
-# CHANGELOG -- what the reorganization changed
-# ===========================================================================
-# The estimation code is unchanged. Every function body, specification, and
-# constant is carried over verbatim. Only order, duplicates, paths, and two
-# genuine bugs were touched.
-#
-# STRUCTURAL
-#   * Definitions and run blocks separated. Previously interleaved, so the file
-#     could not be sourced partway to load functions without estimating.
-#   * Cache management moved from line 8031 of the old file up into PART 2,
-#     beside the definitions that use it.
-#   * All run blocks now sit behind RUN_STAGES or HPT_RUN switches. Several
-#     previously ran unconditionally on every source().
-#   * Interactive one-liners moved to PART 7 and commented out.
-#
-# PORTABILITY
-#   * rm(list = ls()) removed from the top. It made the file unsourceable from
-#     any wrapper, which is why a 91-line cold-start block existed to write
-#     temp files and reconstruct its own path after being wiped. That block is
-#     deleted; it is no longer needed.
-#   * Eight hardcoded /Users/danielsierra paths replaced, four of them inside
-#     source() calls that stopped a replicator at the first one.
-#   * TABLE_DIR and FIG_DIR were redefined with absolute paths partway down,
-#     silently overriding PART 1 from that point on, and FIGURE_DIR pointed at
-#     03_Figures in one place and 02_Figures in another. Figures written before
-#     and after that line landed in different directories. Now one definition
-#     each, with FIG_DIR aliased to FIGURE_DIR and TEX_DIR to OUT_TEX.
-#   * Package and input checks moved to PART 1 and run up front, rather than
-#     failing at the point of use hours into a run.
-#
-# DUPLICATE DEFINITIONS REMOVED
-#   * theme_paper() was defined twice with DIFFERENT bodies: base_size = 11
-#     with axis lines and ticks, and base = 10 without them. The second
-#     silently restyled every figure defined before it. Kept the first.
-#   * sv() was defined twice, the first using cairo_pdf and the second not.
-#     Kept the second, since cairo is not installed on the author's machine.
-#   * save_fig() twice identically; S15_RUN, .s15_head, .s15_show, .s15_sweep
-#     three times each; FILES twice; a FIG 10 header twice. One each.
-#
-# BUGS FIXED
-#   * A stray top-level line
-#         d[, P_VALUE := 2 * pt(-qnorm(1 - P_VALUE / 2), df = 15)]
-#     sat between the FIG 1 and FIG 2 blocks, where `d` is still the
-#     T06_main_interacted_RF_and_IV.csv rows table, which carries RF_P and
-#     IV_P but no P_VALUE column. This is the source of the "object 'P_VALUE'
-#     not found" error. Deleted; the correction already exists inside FIG 2,
-#     operating on the tests table where it belongs.
-#   * .s14_contrast() computed P_VALUE = pf(W / df, df1 = df, df2 = .cluster_df(fit), lower.tail = FALSE), an
-#     asymptotic reference inconsistent with the t(15) used everywhere else.
-#     Changed to pf(W/df, df1 = df, df2 = .cluster_df(fit)). For df = 1 this is
-#     algebraically identical to 2*pt(-sqrt(W), df), so every one-degree-of-
-#     freedom value already in the paper is unchanged; only the two-df joint
-#     tercile test moves.
-#
-# STILL OPEN, flagged rather than silently changed
-#   * T13C_instrument_ladder_tests.csv still carries normal-reference
-#     p-values. All eight rows equal 2*(1 - pnorm(sqrt(WALD))) exactly, and the
-#     t(15) correction reproduces Appendix Table 26 to four decimals. Fix with
-#       t13c[, P_VALUE := 2 * pt(-qnorm(1 - P_VALUE / 2), df = 15)]
-#     and re-save before regenerating fig11.
-#   * s24_scheme_crosswalk() counts rows with .N where it should count concepts
-#     with uniqueN(ANALYSIS_CONCEPT_ID). Its all-18-scheme counts sum to 781
-#     rather than 738. The six-scheme crosswalk in the same function is
-#     correct. Marked in place in PART 6.
 ###############################################################################
 
 
 ###############################################################################
-#                                                                             #
-#   PART 1 -- CONFIGURATION                                                   #
-#                                                                             #
-#   Paths, packages, input checks, and every constant the pipeline reads.     #
-#   The only part a replicator edits, and only if HPT_ROOT cannot be set as   #
-#   an environment variable.                                                  #
-#                                                                             #
+#
+#   PART 1: CONFIGURATION
+#
+#   Paths, packages, run switches, the input inventory, and the constants
+#   that define the specification. RUN_STAGES, USE_CACHE, and HPT_RUN (1.3)
+#   are the settings a replicator would normally change.
+#
 ###############################################################################
 
 
 options(stringsAsFactors = FALSE, scipen = 999, width = 160, fixest_notes = FALSE)
 
+# Required packages. MASS supplies ginv() for wald_equality() (Section 1).
 suppressPackageStartupMessages({
   library(arrow); library(data.table); library(fixest); library(dplyr)
   library(ggplot2); library(stringr); library(lubridate)
@@ -222,12 +205,16 @@ suppressPackageStartupMessages({
 if (!requireNamespace("MASS", quietly = TRUE)) stop("Package 'MASS' required.")
 setFixest_estimation(mem.clean = TRUE, data.save = FALSE)
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 1.1  Optional packages
-# ---------------------------------------------------------------------------
-# Checked once here rather than at ten scattered points of use, so a missing
-# package surfaces at minute one rather than eight hours into a run. None of
-# these stops the pipeline; each disables one specific output.
+# -----------------------------------------------------------------------------
+# Missing optional packages are listed at the start of the run, each with the
+# output it serves. Most blocks check for their package and skip that output
+# without it. Three that run by default do not: load_payer_dispersion()
+# (Section 9) stops if R.utils is missing, the ACS block (PART 4) installs
+# tidycensus if it is missing, and Figure 20 calls ggrepel without checking
+# for it. The coverage map (off by default) loads sf and tigris with
+# library() and stops if either is missing.
 
 .HPT_OPTIONAL <- c(
   R.utils          = "gzipped payer-cell files (Section 9 mechanism measures)",
@@ -250,9 +237,11 @@ if (length(.hpt_missing)) {
       paste0('"', .hpt_missing, '"', collapse = ", "), '))\n\n', sep = "")
 }
 
-# ---------------------------------------------------------------------------
-# 1.2  Paths -- everything derives from HPT_ROOT
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 1.2  Paths
+# -----------------------------------------------------------------------------
+# PROJECT_ROOT comes from the HPT_ROOT environment variable. If HPT_ROOT is
+# not set, it falls back to the author's local OneDrive folder.
 PROJECT_ROOT <- Sys.getenv("HPT_ROOT", unset = NA_character_)
 if (is.na(PROJECT_ROOT) || !nzchar(PROJECT_ROOT)) {
   PROJECT_ROOT <- path.expand(file.path(
@@ -278,100 +267,91 @@ QA_DIR       <- file.path(RESULT_ROOT, "05_R_QA")
 CACHE_DIR    <- file.path(RESULT_ROOT, "07_Cache")
 COVERAGE_DIR <- file.path(RESULT_ROOT, "08_Coverage")
 
-# FIGURE_DIR and FIG_DIR were two names for what should have been one place.
-# The old Section 0 set FIGURE_DIR to 03_Figures, and a hardcoded line partway
-# down set FIG_DIR to 02_Figures, so save_fig() wrote figures 1-9 into
-# 03_Figures while sv() wrote figures 10-20 into 02_Figures. Both names now
-# resolve to 02_Figures, which is where the figures the paper actually uses
-# were being written. NOTE: 03_Figures may still hold stale copies of figures
-# 1 through 9 from before this fix; delete it once the run completes.
+# FIG_DIR is an alias for FIGURE_DIR. save_fig() writes to FIGURE_DIR and sv()
+# writes to FIG_DIR, so both write to 02_Figures.
 FIG_DIR <- FIGURE_DIR
 
-# TEX_DIR is deliberately NOT aliased here. Section 24 defines it as
-# file.path(TABLE_DIR, "tex") for its own .tex fragments, which is a different
-# destination from OUT_TEX (the full-table LaTeX in 02_Tables_TEX).
+# TEX_DIR is not defined here. Section 24 sets TEX_DIR <- file.path(TABLE_DIR,
+# "tex") for its LaTeX fragments, a different folder from OUT_TEX.
 
 for (d in c(RESULT_ROOT, TABLE_DIR, FIGURE_DIR, OUT_TEX, MODEL_DIR,
             QA_DIR, CACHE_DIR, COVERAGE_DIR))
   dir.create(d, recursive = TRUE, showWarnings = FALSE)
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 1.3  Run switches
-# ---------------------------------------------------------------------------
-# RUN_STAGES drives the numbered stages inherited from the original file.
-# HPT_RUN drives everything added since. Both are checked before any block
-# executes, so a fresh source() with these defaults reproduces the paper from
-# cache without re-running the eight-hour sweep.
+# -----------------------------------------------------------------------------
+# RUN_STAGES selects the numbered stage blocks in PART 4. Stage 6 is the
+# concept-level sweep; it is left out by default because the BUILD block in
+# PART 3 already loads its cached result. Stages 7-10 also need
+# HPT_RUN$instrument_audit = TRUE, because their blocks sit inside that
+# switch. No block checks for stage 12, so the 12 has no effect.
+#
+# USE_CACHE = FALSE makes cache_or_run() recompute every cached step instead
+# of loading it.
 
-RUN_STAGES <- c(5, 7, 8, 9, 10, 11, 12)   # add 6 to rebuild the concept sweep
+RUN_STAGES <- c(5, 7, 8, 9, 10, 11, 12)   # stage 6 = concept sweep; see 1.3
 USE_CACHE  <- TRUE
 
-# ---------------------------------------------------------------------------
-# WARM START -- the switch for a fresh session on a completed run
-# ---------------------------------------------------------------------------
-# Set this TRUE to load every function and every cached result into memory
-# WITHOUT estimating anything:
+# Warm start ------------------------------------------------------------------
+#
+# To reload a completed run in a fresh session without estimating anything:
 #
 #     HPT_WARM_START <- TRUE
 #     source("HPT_Analysis_Pipeline.R")
 #
-# PARTS 1 and 2 evaluate normally (definitions only, seconds). PART 3 then
-# calls restore_session() instead of building, and every stage in PARTS 4
-# through 6 is switched off, so the file runs end to end in well under a
-# minute and leaves outpatient, schemes_long, concept_results, main,
-# measures, and the rest in the global environment under the names the run
-# blocks use.
-#
-# This replaces the marker-grepping approach in HPT_warm_start.R. That version
-# located the definitions/run boundary by searching for two comment strings,
-# which broke the moment the file was reorganized. A switch cannot break that
-# way.
-#
-# Nothing is written to disk in warm-start mode, and RUN_STAGES is emptied, so
-# accidentally evaluating a stage block afterwards is a no-op rather than an
-# eight-hour surprise.
+# PARTS 1 and 2 run as usual (definitions only). PART 3 then calls
+# restore_session() instead of building the panel, RUN_STAGES is emptied, and
+# every HPT_RUN switch is set to FALSE (below). The cached objects listed in
+# CACHE_REGISTRY (outpatient, schemes_long, concept_results, main, measures,
+# and the rest) are loaded into the global environment under the names the
+# run blocks use. HPT_WARM_START_KEYS limits which caches are read (PART 3).
 HPT_WARM_START <- if (exists("HPT_WARM_START")) isTRUE(HPT_WARM_START) else FALSE
 
 HPT_RUN <- list(
-  instrument_audit = TRUE,   # QA05-QA08, justifies the three-instrument set
-  insystem_robust  = TRUE,   # headline with system affiliation controlled
-  demographics     = TRUE,   # needs a Census API key
+  instrument_audit = TRUE,   # instrument audit (QA05-QA08) and stages 7-10
+  insystem_robust  = TRUE,   # headline spec with system affiliation control
+  demographics     = TRUE,   # ACS demographics and Section 12; Census API key
   ses_terciles     = TRUE,
-  robustness_13    = TRUE,   # system x month, leave-one-out, ladder, RI
-  markets_15       = TRUE,   # CBSA, window ladder, payer-conditional
+  robustness_13    = TRUE,   # Section 13: system x month, leave-one-out, RI
+  markets_15       = TRUE,   # Section 15: CBSA, window ladder, payer class
   family_16        = TRUE,
   conley_17        = TRUE,
   enforcement_18   = TRUE,
   tables           = TRUE,
   figures          = TRUE,
-  coverage_map     = FALSE,  # downloads Census shapefiles, needs sf and tigris
-  diagnostics      = FALSE   # Sections 19-25, referee response only
+  coverage_map     = FALSE,  # downloads Census shapefiles; needs sf, tigris
+  diagnostics      = FALSE   # Sections 19-25; HPT_TIER2 runs Section 20 only
 )
 
-# In warm-start mode every switch is forced off. Set them again by hand after
-# the session is loaded if you want to run one block interactively.
+# Under a warm start every switch is set to FALSE. A single block can then be
+# run by setting its switch to TRUE and evaluating the block.
 if (isTRUE(HPT_WARM_START)) {
   RUN_STAGES <- integer(0)
   HPT_RUN <- lapply(HPT_RUN, function(x) FALSE)
   cat("\nWARM START: RUN_STAGES emptied and every HPT_RUN switch set FALSE.\n")
 }
 
-# Section 20 (A5, A6, A8) has its own switch so it can run on a warm start
-# without waking Sections 19 and 21-25. Several of those fire bare top-level
-# calls, and the block at the end of Section 25 rewrites two saved CSVs in
-# place, so it is not safe to run twice. Set HPT_TIER2 <- TRUE before
-# source()ing to turn Section 20 on.
+# Section 20 (diagnostics A5, A6, A8) runs when either diagnostics or
+# tier2_diag is TRUE. tier2_diag is set from HPT_TIER2 after the warm-start
+# reset, so HPT_TIER2 <- TRUE before sourcing runs Section 20 without
+# Sections 19 and 21-25, also with a warm start. Sections 19 and 21-25 are
+# not safe to run twice: the end of Section 25 rewrites two saved CSVs
+# (T06_mainB and T07B) in place.
 HPT_RUN$tier2_diag <- if (exists("HPT_TIER2")) isTRUE(HPT_TIER2) else FALSE
 
-# PART 5's table block holds build_summary_stats(). Warm start blanks HPT_RUN,
-# so it falls out of scope in exactly the session where it is wanted.
+# HPT_TABLES, if set before sourcing, overrides HPT_RUN$tables, including
+# after a warm start has set it to FALSE. The PART 5 table blocks define
+# build_summary_stats() and the other table helpers.
 if (exists("HPT_TABLES")) HPT_RUN$tables <- isTRUE(HPT_TABLES)
-# ---------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
 # 1.4  Input inventory
-# ---------------------------------------------------------------------------
-# Called at the top of PART 3. Reports every input before anything runs, and
-# separates the four that gate the whole pipeline from the four that gate a
-# single robustness section.
+# -----------------------------------------------------------------------------
+# hpt_check_inputs() is called at the start of the PART 3 build (not under a
+# warm start). It lists the four required inputs and stops if one is
+# missing, and reports which optional inputs of Sections 9, 15A, and 15C are
+# present.
 
 hpt_check_inputs <- function() {
   core <- FILES[c("outpatient_concept", "inpatient_concept",
@@ -401,11 +381,12 @@ cat("\nPART 1 loaded.\n  PROJECT_ROOT: ", PROJECT_ROOT,
     "\n  Results to:   ", RESULT_ROOT, "\n", sep = "")
 
 
-# ============================================================================
-# 1.5  Specification constants, instrument and scheme registries
-# ============================================================================
-
-# Verbatim from Section 0 of the original file, lines 198-442.
+# -----------------------------------------------------------------------------
+# 1.5  Specification constants and registries
+# -----------------------------------------------------------------------------
+# Input file paths (FILES), the baseline specification, the instrument sets
+# and their tiers, the shoppability schemes, the comparability moderators,
+# and the sample screens.
 
 FILES <- list(
   outpatient_concept = file.path(PANEL_DIR,
@@ -418,30 +399,29 @@ FILES <- list(
                                  "HPT_CODEBOOK_FOR_SHOPPABILITY_SCHEMES.csv")
 )
 
-# Payer dispersion export from Snowflake (HPT_P2_PAYER_CELLS). Sharded into
-# multiple gzip parts on download (named like
-# HPT_PAYER_DISPERSION.csv.gz_0_0_0.csv.gz through ..._0_7_0.csv.gz) --
-# Snowflake splits above its internal size threshold regardless of
-# MAX_FILE_SIZE, so this is a DIRECTORY + PATTERN, not a single file path.
-# load_payer_dispersion() in Section 9 reads and combines every matching part.
+# The payer-cell export (Snowflake table HPT_P2_PAYER_CELLS) arrives as several
+# gzip shards, HPT_PAYER_DISPERSION.csv.gz_0_0_0.csv.gz through ..._0_7_0
+# .csv.gz, because Snowflake splits large unloads. It is located by folder and
+# file pattern; load_payer_dispersion() (Section 9) reads and stacks every
+# shard.
 PAYER_DISPERSION_DIR     <- PANEL_DIR
 PAYER_DISPERSION_PATTERN <- "^HPT_PAYER_DISPERSION.*\\.csv\\.gz$"
 
-# ---------------------------------------------------------------------------
-# Baseline specification
-# ---------------------------------------------------------------------------
+# Baseline specification ------------------------------------------------------
 ENDOGENOUS_VARIABLE    <- "N_PRIOR_POSTERS"
 BASELINE_CONTROLS      <- c("LOG_TOTAL_BEDS")
 BASELINE_FIXED_EFFECTS <- c("MARKET_ID", "POST_MONTH")
 BASELINE_CLUSTERS      <- c("ANALYSIS_MARKET", "POST_MONTH")
 PRIMARY_OUTCOME        <- "LN_MEDIAN_PRICE"
 
-# MIN_PRICE / MAX_PRICE are absent from the rebuilt Phase 1 SQL and cannot be
-# reconstructed from concept aggregates. IQR is P75 - P25 by definition.
+# Outcomes are logs of concept-level price statistics; the IQR outcome is
+# log1p(P75 - P25) (prepare_panel(), Section 2). Minimum and maximum prices
+# are not available in the concept panel.
 OUTCOMES <- c(Median = "LN_MEDIAN_PRICE", Mean = "LN_MEAN_PRICE",
               P25 = "LN_P25_PRICE", P75 = "LN_P75_PRICE", IQR = "LN_IQR_PRICE")
 
-# Robustness ladder only. Never a headline. See standing decision 1.
+# Treatment transforms for the transform ladder in stage 7, a robustness check
+# only (design decision 1 in the file header).
 TRANSFORM_LADDER <- list(
   Linear     = list(fun = function(x) x),
   Winsor_P99 = list(quantile = 0.99),
@@ -451,14 +431,13 @@ TRANSFORM_LADDER <- list(
   Log1p      = list(fun = function(x) log1p(pmax(x, 0)))
 )
 
-# ---------------------------------------------------------------------------
-# Instruments
-# ---------------------------------------------------------------------------
+# Instruments -----------------------------------------------------------------
 #
-# Only Z_SYS_COMPETITOR_* are hospital-specific and exclude the focal
-# hospital's own system. The other Z_SYS_* measures are county-month "local
-# system exposure" and do NOT exclude own-system rollout, which is why the
-# competitor family carries the exclusion-restriction defence.
+# Only the Z_SYS_COMPETITOR_* instruments are hospital-specific and exclude
+# the focal hospital's own system. The other Z_SYS_* measures are county-month
+# exposure to system rollout and include rollout by the focal hospital's own
+# system. The exclusion-restriction argument therefore rests on the competitor
+# family.
 
 PRIMARY_INSTRUMENT <- "Z_SYS_COMPETITOR_ONLY_9M_EXCL_CURRENT"
 
@@ -468,9 +447,9 @@ MAIN_INSTRUMENTS <- c(
   Competitor_outside_CBSA_hospitals_9m = "Z_SYS_COMPETITOR_OUTSIDE_CBSA_9M_EXCL_CURRENT"
 )
 
-# Competitor_systems_9m is not a headline candidate: only 54% of scheme
-# variants come back negative and the sign flips under the tier-collapse rule.
-# It is retained in the concept-level sweep for comparison only.
+# Competitor_systems_9m is not a headline instrument: its shoppable estimate is
+# negative in only 54% of scheme variants, and its sign changes under the
+# tier-collapse rule. It is kept in the concept-level sweep for comparison.
 SUPPORTING_INSTRUMENTS <- c(
   Competitor_outside_CBSA_systems_9m  = "Z_SYS_COMPETITOR_SYSTEMS_OUTSIDE_CBSA_9M_EXCL_CURRENT",
   Competitor_outside_CBSA_counties_9m = "Z_SYS_COMPETITOR_COUNTIES_OUTSIDE_CBSA_9M_EXCL_CURRENT",
@@ -499,11 +478,11 @@ SUPPORTING_WINDOW_INSTRUMENTS <- setNames(
                   function(a, b) paste0(a, "_", b, "_strict")))
 )
 
-# CMS enforcement measures are exploratory and never headline. Enforcement
-# plausibly moves prices directly, through compliance cost and correlated
-# conduct, so it fails the exclusion restriction on its face. No amount of
-# re-screening or reparameterisation changes that, since functional form does
-# not touch an exclusion restriction.
+# CMS enforcement measures are exploratory and are never used for headline
+# estimates. Enforcement can move prices directly (through compliance costs
+# and related conduct), which would violate the exclusion restriction however
+# the measure is constructed. They enter the first-stage screen (T02) and are
+# used as controls in Section 18.
 ENFORCEMENT_ROBUSTNESS_INSTRUMENTS <- c(
   Any_enforcement_3m_lag1 = "COUNTY_ENF_ANY_ENFORCEMENT_ROLL_3M_LAG_1M",
   Warning_3m_lag1         = "COUNTY_ENF_WARNING_ROLL_3M_LAG_1M",
@@ -520,30 +499,26 @@ ALL_CANDIDATE_INSTRUMENTS <- c(
   ENFORCEMENT_ROBUSTNESS_INSTRUMENTS
 )
 
-# Instrument labels are free text and have been written both with spaces and
-# with underscores across the pipeline's history. The INSTRUMENT column (the
-# actual panel variable name) is authoritative. This map normalises labels back
-# from it, and must be applied before any grouping or joining done by label.
+# Instrument labels appear with both spaces and underscores in older output.
+# The INSTRUMENT column (the panel variable name) is authoritative, and this
+# map recovers the canonical label from it. prepare_meta_input() (Section 8)
+# and cb_view() (Section 26) apply it before grouping or joining by label.
 INSTRUMENT_LABEL_MAP <- setNames(names(CANONICAL_SYSTEM_INSTRUMENTS),
                                  unname(CANONICAL_SYSTEM_INSTRUMENTS))
 
-# ---------------------------------------------------------------------------
-# Three-tier instrument structure
-# ---------------------------------------------------------------------------
+# Three-tier instrument structure ---------------------------------------------
 #
-# The six system instruments are graded on how credible their exclusion
-# restriction is and how stable their sign is across classification schemes.
-# The grading is set by construction and by the audit in QA05-QA08, and it
-# governs how results are reported, not which results are kept:
+# The six system instruments are grouped by the credibility of their exclusion
+# restriction and the stability of their sign across classification schemes
+# (the audit in QA05-QA08). The grouping determines how results are reported:
 #
-#   MAIN        carries every headline claim
-#   CONFIRMING  reported alongside MAIN as pooled robustness
-#   DISCREPANT  reported on its own, never pooled into a headline number
+#   MAIN        headline estimates
+#   CONFIRMING  reported with MAIN as pooled robustness
+#   DISCREPANT  reported separately, never pooled with the others
 #
-# The tiering is deliberately not a function of first-stage F. Section 7.6
-# shows the two strongest first stages produce the two weakest results, which
-# is the reason instrument selection here is a design decision rather than an
-# outcome-based one.
+# The grouping does not depend on first-stage strength. Stage 7.6 reports
+# first-stage F next to the heterogeneity results: the two strongest first
+# stages give the two weakest results.
 
 CONFIRMING_INSTRUMENTS <- c(
   Competitor_outside_CBSA_counties_9m = "Z_SYS_COMPETITOR_COUNTIES_OUTSIDE_CBSA_9M_EXCL_CURRENT",
@@ -568,19 +543,16 @@ instrument_tier <- function(label) {
         default = "UNKNOWN")
 }
 
-# ---------------------------------------------------------------------------
-# Shoppability
-# ---------------------------------------------------------------------------
+# Shoppability ----------------------------------------------------------------
 DIAGNOSTIC_FAMILIES <- c(
   "MRI_MRA", "CT_CTA", "XRAY_FLUOROSCOPY", "DIAGNOSTIC_ULTRASOUND",
   "VASCULAR_ULTRASOUND", "ECHOCARDIOGRAPHY", "MAMMOGRAPHY", "BONE_DENSITY",
   "LABORATORY_PATHOLOGY", "EVALUATION_MANAGEMENT"
 )
 
-# Match the literal family identifiers. These are EMERGENCY_DEPARTMENT and
-# CRITICAL_CARE, not "EMERGENCY" -- a prefix match on the shorter string finds
-# nothing and silently leaves emergency concepts classified as INTERMEDIATE in
-# every scheme. build_schemes() asserts against exactly that failure.
+# Family identifiers are matched exactly. A shorter string such as "EMERGENCY"
+# would match nothing and leave emergency concepts INTERMEDIATE in every
+# scheme; build_schemes() checks that they are LOW.
 ALWAYS_NONSHOPPABLE_FAMILIES <- c("EMERGENCY_DEPARTMENT", "CRITICAL_CARE")
 
 PRIMARY_SCHEMES <- list(
@@ -600,43 +572,45 @@ PRIMARY_SCHEMES <- list(
 SCHEME_COLUMNS <- setNames(vapply(PRIMARY_SCHEMES, `[[`, character(1), "col"),
                            vapply(PRIMARY_SCHEMES, `[[`, character(1), "label"))
 
-# Concepts that are not independently schedulable services: intraoperative
-# imaging, imaging guidance, add-on codes, anaesthesia, psychotherapy. Scheme 1
-# classifies by whole family, so the keyword exclusions used by the other
-# schemes never reach it. This pattern drives the Scheme 1 sensitivity variant
-# and the QA04 flag instead. It touches 17 of 448 shoppable concepts.
+# Concept IDs matching this pattern are not independently schedulable
+# services: intraoperative imaging, imaging guidance, add-on codes,
+# anesthesia, psychotherapy. Scheme 1 classifies whole families, so the
+# keyword exclusions used by the other schemes do not reach it. The pattern
+# drives the Scheme 1 sensitivity variant (stage 7.1) and the QA04 flag, and
+# matches 17 of the 448 concepts in the Scheme 1 shoppable group.
 PROCEDURAL_CONCEPT_PATTERN <- paste(
   "INTRAOP", "INTRA_OP", "GUID", "GUIDANCE", "W_ULTRASOUND",
   "INTRAVAS", "_ADDL", "EA_ADDL", "PSYTX", "ANESTH",
   sep = "|"
 )
-EXCLUDE_PROCEDURAL_FROM_SCHEME1 <- TRUE   # run the sensitivity alongside headline
+EXCLUDE_PROCEDURAL_FROM_SCHEME1 <- TRUE   # also run the Scheme 1 sensitivity (7.1)
 
-# ---------------------------------------------------------------------------
-# Comparability
-# ---------------------------------------------------------------------------
+# Comparability ---------------------------------------------------------------
 COMPARABILITY_MODERATORS <- c("PD_PAYER_V2", "PD_HOSP", "N_CODES",
                               "N_PAYERS_V2", "PD_PAYER", "PD_CODE",
                               "N_PAYERS", "CODE_COV")
-# Every candidate is listed, including ones already known to be degenerate in
-# this panel (PD_PAYER, PD_CODE, N_PAYERS, CODE_COV -- see QA09), alongside the
-# two measures built from the payer-cell export (PD_PAYER_V2, N_PAYERS_V2).
-# screen_moderators() drops whichever fail its coverage, variance, zero-share,
-# and collinearity gates, and reports the reason for each drop rather than
-# dropping silently.
+# All candidate measures are listed, including four that are degenerate in
+# this panel (PD_PAYER, PD_CODE, N_PAYERS, CODE_COV; see QA09) and the two
+# built from the payer-cell export (PD_PAYER_V2, N_PAYERS_V2).
+# screen_moderators() (Section 9) drops any that fail its coverage, variance,
+# zero-share, or collinearity checks and reports the reason.
 
 DISPERSION_MEASURES <- c("PD_PAYER_V2", "PD_HOSP", "N_CODES", "PD_PAYER", "PD_CODE")
-# Sign convention. Dispersion measures run one way -- higher dispersion means
-# a less comparable posted price, so the predicted interaction is POSITIVE.
-# Payer counts run the other way: more payers means thicker contracting, more
-# comparable, so the predicted interaction is NEGATIVE. SIGN_AS_PREDICTED
-# applies the flip wherever these moderators are reported.
+# Sign convention. For the dispersion measures above, higher dispersion means
+# a less comparable posted price, so the predicted interaction is positive.
+# For payer counts, more payers means thicker contracting and a more
+# comparable price, so the predicted interaction is negative.
+# SIGN_AS_PREDICTED applies this convention wherever these moderators are
+# reported.
 
+# Minimum number of observations outside the focal county for a
+# leave-one-county-out measure to be computed (loo_mean() and loo_sd(),
+# Section 9).
 MIN_OUTSIDE_HOSPITALS <- 20L
 
-# ---------------------------------------------------------------------------
-# Screens
-# ---------------------------------------------------------------------------
+# Screens ---------------------------------------------------------------------
+# Sample screens for the concept-level sweep (MIN_SERVICE_*), the interacted
+# models (MIN_MODEL_OBS), and the meta-regressions (MIN_CONCEPTS_META).
 MIN_SERVICE_OBS     <- 100L
 MIN_SERVICE_MARKETS <- 8L
 MIN_SERVICE_MONTHS  <- 3L
@@ -652,26 +626,24 @@ cat("\nSection 0 loaded | treatment:", ENDOGENOUS_VARIABLE,
 
 
 
-
 ###############################################################################
-#                                                                             #
-#   PART 2 -- DEFINITIONS                                                     #
-#                                                                             #
-#   Functions only. Nothing here touches data, so the file can be sourced to  #
-#   the end of PART 2 in seconds to load every function without estimating.   #
-#                                                                             #
-###############################################################################
-
-
-# ============================================================================
-# Section 1: Helper functions
-# ============================================================================
-
-######## Section 1: Helper functions ##########################################
 #
-# Small utilities used everywhere below: safe coercion, coefficient extraction
-# that survives fixest's naming conventions, first-stage diagnostics, formula
-# builders, CSV writers, and the caching wrapper.
+#   PART 2: DEFINITIONS
+#
+#   Functions and constants only. Nothing in PART 2 reads data or estimates
+#   a model, so sourcing the file through the end of PART 2 defines every
+#   PART 2 function in a few seconds.
+#
+###############################################################################
+
+
+# =============================================================================
+# Section 1: Helper functions
+# =============================================================================
+#
+# Utilities used throughout: safe coercion, coefficient extraction that
+# handles fixest's coefficient naming, first-stage diagnostics, p-values,
+# formula builders, CSV writers, and the cache wrapper.
 
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0L || all(is.na(x)) ||
@@ -697,11 +669,10 @@ report_memory <- function(label = "") {
               length(ls(envir = .GlobalEnv)), sum(gc()[, 2])))
 }
 
-# Read a single metadata value out of a one-row slice. Indexing a column that
-# does not exist returns a zero-length vector, and a data.table built from one
-# of those comes back with zero rows but the full column structure intact --
-# which looks like a valid empty result rather than an error. These two
-# accessors return NA instead.
+# Read one value from a one-row data.table. Indexing a missing column returns a
+# zero-length vector, and a data.table built from it has zero rows but every
+# column, which looks like a valid empty result. These accessors return NA
+# instead.
 meta_chr <- function(dt, col) if (col %in% names(dt)) as.character(dt[[col]][1L]) else NA_character_
 meta_num <- function(dt, col) if (col %in% names(dt)) as.numeric(dt[[col]][1L])   else NA_real_
 
@@ -710,9 +681,9 @@ drop_singleton_markets <- function(dt, market_col = "ANALYSIS_MARKET") {
   dt[get(market_col) %chin% sizes[N > 1L][[market_col]]]
 }
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Coefficient extraction
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 NULL_COEF <- list(term = NA_character_, estimate = NA_real_, std_error = NA_real_,
                   statistic = NA_real_, p_value = NA_real_)
 
@@ -743,19 +714,16 @@ extract_coefficient <- function(fit, candidates) {
        p_value   = if (!is.na(pc)) as.numeric(row[[pc]]) else NA_real_)
 }
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # First-stage statistics
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 #
-# With k endogenous regressors, fixest returns one Wald statistic PER EQUATION,
-# each carrying stat / p / df1 / df2 / vcov. Flattening that structure and
-# taking the first element silently reports equation 1 only, which is not the
-# identification statistic for the model. The interacted specifications here
-# have two to six endogenous terms, so this extracts every equation by name and
-# reports them individually alongside the MINIMUM.
-#
-# The minimum is the number to quote. A design is only as identified as its
-# weakest first stage.
+# With k endogenous regressors, fitstat(fit, "ivwald") returns one Wald
+# statistic per first-stage equation, and first_stage_wald() returns all of
+# them by equation name. Taking only the first element would report equation
+# 1, which is not the identification statistic for the model. The interacted
+# models have two to six endogenous terms; the minimum across equations
+# (FIRST_STAGE_WALD_MIN in the output tables) is the relevant statistic.
 
 first_stage_wald <- function(fit) {
   if (is.null(fit)) return(data.table())
@@ -768,9 +736,9 @@ first_stage_wald <- function(fit) {
              WALD = safe_numeric(flat[sn]))
 }
 
-# Cragg-Donald assumes homoskedasticity so it is not valid alongside two-way
-# clustering; Kleibergen-Paap rk fails numerically on these models. Recorded
-# for completeness, never quoted as the identification statistic.
+# The Cragg-Donald statistic assumes homoskedasticity and is not valid with
+# two-way clustering, and the Kleibergen-Paap rk statistic fails numerically on
+# these models. cragg_donald() is recorded for completeness only.
 cragg_donald <- function(fit) {
   v <- tryCatch(safe_numeric(unlist(fitstat(fit, "cd"))[1L]), error = function(e) NA_real_)
   if (length(v) == 0L) NA_real_ else v
@@ -783,12 +751,11 @@ extract_wu_hausman_p <- function(fit) {
   if (length(i) > 0L) safe_numeric(r[i[1L]]) else NA_real_
 }
 
-# Wald test that a set of coefficients are all equal to the first.
-#
-# A clustered variance matrix can be singular when a category has few clusters.
-# solve() would either error or return noise, so this falls back to the
-# generalised inverse and records the rank. VCOV_FULL_RANK makes a degenerate
-# test visible in the output rather than letting it pass as a real p-value.
+# Wald test that every coefficient in `terms` equals the first. A clustered
+# variance matrix can be singular when a category has few clusters, so the
+# inverse falls back to MASS::ginv() and the rank is recorded: VCOV_FULL_RANK
+# = 0 marks a rank-deficient test. The p-value uses an F(rank, df) reference
+# with df from .cluster_df().
 wald_equality <- function(fit, terms) {
   if (is.null(fit)) return(data.table())
   terms <- terms[!is.na(terms) & terms %in% names(coef(fit))]
@@ -818,26 +785,22 @@ tidy_fixest <- function(fit, conf = 0.95) {
              conf.low = as.numeric(b[tm] - z * s[tm]), conf.high = as.numeric(b[tm] + z * s[tm]))
 }
 
-# ---------------------------------------------------------------------------
-# .pval() -- p-value from a t statistic, using the SAME reference distribution
-# fixest itself uses for the given fit.
+# -----------------------------------------------------------------------------
+# P-values with the fit's own reference distribution
+# -----------------------------------------------------------------------------
 #
-# The pipeline previously computed p-values by hand as 2 * pnorm(-abs(b/s)).
-# That is the normal approximation. With two-way clustering where one
-# dimension has only 16 levels (POST_MONTH), fixest references a
-# t-distribution instead, which has visibly fatter tails at these sample
-# sizes: a coefficient reported at p = 0.041 under pnorm is p = 0.059 under
-# the correct reference.
+# With two-way clustering and 16 levels of POST_MONTH, fixest computes
+# p-values from a t distribution, not the normal. A normal reference
+# understates p-values at these degrees of freedom; a coefficient with
+# p = 0.041 under the normal has p = 0.059 under the t reference.
 #
-# Rather than hard-code a df, .cluster_df() recovers it from the fit: it
-# takes a term whose p-value fixest already computed correctly, and solves
-# for the df that reproduces it. That works regardless of how fixest derives
-# df internally, and adapts automatically to subsamples with different
-# cluster counts (CBSA, payer-class, etc.).
-#
-# Falls back to the old pnorm() behaviour if the fit is unusable, so a
-# patched line can never error where the original succeeded.
-# ---------------------------------------------------------------------------
+# .cluster_df() recovers the degrees of freedom from the fit: it takes a
+# coefficient whose p-value fixest has already computed and solves for the df
+# that reproduces it. This follows fixest's own df rule and adjusts
+# automatically in subsamples with different cluster counts (CBSA markets,
+# payer classes). .pval() converts a t statistic to a two-sided p-value with
+# that df, and falls back to the normal only when the fit is NULL or unusable.
+# -----------------------------------------------------------------------------
 .cluster_df <- function(fit) {
   if (is.null(fit)) return(Inf)
   out <- tryCatch({
@@ -861,9 +824,9 @@ tidy_fixest <- function(fit, conf = 0.95) {
   2 * pt(-abs(tstat), df = df)
 }
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Formulas, output, caching
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 build_cluster_formula <- function(cl) as.formula(paste0("~", paste(cl, collapse = " + ")))
 
 build_ols_formula <- function(outcome, rhs, fe) {
@@ -887,10 +850,12 @@ save_csv <- function(data, filename, dir = TABLE_DIR) {
 }
 save_qa_csv <- function(data, filename) save_csv(data, filename, dir = QA_DIR)
 
-# Single caching gate for every expensive step. If the .rds exists and caching
-# is on, load it; otherwise compute and write. A run that produces zero rows
-# never overwrites a good cache -- it stops instead, so a silent upstream
-# failure cannot destroy hours of completed estimation.
+# cache_or_run() wraps most expensive steps. If CACHE_DIR/<key>.rds exists and
+# overwrite is FALSE (the default when USE_CACHE is TRUE), it loads that file.
+# Otherwise it evaluates `expr`, saves the result, and returns it. Because R
+# evaluates arguments lazily, `expr` does not run on a cache hit. An empty
+# data frame is never cached; the function stops instead, so an upstream
+# failure cannot overwrite a completed result.
 cache_or_run <- function(key, expr, overwrite = !USE_CACHE) {
   path <- file.path(CACHE_DIR, paste0(key, ".rds"))
   if (file.exists(path) && !overwrite) { cat("Cache hit:", key, "\n"); return(readRDS(path)) }
@@ -905,22 +870,17 @@ cache_or_run <- function(key, expr, overwrite = !USE_CACHE) {
 cat("Section 1 loaded\n")
 
 
-
-
-# ============================================================================
+# =============================================================================
 # Section 2: Panel loading and preparation
-# ============================================================================
-
-######## Section 2: Panel loading and preparation #############################
+# =============================================================================
 #
-# Every function here returns data rather than mutating a global object. That
-# keeps the panel's provenance traceable: `outpatient` is assigned exactly once,
-# in the BUILD block, from a visible chain of calls. It also means no downstream
-# section needs its own guard against columns left over from a previous run.
+# These functions return new objects rather than modifying globals. The panel
+# `outpatient` is built from them in the BUILD block of PART 3.
 #
-# read_panel() selects columns via intersect(), so a variable absent from the
-# parquet is dropped silently rather than erroring. Any new instrument column
-# must therefore be added to ANALYSIS_COLUMNS or it will not survive loading.
+# read_panel() keeps only the columns of ANALYSIS_COLUMNS that exist in the
+# parquet file (via intersect()), so a column missing from the file is dropped
+# without an error. A new instrument column must be added to ANALYSIS_COLUMNS
+# before it can be loaded.
 
 ANALYSIS_COLUMNS <- unique(c(
   "HOSPITAL_ID", "PROVIDER_STATE", "COUNTY_STATE_KEY", "CBSA_CODE",
@@ -1019,12 +979,12 @@ load_outpatient <- function() {
   prepare_panel(raw, "outpatient concept panel", choose_sample_flag(raw))
 }
 
-# Documents the gap between panel rows and estimated rows. feols drops roughly
-# 31% of complete cases, which is cascading singleton removal across the
-# MARKET_ID and POST_MONTH fixed effects: the panel carries about 672,000 fixed
-# effect cells for 1.4M rows, and 30% of rows sit in cells of size one. This is
-# expected, is identical across specifications, and is reported in the paper's
-# sample appendix rather than left implicit.
+# audit_estimation_sample() documents the gap between panel rows and the rows
+# feols uses (QA01). feols drops about 31% of complete cases by iteratively
+# removing singleton fixed-effect cells: the panel has about 672,000 MARKET_ID
+# cells for 1.4M rows, and 30% of rows sit in cells of size one. The drop is
+# the same across specifications and is reported in the paper's sample
+# appendix.
 audit_estimation_sample <- function(panel, instrument = PRIMARY_INSTRUMENT,
                                     outcome = PRIMARY_OUTCOME) {
   req <- available_columns(panel, unique(c(outcome, ENDOGENOUS_VARIABLE, instrument,
@@ -1049,36 +1009,31 @@ audit_estimation_sample <- function(panel, instrument = PRIMARY_INSTRUMENT,
 cat("Section 2 loaded\n")
 
 
-
-
-# ============================================================================
+# =============================================================================
 # Section 3: Shoppability scheme construction
-# ============================================================================
-
-######## Section 3: Shoppability scheme construction ##########################
+# =============================================================================
 #
 # Builds the eighteen shoppability classification schemes from the codebook.
-# A scheme is a partition of the concept universe into HIGH / INTERMEDIATE /
-# LOW, assembled from named terms; a term is a family plus an optional keyword
-# regex on the official code description plus an optional exclusion regex.
+# A scheme partitions the concept universe into HIGH, INTERMEDIATE, and LOW
+# using named terms (TERM_RULES). A term is a clinical family plus an optional
+# keyword regex on the official code description and an optional exclusion
+# regex.
 #
-# Three rules govern the construction:
+# Construction rules:
 #
-#   1. Emergency and critical care concepts, and everything billed as MS-DRG,
-#      are forced LOW in every scheme. These are the services no patient or
-#      payer can shop for, so no classification is allowed to disagree.
-#      build_schemes() asserts this rather than assuming it.
+#   1. Emergency department and critical care concepts, and all MS-DRG
+#      concepts, are LOW in every scheme. build_schemes() checks this for
+#      the emergency department and MS-DRG concepts.
 #
-#   2. Residual "_Other" terms mean whatever is left in a family after the
-#      named sub-terms have been claimed WITHIN THE SAME SCHEME. "CT Other" is
-#      therefore scheme-dependent by design.
+#   2. A residual term ending in " Other" (for example "CT Other") covers what
+#      remains of its family after the named terms of the same scheme are
+#      assigned, so the same residual term can differ across schemes.
 #
-#   3. Inclusion keywords are substring matches against abbreviated CPT text,
-#      which over-matches. "CHEST" appears inside "Ct chest spine w/o dye", a
-#      thoracic spine study, and "ULTRASOUND" appears inside "Colonoscopy
-#      w/ultrasound", a procedure adjunct. Both would otherwise enter the
-#      shoppable group. resolve_term() therefore honours an `exclude` regex,
-#      and the guard at the end of build_schemes() tests for the specific case.
+#   3. Keywords are substring matches on abbreviated CPT descriptions, which
+#      over-match: "CHEST" occurs in "Ct chest spine w/o dye" (a thoracic
+#      spine study) and "ULTRASOUND" in "Colonoscopy w/ultrasound" (a
+#      procedure adjunct). Exclusion regexes (CT_LUNG_EXCLUDE, US_EXCLUDE)
+#      remove such matches, and build_schemes() checks the CT case.
 
 resolve_term <- function(term, universe) {
   rule <- TERM_RULES[[term]]
@@ -1123,8 +1078,8 @@ TERM_RULES <- list(
   `X-Ray Spine`      = list(family = "XRAY_FLUOROSCOPY", keyword = "SPINE|SPINAL|VERTEBR|LUMBAR|CERVICAL|SACRUM|COCCYX"),
   `X-Ray Other`      = list(family = "XRAY_FLUOROSCOPY", keyword = "."),
   
-  # Excludes thoracic spine studies and CT angiography, which the CHEST
-  # keyword would otherwise pull into the shoppable group.
+  # The exclusion drops CT spine, angiography, and procedural studies (biopsy,
+  # guidance, drainage), which the CHEST keyword would otherwise match.
   `CT Lung`       = list(family = "CT_CTA", keyword = "CHEST|LUNG|THORAX",
                          exclude = CT_LUNG_EXCLUDE),
   `CT Brain/Head` = list(family = "CT_CTA", keyword = "BRAIN|HEAD|SKULL|FACIAL|SINUS|ORBIT"),
@@ -1273,8 +1228,8 @@ build_schemes <- function() {
                    by = .(SCHEME_NAME, SHOPPABILITY_CATEGORY)][order(SCHEME_NAME)],
               "QA02_scheme_classification_crosswalk.csv")
   
-  # Guards. Emergency and MS-DRG concepts must be LOW in every scheme; a
-  # failure here means a family identifier changed upstream.
+  # Checks: emergency department and MS-DRG concepts must be LOW in every
+  # scheme. A failure means a family identifier changed upstream.
   ed <- long[ANALYSIS_FAMILY_ID == "EMERGENCY_DEPARTMENT",
              .(N = .N, L = sum(SHOPPABILITY_CATEGORY == "LOW")), by = SCHEME_ID]
   if (nrow(ed) > 0L && !all(ed$N == ed$L)) stop("ED concepts not LOW in every scheme.", call. = FALSE)
@@ -1282,8 +1237,8 @@ build_schemes <- function() {
              .(N = .N, L = sum(SHOPPABILITY_CATEGORY == "LOW")), by = SCHEME_ID]
   if (nrow(dg) > 0L && !all(dg$N == dg$L)) stop("MS-DRG concepts not LOW in every scheme.", call. = FALSE)
   
-  # Guard on the keyword exclusions, stated as a test: no CT spine or
-  # angiography concept may sit in the HIGH group of the primary scheme.
+  # Check on the keyword exclusions: no CT spine or angiography concept may be
+  # HIGH under scheme_theory_v2. A violation produces a warning.
   bad_ct <- long[SCHEME_ID == "scheme_theory_v2" & SHOPPABILITY_CATEGORY == "HIGH" &
                    grepl("SPINE|ANGIO", OFFICIAL_DESCRIPTION, ignore.case = TRUE)]
   if (nrow(bad_ct) > 0L) {
@@ -1325,10 +1280,11 @@ attach_scheme_columns <- function(panel, schemes_long, scheme_spec = PRIMARY_SCH
   setDT(d); d
 }
 
-# Scheme 1 is built from whole families rather than from the scheme table, so
-# the QA02 crosswalk cannot verify it. This writes its concept-level assignment
-# out separately and flags any procedure-adjunct concept sitting inside the
-# shoppable group, which is the input to the Scheme 1 sensitivity variant.
+# Scheme 1 is defined on whole families (DIAGNOSTIC_FAMILIES) rather than from
+# the scheme table, so the QA02 crosswalk does not cover it. This function
+# writes its concept-level assignment (QA03) and lists procedure-adjunct
+# concepts inside its shoppable group (QA04), the input to the Scheme 1
+# sensitivity variant.
 export_scheme1_assignments <- function(panel) {
   if (!("SCHEME_1_CERTAINTY" %in% names(panel))) {
     warning("SCHEME_1_CERTAINTY absent; nothing to export.", call. = FALSE)
@@ -1363,17 +1319,15 @@ apply_scheme1_procedural_exclusion <- function(panel) {
   d
 }
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Concept merges
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 #
-# Six groups of concepts describe the same clinical service split on an
-# administrative dimension -- contrast versus no contrast, who billed it, which
-# treatment day. Estimating them separately fragments the sample without adding
-# information, so they are collapsed to a canonical concept before estimation.
-#
-# The merge runs BEFORE scheme attachment, so merged concepts pick up their
-# scheme columns through the same code path as everything else.
+# Six groups of concepts are one clinical service split on an administrative
+# dimension (with or without contrast, billing professional, treatment day).
+# Each group is collapsed to one canonical concept before estimation. The merge
+# runs before scheme attachment, so merged concepts receive scheme columns the
+# same way as every other concept.
 
 MERGE_GROUPS <- list(
   list(canonical_id = "MRI_MRA_MRI_ABDOMEN", canonical_family = "MRI_MRA",
@@ -1396,29 +1350,25 @@ MERGE_GROUPS <- list(
 )
 
 
-# ---------------------------------------------------------------------------
-# Scheme inheritance for constructed canonical IDs
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Scheme assignment for constructed canonical concepts
+# -----------------------------------------------------------------------------
 #
-# Four of the six merge groups use a canonical_id that is also one of their own
-# constituents, so they already exist in the codebook and need nothing:
+# Four merge groups use one of their own constituents as the canonical ID, so
+# that ID already has scheme rows:
 #   CT_CTA_CT_ABDOMEN, CT_CTA_CT_ABD_PELVIS, MRI_MRA_MRI_ABDOMEN,
 #   MAMMOGRAPHY_SCR_MAMMO_BI_INCL_CAD
 #
-# Two are constructed names that never existed as concepts in the codebook:
-#   MRI_MRA_FMRI_BRAIN    <- fMRI billed BY_PHYS_PSYCH + BY_TECH
-#   MRI_MRA_ARHFCMRIGTBS  <- four ARHFCMRIGTBS treatment-day codes
+# Two canonical IDs are new names with no codebook entry:
+#   MRI_MRA_FMRI_BRAIN    fMRI billed BY_PHYS_PSYCH and BY_TECH
+#   MRI_MRA_ARHFCMRIGTBS  four ARHFCMRIGTBS treatment-day codes
 #
-# Without an inherited classification these two have no row in schemes_long,
-# attach_scheme_columns() leaves them NA under schemes 2-6, and they drop out of
-# every scheme-based model without a warning. run_preflight() tests for exactly
-# this.
-#
-# Inheriting from a designated donor constituent is defensible here because the
-# constituents of each group are the same clinical service split on an
-# administrative dimension, and every scheme classifies on service content. The
-# constituents therefore agree by construction. That agreement is verified
-# rather than assumed, and a warning fires where it does not hold.
+# Without scheme rows, attach_scheme_columns() would leave these two NA under
+# schemes 2-6 and they would drop out of every scheme-based model;
+# run_preflight() checks for this. extend_schemes_for_merged() copies the
+# classification of a designated donor constituent (CANONICAL_SCHEME_DONOR).
+# The constituents of a group are the same service and should share a
+# classification; the function verifies this and warns where they do not.
 
 CANONICAL_SCHEME_DONOR <- c(
   MRI_MRA_FMRI_BRAIN   = "MRI_MRA_FMRI_BRAIN_BY_PHYS_PSYCH",
@@ -1484,8 +1434,10 @@ apply_concept_merges <- function(panel, merge_groups = MERGE_GROUPS) {
   cat("\nExact-code rows found per canonical concept:\n")
   print(exact[, .N, by = CANON_ID])
   
-  # Equal-weighted median of the exact-code medians within each hospital-month,
-  # matching the aggregation convention used upstream in SQL.
+  # For merged concepts, all four price statistics come from the exact-code
+  # medians within each hospital-month: MEDIAN_PRICE is their median (the
+  # equal-weighted convention of the upstream SQL), MEAN_PRICE their mean, and
+  # P25_PRICE and P75_PRICE their quartiles.
   merged <- exact[, .(
     MEDIAN_PRICE = median(MEDIAN_PRICE, na.rm = TRUE),
     MEAN_PRICE   = mean(MEDIAN_PRICE, na.rm = TRUE),
@@ -1531,23 +1483,20 @@ apply_concept_merges <- function(panel, merge_groups = MERGE_GROUPS) {
 cat("Section 3 loaded\n")
 
 
-
-
-# ============================================================================
+# =============================================================================
 # Section 4: Estimators
-# ============================================================================
-
-######## Section 4: Estimators ################################################
+# =============================================================================
 #
-# Five estimators, all sharing the same sample-construction and clustering
-# logic. run_reduced_form(), run_first_stage(), run_ols(), and run_iv() are the
-# pooled workhorses. estimate_interacted() is the single function behind every
-# heterogeneity result in the paper, and returns the reduced form and the IV
-# from the same estimation sample so the two are directly comparable.
+# run_reduced_form(), run_first_stage(), run_ols(), and run_iv() fit the pooled
+# models. estimate_interacted() fits most heterogeneity models (see design
+# decision 3 in the file header) and returns the reduced form and the IV from
+# the same estimation sample. All five build their samples with model_sample()
+# and use the baseline controls, fixed effects, and clusters unless told
+# otherwise.
 #
-# All four pooled estimators return NULL rather than erroring on a degenerate
-# sample, so a sweep over hundreds of concepts skips what it cannot estimate
-# instead of halting.
+# The pooled estimators return NULL instead of an error when a sample has
+# fewer than 100 rows or no variation, so a sweep over hundreds of concepts
+# skips what it cannot estimate.
 
 model_sample <- function(data, columns) {
   req <- available_columns(data, unique(columns))
@@ -1607,24 +1556,30 @@ run_iv <- function(data, outcome, instrument, endogenous = ENDOGENOUS_VARIABLE,
            error = function(e) NULL)
 }
 
-# ---------------------------------------------------------------------------
-# The interacted estimator -- one function, two kinds of moderator
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# The interacted estimator
+# -----------------------------------------------------------------------------
 #
-# CATEGORICAL moderator (shoppability):
+# Categorical moderator (shoppability):
 #     ln(P) = sum_k b_k (N x 1[cat = k]) + controls + FE
-#   with each interacted treatment instrumented by Z x 1[cat = k]. b_k is
-#   category k's own level effect, and wald_equality() tests b_1 = ... = b_K.
+#   Each interacted treatment is instrumented by Z x 1[cat = k]. b_k is the
+#   effect for category k, and wald_equality() tests b_1 = ... = b_K.
 #
-# CONTINUOUS moderator (comparability, demographics):
+# Continuous moderator (comparability, demographics):
 #     ln(P) = b0 N + b1 (N x M) + controls + FE
-#   instrumented by Z and Z x M, with M centred at its estimation-sample mean.
-#   b1 is the gradient in the moderator and b0 is the effect at its mean.
+#   instrumented by Z and Z x M, with M centered at its estimation-sample
+#   mean. b1 is the slope in the moderator and b0 the effect at its mean.
 #
-# In both cases the number of excluded instruments equals the number of
-# endogenous regressors, so the model stays exactly identified and the
-# reduced-form p-values remain weak-instrument robust. The lower-order terms in
-# M are absorbed by the market fixed effect and are never estimated.
+# Both models are exactly identified (one excluded instrument per endogenous
+# regressor), so the reduced-form tests are weak-instrument robust. The main
+# effects of M and of the categories are absorbed by the MARKET_ID fixed
+# effect and are not estimated.
+#
+# Returns a list: `rows`, one row per term with reduced-form and IV estimates
+# (RF_PERCENT_PER_SD is the reduced form in percent per SD of Z; IV_PERCENT is
+# per additional prior poster), and `tests`, the equality test (categorical)
+# or the interaction test (continuous) for each estimator. Returns NULL if
+# the sample has fewer than MIN_MODEL_OBS rows.
 
 estimate_interacted <- function(
     data, moderator, outcome = PRIMARY_OUTCOME, instrument = PRIMARY_INSTRUMENT,
@@ -1744,23 +1699,17 @@ apply_transform <- function(data, name, source = ENDOGENOUS_VARIABLE,
 cat("Section 4 loaded\n")
 
 
-
-
-# ============================================================================
+# =============================================================================
 # Section 5: Instrument screen and pooled models
-# ============================================================================
-
-######## Section 5: Instrument screen and pooled models #######################
+# =============================================================================
 #
-# Two outputs. run_instrument_screen() estimates the first stage and reduced
-# form for every candidate instrument on a common sample and writes T02, which
-# is the table that documents why the enforcement family is exploratory and why
-# the competitor family carries the exclusion-restriction defence.
+# run_instrument_screen() estimates the first stage and the reduced form for
+# every candidate instrument on a common sample (T02). The table documents
+# why the enforcement measures are exploratory and why the competitor family
+# carries the exclusion-restriction argument.
 #
-# run_pooled_models() estimates the average effect across all outcomes. The
-# null it returns is the paper's first finding rather than a failed test: there
-# is no average price response, because the average mixes services that respond
-# with services that cannot.
+# run_pooled_models() estimates OLS, the reduced form, the first stage, and
+# the IV for each outcome and main instrument, pooled over all services (T03).
 
 run_instrument_screen <- function(panel) {
   cands <- ALL_CANDIDATE_INSTRUMENTS[unname(ALL_CANDIDATE_INSTRUMENTS) %in% names(panel)]
@@ -1847,31 +1796,26 @@ run_pooled_models <- function(panel, instruments = MAIN_INSTRUMENTS, outcomes = 
 cat("Section 5 loaded\n")
 
 
-
-
-# ============================================================================
-# Sections 6-7: Concept-level estimates, main results, transform ladder
-# ============================================================================
-
-######## Section 6: Concept-level estimates ###################################
+# =============================================================================
+# Section 6: Concept-level estimates
+# =============================================================================
 #
-# Estimates the full specification separately for each clinical concept, which
-# is the input to the meta-regressions in Section 8. This is the expensive
-# stage: roughly eight hours for 738 concepts across six instruments.
+# Estimates the baseline specification separately for each clinical concept.
+# The results feed the meta-regressions in Section 8. This is the longest
+# step: about eight hours for 738 concepts and six instruments.
 #
-# Three numbers are stored per concept-instrument pair, and keeping all three
-# is what makes the decomposition in Section 8 possible:
+# Three estimates are stored for each concept-instrument pair:
 #
-#   RF   reduced form -- no denominator, and the meta-regression input
-#   FS   first stage  -- the denominator itself, so it can be tested directly
+#   RF   reduced form; the dependent variable in the meta-regressions
+#   FS   first stage, the denominator of the IV ratio
 #   IV   the ratio of the two
 #
-# If the shoppability gradient appeared in IV but not in RF, it would be a
-# denominator artefact rather than a price response. Storing FS separately is
-# what allows that to be ruled out rather than asserted.
+# Keeping FS allows a direct test of whether a shoppability gradient in IV
+# comes from the numerator (a price response) or from the denominator
+# (decompose_reduced_form(), Section 8).
 #
-# Progress is written to a _PARTIAL.csv every 50 concepts, so an interrupted
-# run is recoverable.
+# Partial results are saved to <save_stem>_PARTIAL.csv every 50 concepts, so
+# an interrupted run leaves a usable record.
 
 CONCEPT_KEEP <- function(instruments, outcome) unique(c(
   "ANALYSIS_SERVICE_ID", "HOSPITAL_ID", "POST_MONTH", "ANALYSIS_MARKET", "MARKET_ID",
@@ -1995,25 +1939,31 @@ diagnose_size_gradient <- function(cr) {
 cat("Section 6 loaded\n")
 
 
-
-###############################################################################
+# =============================================================================
 # Section 7: Main results and the transform ladder
+# =============================================================================
 #
-# run_main_results() estimates the interacted shoppability specification for
-# every scheme x instrument combination and is the source of the paper's
-# headline table. Stage 7 calls it five times -- headline, Scheme 1
-# sensitivity, confirming tier, discrepant tier, and the pooled robustness set
-# -- so output filenames are parameterised through `stem`. Each caller supplies
-# a distinct one; sharing a stem silently overwrites the previous call's tables.
+# run_main_results() estimates the interacted shoppability model
+# (estimate_interacted(), Section 4) for every scheme and instrument it is
+# given, by default the six schemes in SCHEME_COLUMNS and the three MAIN
+# instruments. It produces the paper's headline table. Each call writes
+# <stem>_interacted_RF_and_IV.csv, <stem>B_heterogeneity_tests.csv, and
+# <stem>C_response_gap.csv. Stage 7 calls it five times, each with its own
+# stem: T06_main (headline), T06D_scheme1_procedural_excluded (Scheme 1
+# sensitivity, when EXCLUDE_PROCEDURAL_FROM_SCHEME1 is TRUE),
+# T06J_confirming, T06K_discrepant, and T06H_pooled_main_confirming (MAIN and
+# CONFIRMING pooled). Two calls with the same stem write to the same files.
 #
-# Two panels are printed. Panel A is the reduced form in percent per standard
-# deviation of peer exposure, and is primary. Panel B is the IV in percent per
-# additional prior poster.
+# The printed output has two panels. Panel A, the primary estimate, is the
+# reduced form in percent per SD of peer exposure (the instrument). Panel B
+# is the IV in percent per additional prior poster.
 #
-# run_transform_ladder() re-estimates the headline scheme under six treatment
-# transforms. It is reported as robustness only. See design decision 1: the
-# magnitudes move mechanically with compression, the conclusion does not.
-###############################################################################
+# run_transform_ladder() re-estimates the Scheme 1 model under the six
+# treatment transforms in TRANSFORM_LADDER (linear, top-coded at P99, P95,
+# and P90, square root, log1p) and writes T07_transform_ladder_estimates.csv
+# and T07B_transform_ladder_heterogeneity.csv. It is a robustness check only
+# (design decision 1 in the file header).
+
 run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
                              instruments = MAIN_INSTRUMENTS,
                              outcome = PRIMARY_OUTCOME,
@@ -2061,11 +2011,10 @@ run_main_results <- function(panel, schemes = SCHEME_COLUMNS,
                P = round(IV_P, 4), MIN_WALD = round(FIRST_STAGE_WALD_MIN, 1))][
                  order(SPEC, INSTRUMENT_LABEL, TERM)])
   
-  # GAP, the percentage-point difference between the two categories, is the
-  # quantity to report. RATIO divides by the non-shoppable estimate, which is a
-  # precise zero by design and therefore frequently near zero and occasionally
-  # sign-flipped in the denominator. It is descriptive only and unstable by
-  # construction.
+  # GAP is the Shoppable minus the Non_shoppable IV estimate, in percentage
+  # points. RESPONSE_RATIO divides by the Non_shoppable estimate, which is a
+  # precisely estimated zero: often near zero and sometimes of the opposite
+  # sign. The ratio is therefore unstable and descriptive only.
   ratio <- dcast(mr[, .(SPEC, INSTRUMENT_LABEL, TERM, IV_PERCENT)],
                  SPEC + INSTRUMENT_LABEL ~ TERM, value.var = "IV_PERCENT")
   if (all(c("Shoppable", "Non_shoppable") %in% names(ratio))) {
@@ -2128,36 +2077,29 @@ run_transform_ladder <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
 cat("Section 7 loaded\n")
 
 
-
-
-
-# ============================================================================
+# =============================================================================
 # Section 8: Meta-regressions, deduplication, permutation
-# ============================================================================
-
-######## Section 8: Meta-regressions, deduplication, permutation ##############
+# =============================================================================
 #
-# The second step of the two-step design. Section 6 produced one causal
-# estimate per clinical concept; this regresses those estimates on concept
-# characteristics, weighted by inverse variance and clustered on clinical
-# family, in the spirit of a precision-weighted second-stage regression rather
-# than a conventional meta-analysis of independent studies.
+# Second step of the two-step design. The concept-level estimates from
+# Section 6 are regressed on the concepts' shoppability classification, with
+# standard errors clustered by clinical family. run_meta_regressions()
+# estimates each model with inverse-variance weights and unweighted
+# (META_WEIGHTINGS).
 #
-# Four pieces:
+#   prepare_meta_input()       adds every scheme's classification to the
+#                              concept results (CAT_<scheme> columns)
+#   run_meta_regressions()     estimates the shoppability gradient for each
+#                              scheme, collapse rule, instrument, and weighting
+#   deduplicate_partitions()   identifies scheme variants that induce the same
+#                              partition of the concepts
+#   family_permutation_test()  permutation inference on the assignment of
+#                              families to the shoppable group
+#   decompose_reduced_form()   compares the gradient in the RF, FS, and IV
+#                              coefficients
 #
-#   prepare_meta_input()       attaches every scheme's classification
-#   run_meta_regressions()     estimates the gradient under each scheme and
-#                              each collapse rule
-#   deduplicate_partitions()   fingerprints schemes that induce the same
-#                              partition, so the specification count reports
-#                              distinct tests rather than distinct labels
-#   family_permutation_test()  exact inference on the family assignment
-#   decompose_reduced_form()   splits the gradient into price response versus
-#                              disclosure propensity
-#
-# decompose_reduced_form() is called once overall and once per tier, so its
-# output filename is parameterised through `stem` for the same reason as
-# run_main_results() in Section 7.
+# Stage 8 (PART 4) runs these and caches meta_regressions_rf and
+# meta_regressions_iv.
 
 prepare_meta_input <- function(cr, schemes_long) {
   d <- copy(cr)
@@ -2229,15 +2171,18 @@ run_meta_regressions <- function(mi, schemes_long, dep = "RF_COEF", se = "RF_SE"
   out
 }
 
-# Several schemes induce the same partition of the concept universe and are
-# therefore the same test under a different name. This fingerprints each
-# scheme-collapse variant on its estimated coefficient vector and keeps one
-# representative per distinct partition, so the paper reports the number of
-# genuinely distinct specifications rather than the number of labels.
+# Several schemes induce the same partition of the concepts and are therefore
+# the same test under a different name. deduplicate_partitions() fingerprints
+# each scheme-collapse variant by its estimated coefficients (every
+# instrument, weighting, and term, rounded to six decimals) and gives variants
+# with identical fingerprints the same PARTITION_ID. One variant per
+# partition is flagged IS_REPRESENTATIVE = 1, so the number of distinct
+# specifications can be reported rather than the number of labels. All rows
+# are returned; partitions with more than one variant (RF only) are written
+# to T08B_redundant_partitions.csv.
 #
-# Fingerprinting runs WITHIN dependent variable. Pooling RF and IV coefficient
-# vectors would make the same scheme look like two partitions and double the
-# count.
+# Fingerprints are computed separately within each dependent variable
+# (RF_COEF, IV_COEF).
 deduplicate_partitions <- function(mr) {
   mr <- copy(mr)[, SCHEME_VARIANT := paste(SCHEME, COLLAPSE, sep = " | ")]
   rbindlist(lapply(unique(mr$DEPENDENT), function(dep) {
@@ -2260,19 +2205,21 @@ deduplicate_partitions <- function(mr) {
   }), fill = TRUE)
 }
 
-# Exact permutation inference on the family assignment.
+# Permutation inference on the family assignment. Shoppability is assigned to
+# roughly 16 clinical families, not to 738 independent concepts.
+# Concept-level clustered standard errors treat 168 biopsy concepts as 168
+# independent observations, although one labeling decision covers all of
+# them. family_permutation_test() therefore permutes which families are
+# called shoppable, keeping their number fixed, and recomputes the difference
+# in inverse-variance weighted means between shoppable and non-shoppable
+# concepts. Every assignment is enumerated when there are at most max_exact
+# of them; otherwise 20,000 random assignments are drawn with a fixed seed.
+# This is the p-value the paper reports.
 #
-# Shoppability is assigned to roughly 16 clinical FAMILIES, not to 738
-# independent concepts. Concept-level clustered standard errors treat 168
-# biopsy concepts as 168 independent observations when a single labelling
-# decision covers all of them. Permuting which families are called shoppable
-# and enumerating every assignment gives inference at the level the decision
-# was actually made, and this is the p-value the paper reports.
-#
-# With 16 families and 10 shoppable, C(16,10) = 8,008 assignments enumerate
-# exactly, so the smallest attainable two-sided p-value is 1/8008. Report a
-# result at that floor as being at the minimum attainable value rather than as
-# a precise small number.
+# With 16 families and 10 shoppable, C(16,10) = 8,008 assignments are
+# enumerated, so the smallest attainable two-sided p-value is 1/8008. A
+# p-value at that floor means that no other assignment gives an absolute
+# difference as large as the observed one.
 family_permutation_test <- function(mi, dep = "RF_COEF", se = "RF_SE",
                                     shoppable_families = DIAGNOSTIC_FAMILIES,
                                     max_exact = 50000L, seed = 20260811L) {
@@ -2303,13 +2250,15 @@ family_permutation_test <- function(mi, dep = "RF_COEF", se = "RF_SE",
   }), fill = TRUE)
 }
 
-# Splits the concept-level gradient into its two possible sources by running
-# the same regression on RF, FS, and IV coefficients in turn. A gradient in RF
-# but not in FS means the heterogeneity is in the PRICE RESPONSE. A gradient in
-# both means part of it is differential disclosure propensity.
+# Regresses the concept-level RF, FS, and IV coefficients in turn on the
+# Scheme 1 indicator (SHOP_CERTAINTY), all weighted by 1/RF_SE^2 and
+# clustered by family. A gradient in RF but not in FS means the heterogeneity
+# is in the price response; a gradient in both means part of it comes from
+# differences in disclosure propensity (the first stage).
 #
-# `stem` is parameterised because the run block calls this once overall and
-# once per instrument tier.
+# Stage 8 calls it once overall and once per instrument tier, so `stem` sets
+# the file name: T08D_RF_vs_FS_decomposition.csv, then T08D_MAIN.csv,
+# T08D_CONFIRMING.csv, and T08D_DISCREPANT.csv.
 decompose_reduced_form <- function(mi, stem = "T08D_RF_vs_FS_decomposition") {
   out <- rbindlist(lapply(unique(mi$INSTRUMENT_LABEL), function(il) {
     d <- mi[INSTRUMENT_LABEL == il]; if (nrow(d) < MIN_CONCEPTS_META) return(data.table())
@@ -2338,67 +2287,73 @@ decompose_reduced_form <- function(mi, stem = "T08D_RF_vs_FS_decomposition") {
 cat("Section 8 loaded\n")
 
 
-
-
-# ============================================================================
+# =============================================================================
 # Section 9: Price comparability as a candidate mechanism
-# ============================================================================
+# =============================================================================
+#
+# Tests the mechanism directly instead of inferring it from the shoppability
+# label. The hypothesis is that a service responds to disclosure to the
+# extent that its posted price is a meaningful basis for comparison. A
+# screening mammogram is the same product at every hospital, and one number
+# describes it. A colonoscopy that may become a polypectomy has no such
+# number: the posted price is one draw from a distribution whose realization
+# depends on what is found during the procedure. If this is the channel,
+# measures of how well one posted price summarizes a concept should moderate
+# the price response within clinical families. A measure that does so only
+# across families is a proxy for modality and adds nothing to the
+# shoppability label.
+#
+# Eight candidate measures, one value per concept:
+#
+#   PD_PAYER_V2   dispersion across payers, from the payer-cell export
+#   PD_HOSP       dispersion of the log concept price across hospitals
+#   PD_CODE       dispersion across exact codes within a hospital-month
+#   PD_PAYER      (P75 - P25) / median, from the concept panel
+#   N_CODES       distinct billing codes within a hospital-month
+#   N_PAYERS_V2   distinct payers per hospital-month, payer-cell export
+#   N_PAYERS      distinct payers, concept panel
+#   CODE_COV      code coverage ratio, concept panel
+#
+# screen_moderators() drops measures that fail its coverage, variance,
+# zero-share, or collinearity checks and reports the reason (QA09).
+#
+# PD_PAYER_V2, PD_HOSP, PD_CODE, PD_PAYER, and N_CODES are
+# leave-one-county-out: for each concept and county, the value is computed
+# from the observations outside that county (at least MIN_OUTSIDE_HOSPITALS
+# of them), and the county values are then averaged. Dispersion is computed
+# from prices and the outcome is a price, so including the focal county's
+# own prices would link the measure mechanically to its estimate.
+# N_PAYERS_V2, N_PAYERS, and CODE_COV are plain means over the concept's
+# rows.
+#
+# Stage 9 (PART 4) runs verify_loo_sd(), builds the measures (cache
+# comparability_measures), and runs the row-level test (cache
+# comparability_interaction) and the within-family test. Section 10 uses the
+# same measures.
 
-######## Section 9: Price comparability as a candidate mechanism ##############
-#
-# Tests the mechanism directly rather than inferring it from the shoppability
-# label. The working hypothesis is that a service responds to disclosure to the
-# extent that its posted price constitutes a meaningful basis for comparison. A
-# screening mammogram is the same product at hospital A and hospital B, and one
-# number describes it. A colonoscopy that may become a polypectomy has no such
-# number: the posted price is one draw from a distribution whose realisation
-# depends on what is found mid-procedure.
-#
-# If that is the operative channel, then measures of how well a single posted
-# number summarises a concept should moderate the price response, and should do
-# so WITHIN clinical family -- otherwise the measure is just a modality proxy
-# and adds nothing beyond the shoppability label.
-#
-# Eight candidate measures are built and screened:
-#
-#   PD_PAYER_V2   payer-level price dispersion from the payer-cell export
-#   PD_HOSP       across-hospital spread in the concept price
-#   PD_CODE       within-hospital spread across exact codes inside a concept
-#   PD_PAYER      concept-panel percentile spread
-#   N_CODES       number of distinct billing codes inside a concept
-#   N_PAYERS_V2   distinct payers per hospital-month-concept
-#   N_PAYERS      distinct payers, concept-panel version
-#   CODE_COV      code coverage ratio
-#
-# screen_moderators() drops whichever fail coverage, variance, zero-inflation,
-# or collinearity gates and reports the reason, so a degenerate measure is
-# visibly excluded rather than silently estimated.
-#
-# EVERY MEASURE IS LEAVE-ONE-COUNTY-OUT. Dispersion is built from prices and
-# the outcome is a price, so a focal hospital's own dispersion is mechanically
-# linked to its own estimate. The leave-out breaks that link at the cost of
-# requiring MIN_OUTSIDE_HOSPITALS observations outside the focal county.
-
+# Thresholds for screen_moderators().
 MOD_MIN_FINITE      <- 100L
 MOD_MAX_SHARE_ZERO  <- 0.60
 MOD_MAX_CORRELATION <- 0.95
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Leave-one-county-out helpers
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 #
-# Closed-form leave-one-out mean and standard deviation. Both compute concept
-# totals once and subtract each county's contribution, rather than looping over
-# counties, which is what makes this feasible at panel scale.
+# loo_mean() and loo_sd() compute the leave-one-county-out mean and standard
+# deviation in closed form: concept totals are computed once and each
+# county's contribution is subtracted, instead of looping over counties.
+# County-concept pairs with fewer than MIN_OUTSIDE_HOSPITALS observations
+# outside the county are skipped, and the result is the mean over counties,
+# one value per concept (column V).
 #
-# Both bind the value column to a fixed name VAL before aggregating. This
-# matters for correctness and for speed: group-wise sums over a named column
-# use data.table's optimised gsum, while get(vc) evaluated inside j does not
-# and does not scope the way it appears to.
+# Both copy the value column to VAL before aggregating: data.table optimizes
+# grouped sums over a named column, but not over get(vc) inside j.
 #
-# verify_loo_sd() checks the closed form against a brute-force loop on the
-# highest-dispersion concepts and stops if they disagree.
+# verify_loo_sd() compares loo_sd() with a brute-force loop on the n_check
+# concepts with the highest values and stops if any pair differs by 1e-8 or
+# more.
 
 loo_mean <- function(dt, vc) {
   d <- dt[, .(FINAL_CONCEPT_ID, ANALYSIS_MARKET, VAL = as.numeric(get(vc)))]
@@ -2453,27 +2408,29 @@ verify_loo_sd <- function(panel, n_check = 5L) {
 }
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Payer dispersion from the payer-cell export
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 #
-# PD_PAYER_V2 is dispersion across identified payers within a
-# hospital-month-concept, built from payer identity and negotiated rates rather
-# than from panel percentiles. It runs a median of 7 distinct payers per cell
-# and 13.9% zero-dispersion cells.
+# load_payer_dispersion() builds PD_PAYER_V2 and N_PAYERS_V2 from the
+# payer-cell export (PART 1.5). PD_PAYER_V2 is dispersion across identified
+# payers within a hospital-month-concept (CV_PAYER_NEGOTIATED), built from
+# payer identity and negotiated rates rather than from panel percentiles.
+# The cells have a median of 7 distinct payers, and 13.9% have zero
+# dispersion.
 #
-# This is the measure PD_PAYER was intended to be. PD_PAYER, built from the
-# concept panel's P25/P75, turns out to capture code-level rather than
-# payer-level variation: 87% exact zeros and a 0.984 correlation with PD_CODE.
-# Both are retained so the comparison is visible in QA09, but only PD_PAYER_V2
-# survives screening.
+# PD_PAYER, built from the concept panel's P25 and P75, captures code-level
+# rather than payer-level variation: 87% exact zeros and a 0.984 correlation
+# with PD_CODE. Both are kept so the comparison is visible in QA09; only
+# PD_PAYER_V2 passes the screen.
 #
-# READS MULTIPLE SHARDS. The warehouse export splits above an internal size
-# threshold regardless of MAX_FILE_SIZE, so it arrives as several gzip parts.
-# This reads every file matching PAYER_DISPERSION_PATTERN and row-binds them.
-# Each shard carries its own header row, so each is read individually rather
-# than concatenated with a manual skip.
-
+# Every shard matching PAYER_DISPERSION_PATTERN is read separately, because
+# each carries its own header row, and the shards are stacked; rows
+# duplicated across shards are dropped. The county of each hospital-month is
+# taken from the global `outpatient` panel, which must be in memory, and
+# cells that do not match it are dropped. Stops if R.utils is not installed.
+# If no shard is found or no usable row remains, it warns and returns an
+# empty table.
 
 load_payer_dispersion <- function() {
   if (!requireNamespace("R.utils", quietly = TRUE)) {
@@ -2539,11 +2496,11 @@ load_payer_dispersion <- function() {
                       N_PAYERS_V2 = numeric(0)))
   }
   
-  # Winsorize the raw per-cell coefficient of variation BEFORE the leave-out
-  # average. Cells with a near-zero denominator produce extreme values, and
-  # because the leave-out average for every county includes all outside cells,
-  # a single extreme cell would otherwise contaminate the measure everywhere.
-  # Capping at P99 leaves the bulk of the distribution untouched.
+  # The per-cell CV is winsorized at its 99th percentile (upper tail only)
+  # before the leave-one-county-out average. Cells with a near-zero
+  # denominator produce extreme values, and every county's leave-out average
+  # includes all cells outside that county, so a single extreme cell would
+  # otherwise affect the measure everywhere.
   cap <- quantile(raw$CV_PAYER_NEGOTIATED, 0.99, na.rm = TRUE)
   n_capped <- sum(raw$CV_PAYER_NEGOTIATED > cap)
   cat("Winsorizing raw CV at P99 =", round(cap, 4), "-- capping",
@@ -2572,9 +2529,16 @@ load_payer_dispersion <- function() {
 }
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Degeneracy screen
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# screen_moderators() returns the candidate measures that pass four checks:
+# at least MOD_MIN_FINITE finite values, a positive standard deviation, a
+# share of zeros no larger than MOD_MAX_SHARE_ZERO, and an absolute
+# correlation of at most MOD_MAX_CORRELATION with every measure kept before
+# it. Candidates are checked in the order given (COMPARABILITY_MODERATORS),
+# so of two collinear measures the earlier one is kept. Writes
+# QA09_moderator_screen.csv and warns if no measure passes.
 screen_moderators <- function(measures, candidates) {
   candidates <- intersect(candidates, names(measures))
   if (length(candidates) == 0L) return(character(0))
@@ -2633,9 +2597,15 @@ screen_moderators <- function(measures, candidates) {
 }
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Build the measures
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# build_comparability_measures() returns one row per concept with the eight
+# measures and CONCEPT_FAMILY, and writes T09_comparability_measures.csv. The
+# table starts from the concepts that have a PD_PAYER value; the other
+# measures are merged onto it. PD_CODE and N_CODES read the exact-code panel
+# (FILES$outpatient_exact); if it cannot be read, they are missing and a
+# warning is issued.
 build_comparability_measures <- function(panel) {
   assert_columns(panel, c("MEDIAN_PRICE", "P25_PRICE", "P75_PRICE"), "panel")
   
@@ -2652,24 +2622,28 @@ build_comparability_measures <- function(panel) {
                   CODE_COV = if (have_cov)    safe_numeric(CODE_COVERAGE_RATIO) else NA_real_)]
   base <- base[is.finite(CV_PAYER) & CV_PAYER >= 0]
   
-  # 1. PD_PAYER -- concept-panel percentiles. Retained for comparison only;
-  #    degenerate in this panel (87% exact zeros, corr 0.984 with PD_CODE).
-  #    See QA09.
+  # 1. PD_PAYER: (P75 - P25) / median from the concept panel. Kept for
+  #    comparison only; degenerate in this panel (see load_payer_dispersion()
+  #    above, and QA09).
   pd_payer <- loo_mean(base, "CV_PAYER"); setnames(pd_payer, "V", "PD_PAYER")
   
-  # 2. PD_HOSP -- across-hospital spread of the concept price.
+  # 2. PD_HOSP: across-hospital spread of the log concept price
+  #    (leave-one-county-out SD).
   hosp <- unique(base[, .(FINAL_CONCEPT_ID, ANALYSIS_MARKET, LN_MED)])
   pd_hosp <- loo_sd(hosp, "LN_MED"); setnames(pd_hosp, "V", "PD_HOSP")
   
-  # 3-4. Contracting thinness and definitional standardisation. Both depend on
-  #      source columns that may be absent from the parquet, in which case they
-  #      come back all-NA and are dropped by the screen.
+  # 3-4. N_PAYERS and CODE_COV: concept means of N_DISTINCT_PAYERS and
+  #      CODE_COVERAGE_RATIO (contracting thinness and definitional
+  #      standardization). If a source column is absent from the panel, the
+  #      measure is missing for every concept and the screen drops it.
   thin <- base[, .(N_PAYERS = mean(N_PAY, na.rm = TRUE),
                    CODE_COV = mean(CODE_COV, na.rm = TRUE)), by = FINAL_CONCEPT_ID]
   
   fam <- unique(base[, .(FINAL_CONCEPT_ID, CONCEPT_FAMILY = FINAL_FAMILY_ID)])
   
-  # 5-6. PD_CODE and N_CODES, from the exact-code panel.
+  # 5-6. PD_CODE and N_CODES from the exact-code panel: for each
+  #      hospital-month cell, (P75 - P25) / median across the exact codes and
+  #      the number of distinct codes, then leave-one-county-out means.
   code_measures <- tryCatch({
     ex_raw <- read_panel(FILES$outpatient_exact, "exact-code panel",
                          columns = unique(c(ANALYSIS_COLUMNS, "BILLING_CODE")))
@@ -2696,7 +2670,8 @@ build_comparability_measures <- function(panel) {
                N_CODES = numeric(0))
   })
   
-  # 7-8. Payer-level dispersion and payer counts from the payer-cell export.
+  # 7-8. PD_PAYER_V2 and N_PAYERS_V2 from the payer-cell export
+  #      (load_payer_dispersion()).
   payer_v2 <- load_payer_dispersion()
   
   out <- Reduce(function(a, b) merge(a, b, by = "FINAL_CONCEPT_ID", all.x = TRUE),
@@ -2717,9 +2692,17 @@ build_comparability_measures <- function(panel) {
 }
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Row-level interacted test
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# run_comparability_interaction() estimates the continuous-moderator model of
+# estimate_interacted() (Section 4) on the panel for each measure that passes
+# the screen and each MAIN instrument: the treatment and its interaction with
+# the concept's measure, instrumented by Z and Z x measure. It adds the sign
+# convention (EXPECTED_SIGN; SIGN_AS_PREDICTED, judged on RF_COEF) and
+# flags models whose minimum first-stage Wald statistic is below 10
+# (WEAK_FIRST_STAGE). Writes T09B_comparability_interaction.csv and
+# T09C_comparability_interaction_tests.csv.
 run_comparability_interaction <- function(panel, measures,
                                           moderators = COMPARABILITY_MODERATORS,
                                           instruments = MAIN_INSTRUMENTS, outcome = PRIMARY_OUTCOME) {
@@ -2776,15 +2759,22 @@ run_comparability_interaction <- function(panel, measures,
 }
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Within-family test
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 #
-# Specification (b), with clinical family fixed effects, is the decisive one.
-# Family FE absorb modality entirely, so a gradient that survives cannot be
-# restated as "imaging responds and procedures do not" -- which is the
-# objection the shoppability label itself cannot answer, because shoppability
-# barely varies within family.
+# run_comparability_within_family() regresses the concept-level reduced-form
+# coefficients (RF_COEF, Section 6) on each standardized measure, weighted by
+# 1/RF_SE^2 and clustered by family, separately for each instrument:
+#   (a) without family fixed effects
+#   (b) with clinical family fixed effects
+#   (c) with family fixed effects and CODE_COV and N_PAYERS as controls, when
+#       both have more than MIN_CONCEPTS_META finite values and the measure
+#       is neither of them
+# Family fixed effects absorb modality, so a gradient in (b) cannot be
+# restated as "imaging responds and procedures do not". The shoppability
+# label cannot be tested this way, because it barely varies within families.
+# Writes T09D_comparability_within_family.csv.
 
 run_comparability_within_family <- function(cr, measures,
                                             moderators = COMPARABILITY_MODERATORS) {
@@ -2854,48 +2844,48 @@ run_comparability_within_family <- function(cr, measures,
 cat("Section 9 loaded\n")
 
 
-
-
-# ============================================================================
+# =============================================================================
 # Section 10: Comparability meta-regression
-# ============================================================================
-
-######## Section 10: Comparability meta-regression ############################
+# =============================================================================
 #
-# The two-step version of Section 9. It has lower power than the row-level
-# interaction, but buys three things the row-level test cannot deliver: a
-# specification curve across instruments and measures, clinical family fixed
-# effects, and a horse race that puts shoppability and each comparability
-# measure in the same regression.
+# Concept-level (two-step) version of the Section 9 tests. It has lower power
+# than the row-level interaction but allows a specification curve across
+# instruments and measures, clinical family fixed effects, and a horse race
+# between each measure and the shoppability label. run_comparability_meta()
+# regresses the concept-level RF and IV coefficients (Section 6) on each
+# standardized measure, weighted by 1/SE^2 and clustered by family,
+# separately for each instrument, in four specifications:
 #
-# Four specifications are estimated per measure and instrument:
+#   (a)  the measure alone
+#   (b)  plus clinical family fixed effects
+#   (c)  plus family fixed effects and the coverage controls CODE_COV and
+#        N_PAYERS (only when both have data)
+#   (d)  plus the Scheme 1 shoppability indicator SHOP, without family fixed
+#        effects (the horse race)
 #
-#   (a)  the moderator alone
-#   (b)  + clinical family fixed effects        <- the decisive specification
-#   (c)  + family FE + coverage controls        (only when the controls exist)
-#   (d)  horse race against the shoppability label, no family FE
+# In spec (b) the gradient is identified within families, so it cannot be a
+# difference between modalities. SHOP is constant within a family and would
+# be absorbed by family fixed effects, so spec (d) omits them. The measures
+# pass through screen_moderators() as in Section 9.
 #
-# Two guards matter here. Moderators pass through screen_moderators(), the same
-# degeneracy gate Section 9 uses, so the measures known to be unusable in this
-# panel are excluded with a stated reason rather than estimated. And spec (c)
-# is added only when its controls actually carry data; otherwise every (c)
-# model would fail inside tryCatch and disappear without explanation.
+# In Section 9, the three dispersion measures (PD_PAYER_V2, PD_HOSP, N_CODES)
+# are not significant with family fixed effects, and one contracting-depth
+# measure, N_PAYERS_V2, is significant for every MAIN instrument, with the
+# sign opposite to the comparability prediction. The horse race shows
+# whether payer depth and the shoppability label capture the same
+# heterogeneity or two separate dimensions of it.
 #
-# HOW TO READ THE RESULT. Section 9 finds the three price-dispersion measures
-# uniformly null under family fixed effects, and finds one contracting-depth
-# measure -- N_PAYERS_V2, distinct payers per concept -- significant across
-# every MAIN instrument, with the OPPOSITE sign to the ex ante comparability
-# prediction. This stage reproduces that pattern and adds the horse race, which
-# is what determines whether payer depth and the shoppability label capture the
-# same heterogeneity or two independent axes of it.
+# Writes T10_comparability_meta_regression.csv and
+# T10B_horse_race_summary.csv. Stage 10 (PART 4) runs it on concept_results
+# and the Section 9 measures.
 
 run_comparability_meta <- function(concept_results, measures,
                                    moderators = COMPARABILITY_MODERATORS,
                                    deps = list(list(dep = "RF_COEF", se = "RF_SE", label = "Reduced form"),
                                                list(dep = "IV_COEF", se = "IV_SE", label = "IV"))) {
   
-  # Same degeneracy gate Section 9 uses, so both stages estimate the same set
-  # of measures and any exclusion is reported with its reason.
+  # Same screen as Section 9, so both sections estimate the same measures and
+  # report any exclusion with its reason (QA09).
   moderators <- screen_moderators(measures, moderators)
   if (length(moderators) == 0L) stop("No usable moderators.", call. = FALSE)
   
@@ -2906,9 +2896,9 @@ run_comparability_meta <- function(concept_results, measures,
                              "Shoppable", "Non_shoppable"),
                      levels = c("Non_shoppable", "Shoppable"))]
   
-  # Standardise so coefficients are per-SD and comparable across measures on
-  # very different scales (PD_PAYER_V2 is a ratio near 0.2-1.4; N_PAYERS_V2 a
-  # count from 1.6 to 8.1).
+  # Each measure is standardized over the merged rows, so coefficients are per
+  # SD and comparable across measures on different scales (PD_PAYER_V2
+  # is a ratio near 0.2-1.4; N_PAYERS_V2 a count from 1.6 to 8.1).
   for (m in moderators) {
     d[, (paste0(m, "_Z")) := {
       v <- safe_numeric(get(m)); (v - mean(v, na.rm = TRUE)) / sd(v, na.rm = TRUE)
@@ -2933,10 +2923,11 @@ run_comparability_meta <- function(concept_results, measures,
           `(d) Horse race vs shoppability` = sprintf("%s ~ %s + SHOP", dep, mz)
         )
         
-        # Spec (c) needs CODE_COV and N_PAYERS as controls. Both depend on
-        # source columns that may be absent, so it is added only when they
-        # actually carry data -- otherwise it would fail silently inside
-        # tryCatch and its absence would be unexplained.
+        # Spec (c) uses CODE_COV and N_PAYERS as controls. Their source
+        # columns may be absent, so (c) is added only when both have more
+        # than MIN_CONCEPTS_META finite values and the measure is neither of
+        # them; otherwise the model would fail inside tryCatch() and be
+        # skipped without a message.
         if (all(c("CODE_COV", "N_PAYERS") %in% names(s)) &&
             sum(is.finite(s$CODE_COV))  > MIN_CONCEPTS_META &&
             sum(is.finite(s$N_PAYERS)) > MIN_CONCEPTS_META &&
@@ -3051,39 +3042,34 @@ run_comparability_meta <- function(concept_results, measures,
 cat("Section 10 loaded\n")
 
 
-
-
-# ============================================================================
+# =============================================================================
 # Section 11: Instrument balance and placebo tests
-# ============================================================================
-
-######## Section 11: Instrument balance and placebo tests #####################
+# =============================================================================
 #
-# Why these two tests and not an event study. 3,722 of 3,724 hospitals appear
-# at exactly one posting month, so there is no within-hospital timing variation
-# and a within-hospital event study does not exist in this data. The
-# identification concern is therefore selection on posting timing, not timing
-# mechanics, and it needs a different kind of test.
+# These tests take the place of an event study, which the data do not
+# support: 3,722 of 3,724 hospitals appear at exactly one posting month, so
+# there is no within-hospital timing variation (design decision 4 in the
+# file header). The identification concern is selection on posting timing.
+# The main response is in the design, where the non-shoppable services are a
+# within-hospital placebo; the two tests here supplement it.
 #
-# The primary defence is structural and lives in the design rather than here:
-# the headline result is a HETEROGENEITY result, and the non-shoppable group
-# functions as a within-hospital placebo. Same hospital, same posting month,
-# same instrument value, no price response. Any selection story has to explain
-# why selection would operate on shoppable services and not on non-shoppable
-# ones at the same hospital in the same month.
+# run_instrument_balance() regresses pre-determined hospital characteristics
+# (LOG_TOTAL_BEDS, IN_SYSTEM, IS_SHORT_TERM) on each MAIN instrument, with
+# one row per hospital because each hospital posts once. The fixed effects
+# are additive county and month effects: county x month effects would absorb
+# the county-month instruments entirely and leave nothing to test. Standard
+# errors are clustered by county, and a model needs at least 200 hospitals.
+# STANDARDISED_EFFECT is the change in the characteristic, in its own SDs,
+# per SD of the instrument. Writes T11_instrument_balance.csv.
 #
-# The two tests here supplement that defence.
+# run_placebo_outcome() regresses bed count (LOG_TOTAL_BEDS), fixed years
+# before any disclosure decision, on each instrument with the same
+# specification. The instrument cannot cause it, so a significant
+# coefficient would mean the instrument picks up hospital composition that
+# the fixed effects do not absorb. The regression is the same as the
+# LOG_TOTAL_BEDS rows of the balance test. Writes T11B_placebo_outcome.csv.
 #
-# TEST 1 -- BALANCE. Does the instrument predict pre-determined hospital
-# characteristics? Estimated at the HOSPITAL level, one row per hospital, since
-# each hospital posts once. The fixed effects must be ADDITIVE county + month:
-# an interacted county x month term would absorb the county-month instruments
-# entirely and leave nothing to test.
-#
-# TEST 2 -- PLACEBO OUTCOME. Bed count is fixed years before any disclosure
-# decision, so the instrument cannot cause it. A null is a clean falsification;
-# a significant coefficient would mean the instrument is picking up hospital
-# composition the fixed effects failed to absorb.
+# Stage 11 (PART 4) runs both.
 
 run_instrument_balance <- function(panel, instruments = MAIN_INSTRUMENTS) {
   hosp_cols <- available_columns(panel, c(
@@ -3109,8 +3095,7 @@ run_instrument_balance <- function(panel, instruments = MAIN_INSTRUMENTS) {
     rbindlist(lapply(chars, function(ch) {
       d <- h[is.finite(get(ch)) & is.finite(get(z))]
       if (nrow(d) < 200L) return(data.table())
-      # ADDITIVE county + month FE. Interacted would absorb the county-month
-      # instruments entirely and leave nothing to test.
+      # Additive county and month fixed effects (see the Section 11 header).
       fit <- tryCatch(feols(as.formula(paste0(ch, " ~ ", z,
                                               " | ANALYSIS_MARKET + POST_MONTH")),
                             data = d, cluster = ~ANALYSIS_MARKET,
@@ -3151,12 +3136,11 @@ run_instrument_balance <- function(panel, instruments = MAIN_INSTRUMENTS) {
 }
 
 run_placebo_outcome <- function(panel, instruments = MAIN_INSTRUMENTS) {
-  # Collapse to one row per hospital first, for the same reason
-  # run_instrument_balance() does. LOG_TOTAL_BEDS is a hospital-level constant,
-  # so running it on the concept-level panel repeats the same value once per
-  # concept -- up to about 19 times per hospital. Two-way county and month
-  # clustering mostly but not exactly absorbs that, and N_OBSERVATIONS would
-  # report a panel-row count rather than the true number of hospitals.
+  # One row per hospital, as in run_instrument_balance(). LOG_TOTAL_BEDS is
+  # constant within a hospital, so on the concept-level panel each hospital
+  # would enter once per concept (up to about 19 times); two-way county and
+  # month clustering only partly accounts for that, and the observation count
+  # would be panel rows rather than hospitals.
   hosp_cols <- available_columns(panel, c("HOSPITAL_ID", "ANALYSIS_MARKET",
                                           "POST_MONTH", "LOG_TOTAL_BEDS",
                                           unname(instruments)))
@@ -3197,22 +3181,21 @@ run_placebo_outcome <- function(panel, instruments = MAIN_INSTRUMENTS) {
 cat("Section 11 loaded\n")
 
 
-
-
-# ============================================================================
-# Section 12: Preflight
-# ============================================================================
-
-######## Section 12: Preflight ################################################
+# =============================================================================
+# Section 12: Preflight checks
+# =============================================================================
 #
-# Runs in about ten seconds and must pass before stage 6, which takes eight
-# hours. It checks the failure modes that are silent rather than loud: concepts
-# with no scheme classification, unexpected NA scheme columns, merge
-# constituents left behind in the panel, canonical concepts missing from it,
-# and instruments that are absent or degenerate.
+# run_preflight() takes about ten seconds and runs in the BUILD block of
+# PART 3, before the concept-level results are loaded or estimated (stage 6
+# takes about eight hours). Its checks target problems that produce
+# plausible-looking results rather than errors: concepts with no scheme
+# classification, unexpected NAs in the scheme columns, canonical merge
+# concepts missing from the panel, merge constituents left in it, missing or
+# constant instruments, non-finite outcome or treatment values, and a missing
+# exact-code panel file. Each check prints PASS or FAIL, and any failure
+# stops the run.
 #
-# Each of these produces a plausible-looking result rather than an error, which
-# is why they are worth an explicit gate.
+# PART 4 has a second Section 12 (county demographic heterogeneity).
 
 run_preflight <- function(panel, schemes_long) {
   cat("\n", strrep("=", 84), "\nPREFLIGHT\n", strrep("=", 84), "\n", sep = "")
@@ -3228,8 +3211,8 @@ run_preflight <- function(panel, schemes_long) {
   chk("All panel concepts appear in schemes_long", length(miss) == 0L,
       if (length(miss)) paste(head(miss, 3), collapse = ", ") else "")
   
-  # 2. No unexpected NA scheme columns. Scheme 6 legitimately has NAs, since
-  #    the extremes rule drops INTERMEDIATE concepts by design.
+  # 2. No unexpected NAs in the scheme columns. Scheme 6 uses the extremes
+  #    rule, which sets INTERMEDIATE concepts to NA, so NAs are allowed there.
   for (spec in PRIMARY_SCHEMES) {
     if (!(spec$col %in% names(panel))) { chk(paste("Column present:", spec$col), FALSE); next }
     n_na <- sum(is.na(panel[[spec$col]]))
@@ -3244,7 +3227,8 @@ run_preflight <- function(panel, schemes_long) {
   chk("Merge canonical concepts present in panel", all(present),
       if (all(present)) "" else paste(canon[!present], collapse = ", "))
   
-  # 4. Merge constituents GONE from the panel.
+  # 4. Merge constituents (other than the canonical IDs) absent from the
+  #    panel.
   consts <- setdiff(unique(unlist(lapply(MERGE_GROUPS, `[[`, "constituents"))), canon)
   leftover <- intersect(consts, unique(panel$FINAL_CONCEPT_ID))
   chk("Merge constituents removed from panel", length(leftover) == 0L,
@@ -3261,7 +3245,8 @@ run_preflight <- function(panel, schemes_long) {
   chk("Outcome finite for all rows", all(is.finite(panel[[PRIMARY_OUTCOME]])))
   chk("Treatment finite for all rows", all(is.finite(panel[[ENDOGENOUS_VARIABLE]])))
   
-  # 7. Exact-code panel reachable. PD_CODE and N_CODES in stage 9 need it.
+  # 7. Exact-code panel file present. build_comparability_measures() reads
+  #    it in stage 9 for PD_CODE and N_CODES.
   chk("Exact-code panel file exists", file.exists(FILES$outpatient_exact))
   
   cat("\n", strrep("-", 84), "\n", sep = "")
@@ -3277,64 +3262,42 @@ run_preflight <- function(panel, schemes_long) {
 cat("Section 12 loaded\n")
 
 
-
-###############################################################################
-
-# ============================================================================
-# Cache management: cache_status, restore_session, invalidate_cache
-# ============================================================================
-
-# Moved up from line 8031. It belongs with the definitions rather than
-# 5,000 lines below the code that calls it.
-
-# SESSION RESTORE AND CACHE MANAGEMENT
+# =============================================================================
+# Cache management
+# =============================================================================
 #
-# Everything above this line either defines a function or runs an analysis.
-# This block does neither: it manages the .rds cache written by cache_or_run()
-# so that a fresh session can pick up a completed run without re-estimating,
-# and so that a code change can be propagated without re-running everything.
+# cache_or_run() (Section 1) loads 07_Cache/<key>.rds whenever the file
+# exists and USE_CACHE is TRUE, so a cache written before a change to the
+# code or the inputs is reused without a warning. For example, after a change
+# to build_schemes(), schemes_long.rds still holds the old classification,
+# and every result built from it inherits that classification. The functions
+# below manage the cache:
 #
-# Nothing here executes on its own. Load Sections 0-12 to define the pipeline,
-# then call these directly.
+#   cache_status()       lists the registered caches, their size, and when
+#                        they were written
+#   restore_session()    loads cached results into the global environment
+#   invalidate_cache()   deletes caches, by default together with the
+#                        registered caches built from them, so the next run
+#                        recomputes them
 #
-#   cache_status()        what is cached, how large, and when it was written
-#   restore_session()     load cached results into the global environment
-#   invalidate_cache()    delete caches so the next run recomputes them
-#
+# These are definitions only. PART 3 calls restore_session() under
+# HPT_WARM_START; otherwise the functions are called from the console after
+# the file has been sourced at least through the end of PART 2.
+
+
 # -----------------------------------------------------------------------------
-# THE PROBLEM THIS SOLVES
+# Cache registry
 # -----------------------------------------------------------------------------
-# cache_or_run() returns a saved result whenever the .rds exists. That is what
-# makes a warm run fast, and it is also the one way this pipeline can silently
-# report a stale number: if build_schemes() is edited, schemes_long.rds is now
-# wrong, but cache_or_run() will load it anyway and every downstream result
-# inherits the old classification without a warning.
-#
-# The cache has a dependency order, and invalidating a step requires
-# invalidating everything built from it. invalidate_cache() does that by
-# default rather than leaving it to be remembered:
-#
-#   schemes_long
-#     `-- outpatient_panel
-#           |-- instrument_screen, pooled_models, t02_pooled_current_vintage
-#           |-- concept_level_6inst  (8 hours)
-#           |     `-- meta_regressions_rf, meta_regressions_iv
-#           |-- main_results, transform_ladder, confirming_results,
-#           |   discrepant_results, robustness_pool_results
-#           |-- comparability_measures
-#           |     `-- comparability_interaction
-#           |-- s13_* (four robustness blocks)
-#           `-- cbsa_panel, s15_* (market definition, windows, payer)
-#
-# Editing a function changes only the caches at or below its level. Editing a
-# scheme rule invalidates everything; editing run_transform_ladder() invalidates
-# one object.
-###############################################################################
-
-
-# ---------------------------------------------------------------------------
-# Cache registry: .rds key -> global variable name -> what produced it
-# ---------------------------------------------------------------------------
+# CACHE_REGISTRY maps each cache key (the .rds file name) to the global
+# variable the run blocks assign it to and to the stage or section that
+# writes it. It covers 25 caches: the BUILD block, stages 5-9, Sections 13
+# and 15, and the LaTeX block in PART 5. Caches that cache_or_run() writes
+# elsewhere (for example family_level_6inst in Section 16,
+# conley_sensitivity_v2 in Section 17, enforcement_controls in Section 18,
+# and s28_alt_price_panel in Sections 28 and 30) are not registered:
+# cache_status() and restore_session() skip them, invalidate_cache() rejects
+# them, and invalidating schemes_long or outpatient_panel does not delete
+# them, although several are computed from the outpatient panel.
 CACHE_REGISTRY <- list(
   schemes_long                = list(var = "schemes_long",     stage = "BUILD"),
   outpatient_panel            = list(var = "outpatient",       stage = "BUILD"),
@@ -3360,14 +3323,35 @@ CACHE_REGISTRY <- list(
   s15b_window_ladder_v11      = list(var = "s15b_results",     stage = "15B"),
   s15_payer_class_panel       = list(var = "s15_payer",        stage = "15C"),
   s15_payer_results           = list(var = "s15_payer_res",    stage = "15C"),
-  # The LaTeX block assigns this to `pooled`, the same name stage 5 uses for a
-  # different object. Restored under a distinct name so one cannot overwrite the
-  # other; the block itself is unaffected.
+  # The LaTeX block (PART 5) assigns this cache to `pooled`, the name stage 5
+  # uses for pooled_models. It is restored as `pooled_t02` so that neither
+  # object overwrites the other.
   t02_pooled_current_vintage  = list(var = "pooled_t02",       stage = "LaTeX")
 )
 
-# Dependency edges: invalidating the name on the left invalidates everything on
-# the right, transitively. Used by invalidate_cache(cascade = TRUE).
+# CACHE_DEPENDENTS lists the caches computed directly from each key.
+# invalidate_cache(cascade = TRUE) follows these edges transitively:
+#
+#   schemes_long
+#   `- outpatient_panel
+#      |- instrument_screen, pooled_models, t02_pooled_current_vintage
+#      |- concept_level_6inst (8 hours)
+#      |  `- meta_regressions_rf, meta_regressions_iv
+#      |- main_results, transform_ladder, confirming_results,
+#      |  discrepant_results, robustness_pool_results
+#      |- comparability_measures
+#      |  `- comparability_interaction
+#      |- s13_system_month_v2, s13_leave_one_system_out_v2,
+#      |  s13_instrument_ladder, s13_randomisation_inference
+#      |- cbsa_panel
+#      |  `- s15_cbsa_results, s15_cbsa_pooled
+#      |- s15b_window_ladder_v11
+#      `- s15_payer_class_panel
+#         `- s15_payer_results
+#
+# A change to a scheme rule therefore requires invalidating every registered
+# cache, while a change to run_transform_ladder() affects only
+# transform_ladder.
 CACHE_DEPENDENTS <- list(
   schemes_long        = "outpatient_panel",
   outpatient_panel    = c("instrument_screen", "pooled_models",
@@ -3386,11 +3370,14 @@ CACHE_DEPENDENTS <- list(
 )
 
 
-# ---------------------------------------------------------------------------
-# cache_status() -- what exists on disk
-# ---------------------------------------------------------------------------
-# Base R throughout, so this block keeps working even if the pipeline's
-# packages are not loaded in the session.
+# -----------------------------------------------------------------------------
+# Cache status
+# -----------------------------------------------------------------------------
+# cache_status() returns, invisibly, one row per registered key: the variable
+# name, the stage, whether the .rds file exists, its size in MB, when it was
+# written, and whether the variable is in the global environment. Unless
+# quiet = TRUE it also prints a summary. It uses base R only, so it works
+# without the pipeline's packages loaded.
 cache_status <- function(quiet = FALSE) {
   keys <- names(CACHE_REGISTRY)
   path <- file.path(CACHE_DIR, paste0(keys, ".rds"))
@@ -3422,24 +3409,23 @@ cache_status <- function(quiet = FALSE) {
 }
 
 
-# ---------------------------------------------------------------------------
-# restore_session() -- load a completed run into a fresh session
-#
-# Loads every cached object into the global environment under the same variable
-# name the run blocks use, so downstream code written afterwards sees exactly
-# what it would have seen at the end of a full run.
-#
-# Does NOT recompute anything. A key with no .rds is reported as missing and
-# skipped, so this is safe to call on a partially completed run.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Session restore
+# -----------------------------------------------------------------------------
+# restore_session() loads the cached objects for `keys` (default: every
+# registered key) into the global environment under the variable names the
+# run blocks use, so later code sees what it would see at the end of a full
+# run. Nothing is recomputed. Keys not in CACHE_REGISTRY are ignored. A key
+# whose .rds file is missing is reported and skipped, so the function also
+# works after a partial run. It rebuilds CONCEPT_INSTRUMENTS and returns,
+# invisibly, the variables loaded and the keys missing or unreadable.
 restore_session <- function(keys = names(CACHE_REGISTRY), quiet = FALSE) {
   keys    <- intersect(keys, names(CACHE_REGISTRY))
   loaded  <- character(0)
   missing <- character(0)
   
-  # Two keys mapping to one variable name would mean the later silently
-  # overwrites the earlier, which is exactly the kind of thing that produces a
-  # correct-looking object holding the wrong contents.
+  # Stops if two of the requested keys map to the same variable name, since
+  # the later object would overwrite the earlier one.
   targets <- vapply(keys, function(k) CACHE_REGISTRY[[k]]$var, character(1))
   if (anyDuplicated(targets))
     stop("CACHE_REGISTRY maps more than one key to the same variable name: ",
@@ -3451,12 +3437,9 @@ restore_session <- function(keys = names(CACHE_REGISTRY), quiet = FALSE) {
     path <- file.path(CACHE_DIR, paste0(k, ".rds"))
     if (!file.exists(path)) { missing <- c(missing, k); next }
 
-    # readRDS() used to run unprotected here. One corrupted or not-yet-synced
-    # file (a OneDrive cloud-only placeholder is the usual cause) aborted the
-    # entire loop with no indication of which key was responsible, so a
-    # session with 19 of 20 objects perfectly readable still failed to
-    # restore any of them. Now the bad file is skipped and named, and
-    # everything else loads.
+    # A file that readRDS() cannot read (corrupted, or a OneDrive cloud-only
+    # placeholder) is reported, listed as unreadable, and skipped; the other
+    # keys still load.
     obj <- tryCatch(readRDS(path), error = function(e) {
       cat("\n[SKIPPED] ", k, " -- ", conditionMessage(e),
           "\n          ", path, "\n", sep = "")
@@ -3468,7 +3451,8 @@ restore_session <- function(keys = names(CACHE_REGISTRY), quiet = FALSE) {
     loaded <- c(loaded, CACHE_REGISTRY[[k]]$var)
   }
   
-  # Rebuilt rather than cached: cheap, and needed by several later blocks.
+  # CONCEPT_INSTRUMENTS (MAIN plus SUPPORTING instruments) is not cached. It
+  # is rebuilt here because Sections 16 and 24 use it.
   if (exists("MAIN_INSTRUMENTS", envir = .GlobalEnv) &&
       exists("SUPPORTING_INSTRUMENTS", envir = .GlobalEnv)) {
     assign("CONCEPT_INSTRUMENTS",
@@ -3495,15 +3479,16 @@ restore_session <- function(keys = names(CACHE_REGISTRY), quiet = FALSE) {
 }
 
 
-# ---------------------------------------------------------------------------
-# invalidate_cache() -- delete caches so the next run recomputes them
-#
-# cascade = TRUE (the default) also deletes everything built from the named
-# keys, which is what keeps a code change from producing a half-updated set of
-# results. dry_run = TRUE shows what would be deleted without deleting it, and
-# is worth using first when concept_level_6inst is in scope -- that one costs
-# eight hours to rebuild.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Cache invalidation
+# -----------------------------------------------------------------------------
+# invalidate_cache() deletes the .rds files of `keys` so that the next run
+# recomputes them. With cascade = TRUE (the default) it also deletes every
+# cache that depends on them through CACHE_DEPENDENTS, so the registered
+# caches are not left partly updated. With dry_run = TRUE (the default) it
+# only lists what it would delete; dry_run = FALSE deletes the files. An
+# unregistered key stops the function. Rebuilding concept_level_6inst takes
+# about eight hours.
 invalidate_cache <- function(keys, cascade = TRUE, dry_run = TRUE) {
   unknown <- setdiff(keys, names(CACHE_REGISTRY))
   if (length(unknown))
@@ -3545,80 +3530,70 @@ invalidate_cache <- function(keys, cascade = TRUE, dry_run = TRUE) {
 }
 
 
-###############################################################################
-# TYPICAL USE
+# -----------------------------------------------------------------------------
+# Typical use
+# -----------------------------------------------------------------------------
 #
 # Fresh session, continuing from a completed run:
 #
-#   # load Sections 0-12 to define the pipeline, then:
+#   # source the file through the end of PART 2, then:
 #   cache_status()
 #   restore_session()
 #   # every object is now in memory under its usual name
 #
-# After editing a function and wanting the change to propagate:
+# Alternatively, HPT_WARM_START <- TRUE before sourcing the file restores the
+# session automatically (PART 3).
+#
+# After a change to a function, delete its cache and the caches built from
+# it, then rerun the stage that computes it. The RUN_STAGES line applies
+# when the stage 9 block is then evaluated on its own; sourcing the file
+# again resets RUN_STAGES (PART 1.3).
 #
 #   invalidate_cache("comparability_measures")                    # dry run
 #   invalidate_cache("comparability_measures", dry_run = FALSE)   # delete
 #   RUN_STAGES <- c(9)                                            # recompute
 #
-# After editing a scheme rule in Section 3, which changes the classification
-# every result depends on:
+# After a change to a scheme rule in Section 3, which changes the
+# classification every result depends on:
 #
 #   invalidate_cache("schemes_long")   # dry run first -- this cascades widely
 #
-# To recompute one object without touching anything downstream, set
-# cascade = FALSE. Do that only when the change genuinely cannot affect
-# dependents, since a partially updated cache is worse than a stale one.
-# The line below was a bare, unguarded warm_start() call in the original
-# source, sitting right after the two source() calls for HPT_warm_start.R and
-# HPT_diagnostic_for_family_levels.R (both of which are correctly relocated
-# to PART 3 and PART 6 respectively, and do not appear here). This call was
-# carried over unchanged during reorganization and, because this whole block
-# now sits in PART 2 -- which is unconditional, sourced at the top of every
-# run before HPT_WARM_START is even read as a switch -- it caused infinite
-# recursion: warm_start() re-sources the entire pipeline, which reaches this
-# same line again, which calls warm_start() again. Commented out. Call
-# warm_start() yourself, from the console, after this file has finished
-# loading -- never from inside the file being sourced.
+# cascade = FALSE deletes only the named caches and keeps their dependents,
+# which is appropriate only when the change cannot affect them.
+#
+# warm_start(), defined in HPT_warm_start.R, re-sources this file, so it is
+# called from the console after sourcing, never from inside the file:
 #
 # warm_start()
 
 
 
-
-
-
+###############################################################################
+#
+#   PART 3: BUILD AND PREFLIGHT
+#
+#   Checks the inputs, builds schemes_long and the outpatient panel, runs
+#   run_preflight(), and then loads the concept-level results (estimating
+#   them if their cache is missing). Under HPT_WARM_START, restore_session()
+#   loads the cached objects instead and nothing is built.
+#
 ###############################################################################
 
-###############################################################################
-#                                                                             #
-#   PART 3 -- BUILD AND PREFLIGHT                                             #
-#                                                                             #
-#   run_preflight() must pass before anything expensive runs. It catches      #
-#   unclassified concepts, stale caches, and degenerate instruments, each of  #
-#   which otherwise yields plausible-looking output rather than an error.     #
-#                                                                             #
-#   In warm-start mode this block restores the cache instead of building.     #
-#                                                                             #
-###############################################################################
 
 if (isTRUE(HPT_WARM_START)) {
 
-  # Fresh session on a completed run. Every object the run blocks produce is
-  # read from CACHE_DIR and assigned into the global environment under its
-  # usual name. Nothing is estimated and nothing is written.
+  # Warm start. restore_session() reads the cached objects from CACHE_DIR and
+  # assigns them in the global environment under their usual names. Nothing
+  # is estimated and nothing is written.
   #
-  # HPT_WARM_START_KEYS, if set before sourcing, restricts this to a subset of
-  # CACHE_REGISTRY's keys instead of all 25. Added because reading a large
-  # .rds (outpatient_panel, cbsa_panel, s15_payer_class_panel) spikes memory
-  # well above its final resident size during decompression, and on an 8GB
-  # machine that spike does not reliably get released even after the object
-  # is later rm()'d -- confirmed directly: removing 23 of the 25 restored
-  # objects after the fact recovered only ~1.2GB of the ~15GB in use. Section
-  # 33/34 work needs only concept_level_6inst, so:
+  # HPT_WARM_START_KEYS, if set before sourcing, limits the restore to those
+  # CACHE_REGISTRY keys instead of all 25; keys not in the registry are
+  # ignored. Reading the large panels (outpatient_panel, cbsa_panel,
+  # s15_payer_class_panel) can exhaust memory on an 8 GB machine, and rm()
+  # does not reliably release it afterwards. restore_section33() and
+  # run_section34() need only concept_level_6inst:
   #   HPT_WARM_START_KEYS <- "concept_level_6inst"
-  # restores only concept_results and never opens the large files at all.
-  # Unset (the default), behavior is unchanged: every key is restored.
+  # restores only concept_results and never opens the large files.
   restore_keys <- if (exists("HPT_WARM_START_KEYS")) HPT_WARM_START_KEYS
                   else names(CACHE_REGISTRY)
   cat("\n", strrep("-", 70),
@@ -3629,10 +3604,11 @@ if (isTRUE(HPT_WARM_START)) {
       strrep("-", 70), "\n", sep = "")
   restore_session(keys = restore_keys)
 
-  # Section 12's .t12_* helpers are defined inside a stage block, so they are
-  # not in scope after a warm start. HPT_warm_start.R supplies
-  # load_t12_helpers() to pull just their definitions without the 30-45
-  # minute driver run.
+  # HPT_warm_start.R defines warm_start() and load_t12_helpers(). The .t12_*
+  # helpers of Section 12 in PART 4 are defined inside its
+  # HPT_RUN$demographics block, so a warm start leaves them undefined.
+  # load_t12_helpers(), which Section 16.8 calls, loads their definitions
+  # without the 30-45 minute Section 12 driver run.
   source(file.path(CODE_DIR, "HPT_warm_start.R"))
 
   cat("\nSession restored. Every pipeline function is in scope and every",
@@ -3643,14 +3619,33 @@ if (isTRUE(HPT_WARM_START)) {
 
   hpt_check_inputs()
 
-  # Companion file, located relative to CODE_DIR rather than by absolute path.
+  # HPT_warm_start.R is sourced in this branch as well, so load_t12_helpers()
+  # (called in Section 16.8) and warm_start() are defined after a full run.
   source(file.path(CODE_DIR, "HPT_warm_start.R"))
 
-######## BUILD -- always run this first in a fresh session ####################
+
+# =============================================================================
+# BUILD block: schemes, panel, preflight, concept-level results
+# =============================================================================
 #
-# Builds schemes_long and the outpatient panel, exports the Scheme 1
-# assignment, audits the estimation sample, and runs preflight. Both objects
-# are cached, so this is fast on a warm run and is safe to re-execute.
+# Runs when HPT_WARM_START is FALSE (the default). Builds schemes_long and the
+# panel `outpatient`, or loads them from cache (keys schemes_long and
+# outpatient_panel); writes QA03 and QA04 (export_scheme1_assignments()) and
+# QA01 (audit_estimation_sample()); and calls run_preflight(), which stops the
+# run if any check fails.
+#
+# concept_results is then loaded with cache_or_run("concept_level_6inst", ...)
+# whether or not stage 6 is in RUN_STAGES. If 07_Cache/concept_level_6inst.rds
+# is missing, this call runs the full concept-level sweep (about eight hours;
+# see WHAT RUNS in the file header). The stopifnot() requires every concept in
+# concept_results to be in the current panel. CONCEPT_INSTRUMENTS (MAIN plus
+# SUPPORTING), defined here, is also used in Sections 16 and 24.
+#
+# The block ends by printing the number of HIGH concepts per family under
+# scheme_theory_v2 and, for each constructed canonical concept, the largest
+# number of distinct categories among its constituents in any scheme (1 means
+# they agree in every scheme). Running it again with USE_CACHE TRUE reloads
+# the same caches and rewrites QA01, QA03, and QA04.
 
 report_memory("Start:")
 
@@ -3693,28 +3688,54 @@ for (canon in names(CANONICAL_SCHEME_DONOR)) {
 
 
 
-}  # end warm-start branch
+}  # end HPT_WARM_START if/else
+
+
 
 ###############################################################################
-#                                                                             #
-#   PART 4 -- ESTIMATION                                                      #
-#                                                                             #
+#
+#   PART 4: ESTIMATION
+#
+#   Stages 5-11, the IN_SYSTEM robustness and ACS demographics blocks, and
+#   Sections 12-18. Each block runs when its stage is in RUN_STAGES or its
+#   HPT_RUN switch is TRUE (PART 1.3); stages 7-10 need both. A table
+#   written inside cache_or_run() is written only when the result is
+#   computed, not on a cache hit.
+#
 ###############################################################################
 
 
-# ============================================================================
-# Stages 5 and 6: instrument screen, concept sweep, stage-6 loader
-# ============================================================================
+# =============================================================================
+# Stage 5: Instrument screen and pooled models
+# =============================================================================
+#
+# Runs when 5 is in RUN_STAGES. run_instrument_screen() and
+# run_pooled_models() (Section 5), cached as instrument_screen and
+# pooled_models. They write T02_instrument_first_stage_screen.csv and
+# T03_pooled_OLS_RF_IV_all_outcomes.csv when computed.
 
-######## STAGE 5 -- instrument screen and pooled null #########################
 if (5 %in% RUN_STAGES) {
   screen <- cache_or_run("instrument_screen", run_instrument_screen(outpatient))
   pooled <- cache_or_run("pooled_models",     run_pooled_models(outpatient))
 }
 
 
+# =============================================================================
+# Stage 6: Concept-level sweep
+# =============================================================================
+#
+# Runs when 6 is in RUN_STAGES, which the default leaves out. The sweep
+# (estimate_concept_level(), Section 6; about eight hours) uses cache key
+# concept_level_6inst, the same call as in the BUILD block. With USE_CACHE
+# TRUE this block reloads that cache; with USE_CACHE <- FALSE the sweep runs a
+# second time here (see WHAT RUNS in the file header).
+#
+# Writes T05_concept_level_RF_FS_IV.csv and, through diagnose_size_gradient()
+# (Section 6), T05C_size_gradient_RF_vs_IV.csv, then prints the number of rows
+# per merged canonical concept (six expected, one per instrument). No other
+# block writes T05 or T05C. Figures 4 and 8 in PART 5 read them and are
+# skipped when the files do not exist.
 
-######## STAGE 6 -- concept level (~8 hours) ##################################
 if (6 %in% RUN_STAGES) {
   CONCEPT_INSTRUMENTS <- c(MAIN_INSTRUMENTS, SUPPORTING_INSTRUMENTS)
   concept_results <- cache_or_run("concept_level_6inst",
@@ -3730,14 +3751,15 @@ if (6 %in% RUN_STAGES) {
 }
 
 
-
-######## STAGE 6 LOADER -- for stages 8, 9, 10 ################################
-#
-# Loads the concept-level results from cache and verifies that their concept
-# universe matches the panel currently in memory. Stage 6 takes eight hours, so
-# the cache is long-lived and can easily outlive a change to the codebook or the
-# merge groups. A mismatch here means the cached results were estimated on a
-# different panel vintage and must be rebuilt.
+# -----------------------------------------------------------------------------
+# Stage 6 loader for stages 8-10
+# -----------------------------------------------------------------------------
+# Runs when 8, 9, or 10 is in RUN_STAGES. If concept_results is not in
+# memory, it is loaded through cache_or_run("concept_level_6inst", ...). The
+# block then stops if concept_results contains a concept that is not in the
+# current panel: the cached sweep was estimated before a change to the
+# codebook or the merge groups and has to be re-run. In a full run the BUILD
+# block has already loaded concept_results and stopped on the same condition.
 
 if (any(c(8, 9, 10) %in% RUN_STAGES) && !exists("concept_results")) {
   CONCEPT_INSTRUMENTS <- c(MAIN_INSTRUMENTS, SUPPORTING_INSTRUMENTS)
@@ -3760,39 +3782,32 @@ if (any(c(8, 9, 10) %in% RUN_STAGES)) {
 }
 
 
-
-###############################################################################
-
-# ============================================================================
-# Instrument audit and Stages 7-10
-# ============================================================================
+# =============================================================================
+# Instrument audit (QA05-QA08)
+# =============================================================================
+#
+# Compares the six system instruments (MAIN_INSTRUMENTS and
+# SUPPORTING_INSTRUMENTS, PART 1.5) on three questions, reported separately:
+#
+#   A  First-stage strength: the pooled first stage of each instrument (QA05).
+#   B  Sign stability: the shoppable term of the interacted model under each
+#      of the six schemes, for each instrument (QA06).
+#   C  Headline result: the Scheme 1 interacted model, reduced form and IV,
+#      under each instrument (QA07 estimates, QA08 tests).
+#
+# The tiers in PART 1.5 rest on the construction of each instrument and on
+# parts B and C, not on A. B is the criterion that keeps Competitor_systems_9m
+# out of MAIN. The SUPPORTING instruments are split into CONFIRMING and
+# DISCREPANT by their Scheme 1 results in C; stage 7.6 checks the tiers across
+# all six schemes.
+#
+# Runs when HPT_RUN$instrument_audit is TRUE. Nothing is cached, and QA05-QA08
+# are rewritten on every run. A and B take minutes; C, six models, about five
+# to ten minutes. Stages 7-10 below are inside the same switch, so they need
+# it TRUE as well as their number in RUN_STAGES.
 
 if (isTRUE(HPT_RUN$instrument_audit)) {
 
-# INSTRUMENT AUDIT -- justifying the three-instrument headline set
-#
-# Documents why the headline claims rest on three of the six system
-# instruments. Three separate questions, answered separately and never averaged
-# together, because they measure different things:
-#
-#   A. RAW STRENGTH. Pooled first-stage F for all six, estimated on a common
-#      sample so the magnitudes are comparable. Coefficient SIZE is not
-#      comparable across instruments that count different units -- a market has
-#      far more competitor hospitals than competitor systems -- but F is
-#      unit-free and is the right comparison.
-#
-#   B. IDENTIFICATION CREDIBILITY. Sign stability of the shoppable term across
-#      all six classification schemes. This is the criterion that excludes
-#      Competitor_systems_9m from the headline set.
-#
-#   C. DOES THE HEADLINE RESULT CHANGE? The actual reported specification
-#      (Scheme 1, interacted, RF and IV) estimated under each of the six
-#      instruments. This is the decisive test: whether including an instrument
-#      changes the finding, not whether it has a larger first stage.
-#
-# Writes QA05 through QA08. Runtime: A and B are minutes, C is six models at
-# roughly five to ten minutes total.
-###############################################################################
 stopifnot(exists("outpatient"))
 
 CANDIDATE_INSTRUMENTS <- c(MAIN_INSTRUMENTS, SUPPORTING_INSTRUMENTS)   # all 6
@@ -3804,16 +3819,17 @@ print(data.table(LABEL = names(CANDIDATE_INSTRUMENTS),
                           rep("SUPPORTING", length(SUPPORTING_INSTRUMENTS)))))
 
 
-
-###############################################################################
-# A. RAW STRENGTH -- pooled first stage on a common sample
-###############################################################################
-#
-# Coefficient size differs by a factor of 20 to 30 between hospital-counted and
-# system-counted instruments, purely because they count different units. That
-# is a units artefact rather than a strength difference. F-statistics are
-# unit-free and are the correct comparison; STANDARDISED_COEF rescales each
-# coefficient by its own instrument's standard deviation for the same reason.
+# -----------------------------------------------------------------------------
+# A  First-stage strength (QA05)
+# -----------------------------------------------------------------------------
+# One pooled first stage per instrument, all fit on d0 (the panel's model
+# columns and the six instruments); N_OBSERVATIONS records each fit's sample,
+# which differs only where an instrument has missing values. F_STAT is the
+# squared clustered t statistic of the instrument. Coefficients differ by a
+# factor of 20 to 30 between instruments that count hospitals and those that
+# count systems, because the units differ, so strength is compared on F_STAT.
+# STANDARDISED_COEF multiplies each coefficient by the standard deviation of
+# its instrument (the effect of a one-SD change).
 
 req_cols <- available_columns(outpatient, unique(c(
   ENDOGENOUS_VARIABLE, PRIMARY_OUTCOME, BASELINE_CONTROLS, BASELINE_FIXED_EFFECTS,
@@ -3854,19 +3870,15 @@ cat("\nSTANDARDISED_COEF rescales each coefficient by its OWN instrument's SD --
 rm(d0); invisible(gc())
 
 
-
-###############################################################################
-# B. SIGN STABILITY across classification schemes
-###############################################################################
-#
-# Estimates the shoppable term under all six schemes for each instrument and
-# reports the share of scheme variants coming back negative. An instrument
-# whose sign depends on how the shoppable line is drawn is not identifying a
-# stable object, whatever its first-stage F.
-#
-# This is the criterion that excludes Competitor_systems_9m from the headline
-# set: only 54% of its scheme variants are negative, and the sign flips under
-# the tier-collapse rule.
+# -----------------------------------------------------------------------------
+# B  Sign stability across schemes (QA06)
+# -----------------------------------------------------------------------------
+# estimate_interacted() for each instrument under each of the six schemes.
+# QA06 holds the IV and RF estimates of the shoppable term, and the printed
+# summary gives each instrument's share of negative estimates. An instrument
+# whose sign depends on where the shoppable line is drawn does not identify a
+# stable effect, whatever its first-stage F. This is the criterion that keeps
+# Competitor_systems_9m out of MAIN (PART 1.5).
 
 sign_check <- rbindlist(lapply(names(CANDIDATE_INSTRUMENTS), function(lab) {
   z <- CANDIDATE_INSTRUMENTS[[lab]]
@@ -3908,21 +3920,20 @@ cat("\nCompare SHARE_NEGATIVE_IV against the 54% that disqualified\n",
     "deserve reconsideration.\n", sep = "")
 
 
-
-###############################################################################
-# C. DOES THE HEADLINE RESULT CHANGE?
-###############################################################################
+# -----------------------------------------------------------------------------
+# C  Headline result under each instrument (QA07, QA08)
+# -----------------------------------------------------------------------------
+# The reported specification (Scheme 1, interacted, reduced form and IV) with
+# each of the six instruments, each row tagged MAIN or SUPPORTING. QA07 holds
+# the estimates and QA08 the heterogeneity tests; the comparison is whether
+# the SUPPORTING instruments give the same result as the MAIN ones.
 #
-# A and B inform the decision; this settles it. The actual reported
-# specification -- Scheme 1, interacted, reduced form and IV -- is estimated
-# under all six instruments, and the question is whether the three supporting
-# instruments tell a different story from the three main ones.
-#
-# If they agree, restricting the headline to three was conservative but
-# costless. If they disagree, the disagreement is itself the reason to keep the
-# tiering. Either way the comparison belongs in the paper as a stated
-# robustness check rather than as a silent choice, which is why it is written
-# to QA07 and QA08.
+# The DECISION RULE message printed at the end of part C names
+# Competitor_outside_CBSA_systems_9m and Competitor_outside_CBSA_counties_9m
+# as the instruments to add as confirming robustness and treats
+# Competitor_systems_9m as excluded. The tiers in PART 1.5 differ: CONFIRMING
+# holds Competitor_outside_CBSA_counties_9m and Competitor_systems_9m, and
+# DISCREPANT holds Competitor_outside_CBSA_systems_9m.
 
 hc_rows  <- list(); hc_tests <- list()
 
@@ -3982,21 +3993,44 @@ cat("\n", strrep("=", 84), "\nINSTRUMENT AUDIT COMPLETE\n", strrep("=", 84), "\n
     "  QA07/QA08  headline result under all 6\n", sep = "")
 
 
-
-###############################################################################
-# STAGE 7 -- main results and transform ladder
+# =============================================================================
+# Stage 7: Main results and transform ladder
+# =============================================================================
 #
-#   7.1  Headline: three MAIN instruments, six schemes, plus the transform
-#        ladder and the Scheme 1 procedural-exclusion sensitivity
-#   7.2  Confirming tier
-#   7.3  Discrepant tier, reported alone and never pooled
-#   7.4  All three tiers combined into one tagged table
-#   7.5  Pooled robustness claim over MAIN + CONFIRMING
-#   7.6  Tier rerank across all six schemes, alongside first-stage F
-###############################################################################
+# Estimates the interacted shoppability model over the six schemes with
+# run_main_results() (Section 7) for each instrument tier in PART 1.5, and the
+# transform ladder. Runs when 7 is in RUN_STAGES and HPT_RUN$instrument_audit
+# is TRUE.
+#
+#   7.1  Headline: MAIN instruments; transform ladder; Scheme 1 sensitivity
+#   7.2  CONFIRMING instruments
+#   7.3  DISCREPANT instrument, reported separately
+#   7.4  The three tiers in one table
+#   7.5  MAIN and CONFIRMING pooled
+#   7.6  Heterogeneity significance by instrument across the six schemes
+#
+# run_main_results() writes <stem>_interacted_RF_and_IV.csv,
+# <stem>B_heterogeneity_tests.csv, and <stem>C_response_gap.csv; each call
+# gives its stem. All estimates except the Scheme 1 sensitivity are cached
+# (main_results, transform_ladder, confirming_results, discrepant_results,
+# robustness_pool_results), so their tables are written only when computed;
+# 7.4 and 7.6 rewrite theirs on every run. If the caches hold
+# normal-reference p-values (INFERENCE in the file header), the p < 0.05
+# counts in 7.5 and 7.6 use them unconverted.
+
 if (7 %in% RUN_STAGES) {
   
-  # --- 7.1 HEADLINE: 3 MAIN instruments ---------------------------------------
+  # ---------------------------------------------------------------------------
+  # 7.1  Headline: MAIN instruments
+  # ---------------------------------------------------------------------------
+  # MAIN_INSTRUMENTS over the six schemes (stem T06_main). The transform
+  # ladder re-estimates Scheme 1 with the MAIN instruments under each
+  # transform in TRANSFORM_LADDER, as a robustness check (design decision 1
+  # in the file header), and writes T07_transform_ladder_estimates.csv and
+  # T07B_transform_ladder_heterogeneity.csv. With
+  # EXCLUDE_PROCEDURAL_FROM_SCHEME1 = TRUE (PART 1.5), Scheme 1 is also
+  # estimated with the procedure-adjunct concepts moved to Non_shoppable
+  # (stem T06D_scheme1_procedural_excluded); this sensitivity is not cached.
   main   <- cache_or_run("main_results",
                          run_main_results(outpatient, stem = "T06_main"))
   ladder <- cache_or_run("transform_ladder", run_transform_ladder(outpatient))
@@ -4011,20 +4045,33 @@ if (7 %in% RUN_STAGES) {
                                   stem = "T06D_scheme1_procedural_excluded")
   }
   
-  # --- 7.2 CONFIRMING: 2 additional instruments -------------------------------
+  # ---------------------------------------------------------------------------
+  # 7.2  Confirming tier
+  # ---------------------------------------------------------------------------
+  # CONFIRMING_INSTRUMENTS over the six schemes (stem T06J_confirming).
   cat("\n", strrep("=", 84), "\n7.2 CONFIRMING INSTRUMENTS (2)\n", strrep("=", 84), "\n", sep = "")
   confirming <- cache_or_run("confirming_results",
                              run_main_results(outpatient, instruments = CONFIRMING_INSTRUMENTS,
                                               stem = "T06J_confirming"))
   
-  # --- 7.3 DISCREPANT: reported on its own, never pooled ----------------------
+  # ---------------------------------------------------------------------------
+  # 7.3  Discrepant tier
+  # ---------------------------------------------------------------------------
+  # DISCREPANT_INSTRUMENTS over the six schemes (stem T06K_discrepant),
+  # reported on its own and not pooled with the other tiers.
   cat("\n", strrep("=", 84), "\n7.3 DISCREPANT INSTRUMENT (1) — reported, not pooled\n",
       strrep("=", 84), "\n", sep = "")
   discrepant <- cache_or_run("discrepant_results",
                              run_main_results(outpatient, instruments = DISCREPANT_INSTRUMENTS,
                                               stem = "T06K_discrepant"))
   
-  # --- 7.4 COMBINED TABLE: all three tiers, tagged, side by side -------------
+  # ---------------------------------------------------------------------------
+  # 7.4  All tiers combined
+  # ---------------------------------------------------------------------------
+  # Stacks the estimates (T06F_all_tiers_combined.csv) and the heterogeneity
+  # tests (T06G_all_tiers_heterogeneity_tests.csv) of the three tiers with a
+  # TIER column, and prints the Scheme 1 shoppable term by tier. The T06G
+  # block in PART 5 reads T06G.
   combined <- rbindlist(list(
     cbind(TIER = "MAIN",       main$rows),
     cbind(TIER = "CONFIRMING", confirming$rows),
@@ -4047,7 +4094,12 @@ if (7 %in% RUN_STAGES) {
                    IV_P = round(IV_P, 4), MIN_WALD_F = round(FIRST_STAGE_WALD_MIN, 1))][
                      order(TIER, INSTRUMENT_LABEL)])
   
-  # --- 7.5 POOLED ROBUSTNESS CLAIM: MAIN + CONFIRMING, 5 instruments ---------
+  # ---------------------------------------------------------------------------
+  # 7.5  MAIN and CONFIRMING pooled
+  # ---------------------------------------------------------------------------
+  # The five ROBUSTNESS_INSTRUMENTS over the six schemes, 30 models (stem
+  # T06H_pooled_main_confirming), and the share of heterogeneity tests with
+  # p < 0.05 by estimator.
   cat("\n", strrep("=", 84), "\n7.5 POOLED: MAIN + CONFIRMING (5 instruments x 6 schemes = 30 models)\n",
       strrep("=", 84), "\n", sep = "")
   robustness_pool <- cache_or_run("robustness_pool_results",
@@ -4062,14 +4114,19 @@ if (7 %in% RUN_STAGES) {
   cat("\nHeterogeneity significance, pooled across MAIN + CONFIRMING (30 models):\n")
   print(het_summary)
   
-  # --- 7.6 TIER RERANK: across ALL 6 SCHEMES, not Scheme 1 alone -------------
-  # The tier assignment in QA07 and QA08 was made on Scheme 1 alone. This
-  # checks whether it holds across the full set of schemes, and reports median
-  # first-stage F alongside so the two axes stay visibly separate.
+  # ---------------------------------------------------------------------------
+  # 7.6  Tier rerank across the six schemes
+  # ---------------------------------------------------------------------------
+  # For each instrument, the number and share of schemes in which the
+  # reduced-form heterogeneity test has p < 0.05 and its median p-value, with
+  # the median first-stage F alongside (T06L_tier_rerank_all_schemes.csv).
+  # The tiers were assigned on Scheme 1 (QA07, QA08); this table checks them
+  # across all six schemes. It is diagnostic: the tiers in PART 1.5 are not
+  # reassigned from it, because that would select instruments on outcomes.
   #
-  # This is diagnostic, not a re-selection rule. Re-tiering on these p-values
-  # would be outcome-based instrument selection, which is exactly what the
-  # design decision in Section 0 avoids.
+  # The T06G block in PART 5 rewrites T06L from T06G after converting the
+  # p-values to t(15). With HPT_RUN$figures TRUE (the default), that version
+  # replaces this one.
   rerank <- combined_tests[ESTIMATOR == "Reduced form",
                            .(N_SCHEMES = .N,
                              N_SIG_05 = sum(P_VALUE < 0.05, na.rm = TRUE),
@@ -4101,10 +4158,23 @@ if (7 %in% RUN_STAGES) {
 }
 
 
+# =============================================================================
+# Stage 8: Meta-regressions, partition deduplication, permutation inference
+# =============================================================================
+#
+# Second step of the two-step design (Section 8), on the concept-level
+# estimates in concept_results (stage 6), each tagged with its instrument
+# tier (PART 1.5). Runs when 8 is in RUN_STAGES and HPT_RUN$instrument_audit
+# is TRUE. The RF and IV meta-regressions are cached (meta_regressions_rf,
+# meta_regressions_iv); everything else is recomputed on every run.
+#
+#   T08, T08C   all meta-regression terms; one scheme variant per partition
+#   T08B        scheme variants that induce the same partition, written by
+#               deduplicate_partitions()
+#   T08F        inverse-variance shoppable terms by tier, distinct partitions
+#   T08E        family permutation test, MAIN + CONFIRMING and all six
+#   T08D_*      RF/FS/IV decomposition, all instruments and by tier
 
-###############################################################################
-# STAGE 8 -- meta-regressions, partition deduplication, permutation inference
-###############################################################################
 if (8 %in% RUN_STAGES) {
   
   meta_input <- prepare_meta_input(concept_results, schemes_long)
@@ -4177,10 +4247,20 @@ if (8 %in% RUN_STAGES) {
 }
 
 
+# =============================================================================
+# Stage 9: Price comparability
+# =============================================================================
+#
+# Runs when 9 is in RUN_STAGES and HPT_RUN$instrument_audit is TRUE, with the
+# Section 9 functions. verify_loo_sd() compares the closed-form
+# leave-one-county-out SD with a brute-force loop on five concepts and stops
+# if they differ. The comparability measures (cache key
+# comparability_measures; T09_comparability_measures.csv) read the exact-code
+# panel and the payer-cell export. The row-level interacted test with the
+# MAIN instruments is cached (comparability_interaction; T09B, T09C); the
+# within-family test on concept_results is not (T09D). Both screen the
+# moderators with screen_moderators(), which writes QA09_moderator_screen.csv.
 
-###############################################################################
-# STAGE 9 RUN BLOCK
-###############################################################################
 if (9 %in% RUN_STAGES) {
   
   verify_loo_sd(outpatient)
@@ -4195,10 +4275,17 @@ if (9 %in% RUN_STAGES) {
 }
 
 
+# =============================================================================
+# Stage 10: Comparability meta-regression
+# =============================================================================
+#
+# Runs when 10 is in RUN_STAGES and HPT_RUN$instrument_audit is TRUE.
+# run_comparability_meta() (Section 10) on concept_results and the
+# comparability measures. The measures are loaded through cache_or_run() when
+# they are not in memory; the block stops if concept_results is not. Not
+# cached; writes T10_comparability_meta_regression.csv,
+# T10B_horse_race_summary.csv, and QA09_moderator_screen.csv.
 
-###############################################################################
-# STAGE 10 RUN BLOCK
-###############################################################################
 if (10 %in% RUN_STAGES) {
   if (!exists("measures")) {
     measures <- cache_or_run("comparability_measures",
@@ -4216,42 +4303,54 @@ if (10 %in% RUN_STAGES) {
 
 }  # end HPT_RUN$instrument_audit
 
-# ============================================================================
-# Stage 11: instrument balance and placebo
-# ============================================================================
 
-######## STAGE 11 -- instrument balance and placebo ###########################
+# =============================================================================
+# Stage 11: Instrument balance and placebo
+# =============================================================================
+#
+# Runs when 11 is in RUN_STAGES; it does not depend on
+# HPT_RUN$instrument_audit. run_instrument_balance() regresses
+# LOG_TOTAL_BEDS, IN_SYSTEM, and IS_SHORT_TERM on each MAIN instrument
+# (T11_instrument_balance.csv), and run_placebo_outcome() regresses
+# LOG_TOTAL_BEDS (T11B_placebo_outcome.csv). Both use one row per hospital,
+# additive county and month fixed effects, and standard errors clustered by
+# county (Section 11). Not cached.
+
 if (11 %in% RUN_STAGES) {
   balance <- run_instrument_balance(outpatient)
   placebo <- run_placebo_outcome(outpatient)
 }
 
 
-
-###############################################################################
-
-# ============================================================================
-# Robustness: controlling for system affiliation
-# ============================================================================
+# =============================================================================
+# Robustness: controlling for system affiliation (IN_SYSTEM)
+# =============================================================================
+#
+# In the stage 11 balance test, system membership is related to two of the
+# three MAIN instruments (p = 0.004 and p = 0.001; standardized effects of
+# -0.08 and -0.14 SD). The relation is close to mechanical:
+# Competitor_only_hospitals_9m and Competitor_outside_CBSA_hospitals_9m count
+# competitors outside the focal hospital's own system, so exposure differs by
+# construction between affiliated and unaffiliated hospitals. This block
+# re-estimates the stage 7 headline (MAIN instruments, six schemes) with
+# IN_SYSTEM added to the controls and compares the two.
+#
+# Runs when HPT_RUN$insystem_robust is TRUE. Uses the stage 7 object `main`,
+# loaded through cache_or_run("main_results", ...) if it is not in memory
+# (which estimates it if the cache file is missing). The IN_SYSTEM models are
+# not cached and are re-estimated on every run. If the main_results cache
+# holds normal-reference p-values (INFERENCE in the file header), the base and
+# IN_SYSTEM p-values in T11D and T11E use different reference distributions.
 
 if (isTRUE(HPT_RUN$insystem_robust)) {
 
-# ROBUSTNESS: does the headline result survive controlling for IN_SYSTEM?
-#
-# The balance test in Section 11 finds system membership significantly related
-# to two of the three MAIN instruments (p = 0.004 and p = 0.001), with small
-# standardised effects of -0.08 and -0.14 SD.
-#
-# That is not disqualifying, and the correlation is close to mechanical:
-# Competitor_only_hospitals_9m and Competitor_outside_CBSA_hospitals_9m count
-# competitors OUTSIDE the focal hospital's own system by construction, so an
-# unaffiliated hospital has a mechanically different exposure profile. But the
-# clean way to close the objection is to show the headline result is unchanged
-# when system membership is controlled for, rather than to argue it away.
-#
-# This reuses estimate_interacted() exactly as run_main_results() does, with
-# one control added. Nothing else about the specification changes.
-###############################################################################
+# add_system_membership() returns a copy of the panel with IN_SYSTEM = 1 for
+# rows with a non-empty SYSTEM_KEY. run_main_results_insystem_robustness()
+# repeats the run_main_results() loop (Section 7) with IN_SYSTEM added to
+# BASELINE_CONTROLS and nothing else changed. It writes
+# T11C_insystem_robustness_interacted_RF_and_IV.csv and
+# T11C_insystem_robustnessB_heterogeneity_tests.csv and returns the rows and
+# tests.
 add_system_membership <- function(panel) {
   d <- copy(panel)
   d[, IN_SYSTEM := as.integer(!is.na(SYSTEM_KEY) & SYSTEM_KEY != "")]
@@ -4296,10 +4395,15 @@ run_main_results_insystem_robustness <- function(
 }
 
 
-
-###############################################################################
-# SIDE-BY-SIDE COMPARISON against the original headline (T06_main)
-###############################################################################
+# compare_insystem_robustness() matches the IN_SYSTEM results to the stage 7
+# headline (main$rows, main$tests) by scheme, instrument, and term. For the
+# reduced form it reports the change in percentage points per SD
+# (RF_DELTA_PP) and whether the sign is unchanged (SIGN_STABLE); for the
+# heterogeneity tests, the p-values with and without the control
+# (STILL_SIG_05 = 1 if p < 0.05 with it). Writes
+# T11D_insystem_robustness_comparison.csv and
+# T11E_insystem_robustness_heterogeneity_comparison.csv. The medians in its
+# last message, labeled "RF", pool the reduced-form and IV tests.
 compare_insystem_robustness <- function(original_rows, original_tests,
                                         robust_rows, robust_tests) {
   
@@ -4355,13 +4459,7 @@ compare_insystem_robustness <- function(original_rows, original_tests,
 }
 
 
-
-###############################################################################
-# RUN
-###############################################################################
-#
-# Needs the stage 7 headline object `main` in memory for the comparison. If it
-# is absent, reload it from cache rather than re-estimating.
+# Driver ----------------------------------------------------------------------
 
 if (!exists("main")) {
   main <- cache_or_run("main_results", run_main_results(outpatient, stem = "T06_main"))
@@ -4372,48 +4470,45 @@ robust <- run_main_results_insystem_robustness(outpatient)
 comparison <- compare_insystem_robustness(main$rows, main$tests,
                                           robust$rows, robust$tests)
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$insystem_robust
 
-# ============================================================================
-# County demographics from the ACS (needs a Census API key)
-# ============================================================================
+
+# =============================================================================
+# County demographics from the ACS
+# =============================================================================
+#
+# Downloads nine county characteristics from the 2022 five-year American
+# Community Survey with tidycensus, merges them onto `outpatient` by
+# COUNTY_FIPS as DEMO_ columns, and saves the merged panel over
+# 07_Cache/outpatient_panel.rds (step 8). The DEMO_ columns are the
+# moderators of Sections 12 and 12B, and build_summary_stats() (PART 5) adds
+# them as Panel D when present. Runs when HPT_RUN$demographics is TRUE, the
+# switch that also runs Section 12. Needs a Census API key and an internet
+# connection, and installs tidycensus if it is missing.
+#
+# Variable codes. In the profile tables (DP02, DP03, DP05) the percent version
+# of a variable is the base code plus "P": DP02_0068 is a count, DP02_0068P a
+# percent. Subject-table codes have no such suffix: S0101_C02_030 is already
+# the percent aged 65 and over, and S0101_C02_030P returns nothing. In wide
+# output get_acs() returns an E (estimate) and an M (margin of error) column
+# for every variable, whatever the table type; step 2 selects on the trailing
+# E. A code that does not exist for the 2022 vintage returns zeros or NAs
+# rather than an error. Steps 4 and 7 print the values for inspection;
+# nothing in the block tests them.
 
 if (isTRUE(HPT_RUN$demographics)) {
 
-# COUNTY DEMOGRAPHICS
-#
-# Pulls nine county-level characteristics from the 2022 five-year American
-# Community Survey via tidycensus and merges them onto the panel by FIPS. These
-# are the moderators used in the demographic heterogeneity blocks below.
-#
-# Needs a Census API key. Set it once with:
+# Census API key, set once per machine:
 #   census_api_key("YOUR_KEY_HERE", install = TRUE)
-#
-# A NOTE ON VARIABLE CODES. Profile-table variables follow the convention that
-# the base code plus a "P" suffix gives the percent version -- DP02_0068 is a
-# count, DP02_0068P is the percent. Subject tables do not. S0101's C02 column
-# code IS already the percent column: S0101_C02_030 is itself "Percent!!Total
-# population!!65 years and over", and appending a P suffix to it returns
-# nothing. get_acs() appends the E and M suffixes automatically for every table
-# type, which is why the selection step below matches on a trailing E.
-#
-# The spot check in step 4 is not optional. A wrong variable code for a given
-# ACS vintage returns a valid-looking column of zeros or NAs rather than an
-# error, and that would propagate silently into every heterogeneity estimate.
-###############################################################################
 if (!requireNamespace("tidycensus", quietly = TRUE)) install.packages("tidycensus")
 library(tidycensus)
 
 # census_api_key("YOUR_KEY_HERE", install = TRUE)  # run once per machine
 
 
-# ---------------------------------------------------------------------------
-# STEP 1 -- pull from Census
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Step 1  Download the ACS variables
+# -----------------------------------------------------------------------------
 acs_vars <- c(
   DEMO_POVERTY_RATE      = "DP03_0119P",   # % below poverty line
   DEMO_MEDIAN_INCOME     = "DP03_0062",    # median household income
@@ -4440,21 +4535,18 @@ cat("\nRaw columns from get_acs():\n")
 print(names(county_demo))
 
 
-# ---------------------------------------------------------------------------
-# STEP 2 -- select estimate columns and strip the E suffix
-# ---------------------------------------------------------------------------
-#
-# get_acs(output = "wide") returns an E (estimate) and M (margin of error)
-# column per variable, plus a NAME column. Selecting on the trailing E and
-# renaming in one step avoids collisions between the requested variable names
-# and the columns get_acs() adds. The stopifnot() is a hard stop on any drift
-# between what was requested and what came back.
+# -----------------------------------------------------------------------------
+# Step 2  Keep the estimate columns
+# -----------------------------------------------------------------------------
+# Keeps GEOID and the DEMO_ estimate columns (names ending in E) and drops the
+# E; get_acs() also returns NAME and the M columns. The stopifnot() stops the
+# run unless there is one estimate column per requested variable.
 
 est_cols <- grep("^DEMO_.*E$", names(county_demo), value = TRUE)
 cat("\nEstimate columns identified:\n")
 print(est_cols)
 
-stopifnot(length(est_cols) == length(acs_vars))  # hard stop on any drift
+stopifnot(length(est_cols) == length(acs_vars))
 
 county_demo <- county_demo[, c("GEOID", est_cols), with = FALSE]
 setnames(county_demo, est_cols, sub("E$", "", est_cols))
@@ -4463,9 +4555,9 @@ cat("\nColumns after rename:\n")
 print(names(county_demo))
 
 
-# ---------------------------------------------------------------------------
-# STEP 3 -- rescale and derive
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Step 3  Rescale shares, log income, five-digit COUNTY_FIPS
+# -----------------------------------------------------------------------------
 pct_vars <- c("DEMO_POVERTY_RATE", "DEMO_COLLEGE_SHARE", "DEMO_HS_GRAD_SHARE",
               "DEMO_BLACK_SHARE", "DEMO_HISPANIC_SHARE", "DEMO_UNINSURED_RATE",
               "DEMO_AGE65PLUS_SHARE")
@@ -4481,18 +4573,15 @@ cat("\nBuilt", nrow(county_demo), "county rows.\n")
 print(head(county_demo, 5))
 
 
-# ---------------------------------------------------------------------------
-# STEP 4 -- spot check against known values
-# ---------------------------------------------------------------------------
-#
-# Autauga County, Alabama (FIPS 01001), checked against Census QuickFacts for
-# this ACS vintage: Black share roughly 19-20%, age 65 and over roughly 16-17%,
-# high-school-graduate-or-higher roughly 88-90%.
-#
-# If any share comes back as 0, NA, or above 1, stop here. That means the
-# variable code is wrong for this vintage, and it should be checked against
-# load_variables(2022, "acs5/subject") and load_variables(2022, "acs5/profile")
-# before proceeding to the merge.
+# -----------------------------------------------------------------------------
+# Step 4  Spot check: Autauga County, Alabama (FIPS 01001)
+# -----------------------------------------------------------------------------
+# Census QuickFacts values for this ACS vintage: Black share about 19-20%, age
+# 65 and over about 16-17%, high school graduate or higher about 88-90%. A
+# share of 0, NA, or above 1 means the variable code is wrong for this
+# vintage; load_variables(2022, "acs5/subject") and
+# load_variables(2022, "acs5/profile") list the valid codes. The block prints
+# the county's row and continues whatever the values.
 
 cat("\n", strrep("=", 70), "\nSPOT CHECK: Autauga County AL (01001)\n", strrep("=", 70), "\n", sep = "")
 print(county_demo[COUNTY_FIPS == "01001"])
@@ -4501,9 +4590,14 @@ cat("\nExpected ranges: BLACK_SHARE ~0.19-0.20 | AGE65PLUS_SHARE ~0.15-0.18 |\n"
     "STOP and do not proceed to the merge.\n", sep = "")
 
 
-# ---------------------------------------------------------------------------
-# STEP 5 -- merge function
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Step 5  Merge function
+# -----------------------------------------------------------------------------
+# attach_county_demographics_v2() left-joins the county table to a copy of the
+# panel by COUNTY_FIPS (zero-padded to five digits). DEMO_ columns already in
+# the panel are dropped first, so a re-run replaces them. It reports the share
+# of counties and rows matched, lists unmatched counties when fewer than 90%
+# of rows match, and stops if the panel has no COUNTY_FIPS.
 attach_county_demographics_v2 <- function(panel, demo) {
   if (!("COUNTY_FIPS" %in% names(panel))) {
     stop("Panel lacks COUNTY_FIPS.", call. = FALSE)
@@ -4539,17 +4633,18 @@ attach_county_demographics_v2 <- function(panel, demo) {
 }
 
 
-# ---------------------------------------------------------------------------
-# STEP 6 -- merge onto the panel
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Step 6  Merge onto the panel
+# -----------------------------------------------------------------------------
+# Replaces `outpatient` in memory with the merged panel.
 stopifnot(exists("outpatient"))
 
 outpatient <- attach_county_demographics_v2(outpatient, demo = county_demo)
 
 
-# ---------------------------------------------------------------------------
-# STEP 7 -- full distribution check
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Step 7  Distribution check
+# -----------------------------------------------------------------------------
 cat("\n", strrep("=", 70), "\nFULL DISTRIBUTION CHECK\n", strrep("=", 70), "\n", sep = "")
 demo_cols <- grep("^DEMO_", names(outpatient), value = TRUE)
 for (cc in demo_cols) {
@@ -4561,101 +4656,108 @@ for (cc in demo_cols) {
 }
 
 
-# ---------------------------------------------------------------------------
-# STEP 8 -- persist the merged panel, only after steps 4 and 7 look right
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Step 8  Save the merged panel
+# -----------------------------------------------------------------------------
 #
-# This overwrites the cached panel with the demographics-merged version,
-# deliberately and outside cache_or_run(). The effect is that restore_session()
-# returns `outpatient` with the DEMO_ columns already attached, so Sections 12
-# and 12B run in a fresh session without another Census API pull.
+# Overwrites 07_Cache/outpatient_panel.rds, the BUILD block's cache, with the
+# merged panel, outside cache_or_run(). restore_session() and later runs then
+# load `outpatient` with the DEMO_ columns, so Sections 12 and 12B can run in a
+# fresh session without another Census download. The save does not depend on
+# the checks in steps 4 and 7.
 #
-# THE TRADE-OFF: the cached panel is no longer what the BUILD block alone would
-# produce. After any rebuild of outpatient_panel -- whether through
-# invalidate_cache() or USE_CACHE <- FALSE -- the DEMO_ columns are gone until
-# this block is run again. Re-run it before Section 12 in that case.
+# The cached panel then differs from what the BUILD block alone produces. If
+# outpatient_panel is rebuilt (invalidate_cache() or USE_CACHE <- FALSE), the
+# DEMO_ columns are missing until this block runs again; in a full run it runs
+# before Section 12, under the same switch.
 saveRDS(outpatient, file.path(CACHE_DIR, "outpatient_panel.rds"))
-
-
-
-###############################################################################
 
 }  # end HPT_RUN$demographics
 
-# ============================================================================
-# Section 12: SES heterogeneity
-# ============================================================================
 
-if (isTRUE(HPT_RUN$demographics)) {
-
-# SECTION 12 -- COUNTY DEMOGRAPHIC HETEROGENEITY IN THE SHOPPABILITY GRADIENT
+# =============================================================================
+# Section 12: County demographics and the shoppability gradient
+# =============================================================================
 #
-# THE ESTIMAND. The question is whether the shoppability GRADIENT varies with
-# county composition, not whether the pooled response does. Interacting the
-# instrument with a demographic alone,
+# Tests whether the shoppability gradient varies with county demographics.
+# Interacting the instrument with a demographic M alone,
 #
-#     ln(P) = g0*Z + g1*(Z x M) + controls + FE
+#     ln(P) = g0*Z + g1*(Z x M) + controls + FE,
 #
-# estimates demographic variation in the pooled response -- a quantity the
-# paper disowns, because it averages a real effect on shoppable services
-# against a precise zero on non-shoppable ones. The specification estimated
-# here splits the treatment by shoppability first and interacts within each
-# arm:
+# would measure how the pooled response varies with M, and the pooled
+# response averages the effect on shoppable services with a precisely
+# estimated zero on non-shoppable ones. The section instead splits by
+# shoppability and interacts M within each category:
 #
 #     ln(P) = gS*(Z x Shop)     + gN*(Z x NonShop)
 #           + dS*(Z x Shop x M) + dN*(Z x NonShop x M)
 #           + controls + FE
 #
-# The object of interest is d(gap)/dM = dS - dN, tested as a single 1-df Wald.
+# The quantity of interest is dS - dN, the change in the shoppable minus
+# non-shoppable gap per unit of M, tested with a 1-df Wald test. M is
+# centered at its estimation-sample mean, so gS and gN are the category
+# effects at the mean of M. Shoppability is set by the concept and M by the
+# county, so M, Shop, and Shop x M are constant within a county x concept
+# cell and are absorbed by MARKET_ID; only the four Z interactions are
+# estimated. The IV version has four endogenous regressors and four excluded
+# instruments, so it is exactly identified and the reduced-form t-test
+# equals the Anderson-Rubin test (design decision 2 in the file header). Its
+# first stage is weaker than in the headline models: there are four
+# endogenous terms rather than two, and the interacted instruments are weak
+# once MARKET_ID absorbs county variation. The reduced form is the primary
+# estimate. IV magnitudes depend on first-stage strength, reported as
+# FIRST_STAGE_WALD_MIN in every output row.
 #
-# THE PARAMETER COUNT IS NOT A PROBLEM. Shoppability is concept-determined and
-# the demographic is county-determined, so the lower-order terms M, Shop, and
-# (Shop x M) are all constant within a county x concept cell and are absorbed
-# entirely by MARKET_ID. Only the four Z-interactions are estimated. The IV
-# version has four endogenous regressors and four excluded instruments, so the
-# model stays exactly identified and the reduced-form t-test remains
-# numerically identical to the Anderson-Rubin test.
+# Two predictions for the SES index (higher = more advantaged county) give
+# opposite signs for dS - dN:
+#   consumer shopping capacity: advantaged markets shop more, so the response
+#     is larger (more negative) and dS - dN is negative;
+#   contracting depth: advantaged markets have denser commercial contracting
+#     and less movable negotiations, so the response is smaller and dS - dN
+#     is positive.
 #
-# THE BINDING CONSTRAINT IS FIRST-STAGE STRENGTH. Z x M is weakly instrumented
-# once MARKET_ID absorbs the county variation, and the first stage is weaker
-# here than in the headline because there are four endogenous terms rather than
-# two. Read the reduced form as primary and treat the IV magnitudes as
-# illustrative; the RF p-values are weak-instrument robust by construction.
-# Check FIRST_STAGE_WALD_MIN before quoting any IV number.
+# Runs when HPT_RUN$demographics is TRUE, right after the ACS block under the
+# same switch. Needs `outpatient` with the six scheme columns and the DEMO_
+# columns from the ACS block; .t12_preflight() stops if one is missing. Also
+# uses .pval() from Section 1. T12T_RUN (subsection 0) switches the three
+# run blocks in subsection 6: the SES index across all six schemes (6A,
+# headline), each moderator separately (6B, appendix), and the SES index
+# against log population (6C). The three take about 30-45 minutes together.
 #
-# TWO COMPETING PREDICTIONS on the SES index, where higher means a more
-# advantaged county. These are opposite signs on the same coefficient, which is
-# what makes this a test rather than a description:
+# Writes QA10_ses_index_loadings.csv and the T12T_*.csv files named under
+# 6A-6C to T12T_OUTDIR (TABLE_DIR if it exists, else the working directory).
+# The PART 5 figure block reads the 6A and 6B test files for
+# fig17_ses_gradient.pdf and fig19_demo_moderators.pdf. Leaves t12t_panel
+# (outpatient with SES_INDEX) and the result list t12t in memory; Section 12B
+# reuses t12t_panel.
 #
-#   Consumer shopping capacity -- the original pre-registered prediction.
-#     Advantaged markets shop more, so the response is LARGER (more negative)
-#     and the interaction on the index is NEGATIVE.
-#
-#   Contracting depth -- the paper's second condition.
-#     Advantaged markets have denser commercial contracting and therefore less
-#     movable negotiations, so the response is SMALLER and the interaction on
-#     the index is POSITIVE.
-#
-# This block is self-contained. Every helper it uses is defined locally and
-# prefixed `.t12_` so nothing in the main pipeline is overwritten. It needs
-# only `outpatient` in memory, with the columns listed in the preflight below.
-#
-# Runtime is roughly 30-45 minutes for all three blocks. The T12T_RUN flags run
-# them independently.
-###############################################################################
+# load_t12_helpers() in HPT_warm_start.R, which Section 16.8 calls, reads
+# this section's helper definitions from the file without running the
+# driver, so the all-caps banner line at the top of the switch and the
+# numbered labels below it are left unchanged.
+
+if (isTRUE(HPT_RUN$demographics)) {
+
+# SECTION 12 -- COUNTY DEMOGRAPHIC HETEROGENEITY IN THE SHOPPABILITY GRADIENT
+
 suppressPackageStartupMessages({
   library(data.table)
   library(fixest)
 })
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 0. CONFIGURATION
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# T12T_RUN switches the run blocks 6A-6C. The specification settings repeat
+# the baseline in PART 1.5 (PRIMARY_OUTCOME, ENDOGENOUS_VARIABLE,
+# BASELINE_CONTROLS, BASELINE_FIXED_EFFECTS, BASELINE_CLUSTERS, and
+# MIN_MODEL_OBS) but are set here, so a change to those constants does not
+# reach this section.
 T12T_RUN <- list(
   ses_index      = TRUE,   # headline: SES index x 6 schemes x 3 instruments
   per_moderator  = TRUE,   # appendix: 8 moderators x Scheme 1 x 3 instruments
-  population     = TRUE    # market-size check: population as COMPETING interaction
+  population     = TRUE    # market-size check: SES index vs log population
 )
 
 T12T_OUTCOME    <- "LN_MEDIAN_PRICE"
@@ -4666,7 +4768,11 @@ T12T_CLUSTERS   <- c("ANALYSIS_MARKET", "POST_MONTH")
 T12T_COUNTY_KEY <- "ANALYSIS_MARKET"
 T12T_MIN_OBS    <- 50000L
 
-# Defined locally so this file does not depend on the main pipeline's globals.
+# The three MAIN instruments and the six primary schemes, as in
+# MAIN_INSTRUMENTS and SCHEME_COLUMNS (PART 1.5). Like the settings above,
+# they are set here rather than read from those registries. T12T_MODERATORS
+# are the eight ACS moderators screened in the preflight and estimated one
+# at a time in 6B.
 T12T_INSTRUMENTS <- c(
   Competitor_only_hospitals_9m         = "Z_SYS_COMPETITOR_ONLY_9M_EXCL_CURRENT",
   Primary_strict_system_IV             = "Z_SYS_STRICT_9M_EXCL_CURRENT",
@@ -4688,20 +4794,22 @@ T12T_MODERATORS <- c("DEMO_COLLEGE_SHARE", "DEMO_HS_GRAD_SHARE",
                      "DEMO_BLACK_SHARE", "DEMO_HISPANIC_SHARE",
                      "DEMO_AGE65PLUS_SHARE", "DEMO_UNINSURED_RATE")
 
-# Pre-registered expected signs, retained verbatim so the comparison is
-# reported rather than reconstructed after the fact. They come from the
-# consumer shopping-capacity model. The paper's own channel places the
-# contracting party rather than the patient at the centre, so a rejection of
-# these signs corroborates that channel instead of contradicting the design.
+# Pre-registered signs for the moderator interactions, kept as registered so
+# that the comparison is reported rather than reconstructed after the fact.
+# They follow the consumer shopping-capacity prediction. The
+# contracting-depth channel, which centers on the contracting party rather
+# than the patient, predicts the opposite signs. DEMO_UNINSURED_RATE has no
+# pre-registered sign. .t12_driver() compares the reduced-form signs with
+# these (SIGN_AS_PREDICTED).
 T12T_PREDICTED_NEGATIVE <- c("DEMO_COLLEGE_SHARE", "DEMO_HS_GRAD_SHARE",
                              "DEMO_LOG_MEDIAN_INCOME")
 T12T_PREDICTED_POSITIVE <- c("DEMO_POVERTY_RATE", "DEMO_BLACK_SHARE",
                              "DEMO_HISPANIC_SHARE", "DEMO_AGE65PLUS_SHARE")
 
-# Variables entering the SES index, each with the sign that orients it toward
-# "more advantaged". The uninsured rate is deliberately excluded: it carried no
+# Components of the SES index, each signed so that a higher value means a
+# more advantaged county. DEMO_UNINSURED_RATE is left out: it has no
 # pre-registered sign and loads ambiguously, since it tracks both poverty and
-# state Medicaid expansion policy.
+# state Medicaid expansion.
 T12T_SES_COMPONENTS <- c(DEMO_COLLEGE_SHARE     =  1,
                          DEMO_HS_GRAD_SHARE     =  1,
                          DEMO_LOG_MEDIAN_INCOME =  1,
@@ -4713,9 +4821,14 @@ T12T_SES_COMPONENTS <- c(DEMO_COLLEGE_SHARE     =  1,
 T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else getwd()
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 1. HELPERS  (all self-contained)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Helpers for this section, named .t12_* except for `%||%`. They also use
+# .pval() from Section 1. The `%||%` below replaces the Section 1 definition
+# in the global environment (Section 20 redefines it again). It treats only
+# NULL and zero-length values as missing, while the Section 1 version also
+# treats all-NA values and an empty first string as missing.
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
 
 .t12_save <- function(dt, filename) {
@@ -4734,9 +4847,10 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   invisible(NULL)
 }
 
-# Resolve a coefficient name. fixest prefixes fitted endogenous regressors with
-# "fit_" in IV models, so the same term has two possible names depending on the
-# estimator.
+# .t12_resolve() returns the name under which a term appears in a fit. fixest
+# prefixes fitted endogenous regressors with "fit_" in IV models, so the same
+# term has two possible names depending on the estimator. .t12_pull() returns
+# the term's coefficient and standard error, or NA for both.
 .t12_resolve <- function(fit, term) {
   if (is.null(fit)) return(NA_character_)
   cand <- c(paste0("fit_", term), term)
@@ -4750,7 +4864,10 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   list(b = unname(coef(fit)[nm]), s = unname(sqrt(vcov(fit)[nm, nm])))
 }
 
-# Wald test of b1 - b2 = 0, accounting for their covariance.
+# Wald test of b1 - b2 = 0 using the covariance of the two estimates. Returns
+# DIFF, DIFF_SE, WALD (1 df), and a two-sided p-value from .pval() (Section
+# 1), which uses the fit's degrees of freedom; NULL if a term is missing or
+# the variance of the difference is not positive.
 .t12_wald_diff <- function(fit, t1, t2) {
   n1 <- .t12_resolve(fit, t1); n2 <- .t12_resolve(fit, t2)
   if (is.na(n1) || is.na(n2)) return(NULL)
@@ -4763,9 +4880,10 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
              P_VALUE = .pval(d / se, fit))
 }
 
-# Minimum first-stage Wald across the endogenous equations. Written defensively
-# against fixest's return structure, which varies across versions; returns NA
-# rather than erroring.
+# Minimum first-stage Wald statistic across the endogenous equations
+# (FIRST_STAGE_WALD_MIN). The structure returned by fitstat(fit, "ivwald")
+# varies across fixest versions; the statistic is read from either form, and
+# NA is returned instead of an error.
 .t12_fs_wald <- function(fit) {
   if (is.null(fit)) return(NA_real_)
   v <- tryCatch({
@@ -4798,15 +4916,31 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
 .t12_cluster_formula <- function(cl) as.formula(paste0("~", paste(cl, collapse = " + ")))
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 2. CORE ESTIMATOR -- Z x CATEGORY x CONTINUOUS MODERATOR(S)
-# ===========================================================================
+# -----------------------------------------------------------------------------
 #
-# `moderators` may hold one or two continuous variables. With two, both enter
-# as competing interactions against the same category split, which is how the
-# market-size check in block 6C is run. The model stays exactly identified in
-# either case:
+# .t12_fit_triple() fits the reduced form and the IV for one scheme, one
+# instrument, and the continuous moderators in `moderators` (one or two).
+# The scheme must have two levels: Non_shoppable (reference) and Shoppable
+# (focal), in the factor order set by attach_scheme_columns(). For each
+# category k, the reduced form has Z x 1[k] and, for each moderator,
+# Z x 1[k] x M; the IV splits N_PRIOR_POSTERS the same way and instruments
+# it with those terms. With two moderators, both enter as competing
+# interactions against the same category split, as in the market-size check
+# (6C). The model is exactly identified in either case:
 #   n_endogenous = n_levels * (1 + n_moderators) = n_instruments.
+#
+# Returns NULL if a column is missing, fewer than min_obs complete rows
+# remain, the scheme does not have two levels, a moderator has no variation,
+# or the reduced form fails. Otherwise returns a list:
+#   rows   one row per term: RF and IV coefficients with .pval() p-values,
+#          RF_PERCENT_PER_SD_Z and IV_PERCENT (level terms),
+#          RF_SHIFT_PCT_PER_SD_MOD (interaction terms), FIRST_STAGE_WALD_MIN,
+#          and CRAGG_DONALD;
+#   tests  one row per moderator and estimator: DIFF = dS - dN with its Wald
+#          test, DGAP_PCT_PER_SD_MOD, and the reduced-form gap between the
+#          level terms at the moderator mean (GAP_AT_MEAN_*).
 
 .t12_fit_triple <- function(panel, scheme_col, moderators, instrument,
                             instrument_label = "", scheme_label = "",
@@ -4828,8 +4962,8 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
   keys <- levels(d$GRP)
   if (length(keys) != 2L) { cat("    [skip: scheme has", length(keys), "levels]\n"); return(NULL) }
   
-  # Centre each moderator at its estimation-sample mean, and record its SD for
-  # the per-SD reporting below.
+  # Centers each moderator at its estimation-sample mean and records its SD
+  # for the per-SD columns below.
   mod_tag <- paste0("M", seq_along(moderators))
   mod_sd  <- numeric(length(moderators))
   for (j in seq_along(moderators)) {
@@ -4841,7 +4975,9 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
     set(d, j = paste0("MODV_", mod_tag[j]), value = v - mean(v, na.rm = TRUE))
   }
   
-  # Build the design. Level terms first, then each moderator interaction.
+  # Design: for each category, the level term, then one interaction per
+  # moderator. TREAT_* are the endogenous terms, IVV_* their instruments, and
+  # RFV_* the reduced-form regressors (the same values as IVV_*).
   grp_tag <- paste0("G", seq_along(keys))
   endo <- ivs <- rfs <- character(0)
   term_grp <- term_lab <- term_mod <- character(0)
@@ -4908,7 +5044,10 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
       MODERATOR_SD = if (!is.na(j)) mod_sd[j] else NA_real_, INSTRUMENT_SD = sd_z)
   }), fill = TRUE)
   
-  # ---- The estimand: does the GAP move with the moderator? dS - dN ----
+  # Tests for each moderator: DIFF = dS - dN (Shoppable minus Non_shoppable
+  # interaction), from the reduced form and from the IV. For the IV rows,
+  # DGAP_PCT_PER_SD_MOD also scales DIFF by sd_z, the SD of the instrument,
+  # although the IV coefficients are per unit of N_PRIOR_POSTERS.
   tests <- rbindlist(lapply(seq_along(moderators), function(j) {
     iS <- which(term_grp == keys[2L] & term_lab == "x Moderator" & term_mod == moderators[j])
     iN <- which(term_grp == keys[1L] & term_lab == "x Moderator" & term_mod == moderators[j])
@@ -4916,7 +5055,7 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
     rf_t <- .t12_wald_diff(rf_fit, rfs[iS],  rfs[iN])
     iv_t <- .t12_wald_diff(iv_fit, endo[iS], endo[iN])
     
-    # Gap between the two level terms, evaluated at the moderator mean.
+    # Reduced-form gap between the two level terms, at the moderator mean.
     lS <- which(term_grp == keys[2L] & term_lab == "Level")
     lN <- which(term_grp == keys[1L] & term_lab == "Level")
     gap <- .t12_wald_diff(rf_fit, rfs[lS], rfs[lN])
@@ -4939,9 +5078,14 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 3. PREFLIGHT
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# .t12_preflight() stops if the panel lacks a column the section needs. It
+# prints row, concept, and county counts and a screen of the eight
+# moderators. A moderator with half or fewer finite values, or with no
+# variation, fails the screen, which raises a warning but does not stop the
+# run.
 .t12_preflight <- function(panel) {
   cat("\n", strrep("=", 78), "\nPREFLIGHT\n", strrep("=", 78), "\n", sep = "")
   need <- unique(c(T12T_OUTCOME, T12T_ENDOGENOUS, T12T_CONTROLS, T12T_FE,
@@ -4975,14 +5119,19 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 4. SES INDEX -- first principal component of the seven signed moderators
-# ===========================================================================
+# -----------------------------------------------------------------------------
 #
-# Estimated on the COUNTY cross-section rather than on panel rows, so a county
-# contributing many hospital-concept-months does not dominate the rotation.
-# Oriented so that higher means more advantaged, then standardised to mean zero
-# and standard deviation one.
+# .t12_build_ses_index() computes the index on the county cross-section (one
+# row per county with all seven components), so a county with many panel
+# rows does not dominate the rotation. Each component is z-scored and signed
+# by T12T_SES_COMPONENTS. The first principal component is signed so that
+# DEMO_COLLEGE_SHARE loads positively (higher = more advantaged) and is
+# standardized to mean zero and SD one across counties. The loadings are
+# printed and written to QA10_ses_index_loadings.csv in T12T_OUTDIR (not
+# QA_DIR). Returns the panel with SES_INDEX merged by county, NA where a
+# component is missing. Section 16.8 also calls this function.
 
 .t12_build_ses_index <- function(panel) {
   cat("\n", strrep("=", 78), "\nBUILDING SES INDEX\n", strrep("=", 78), "\n", sep = "")
@@ -5022,9 +5171,16 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 5. DRIVERS
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# .t12_driver() runs .t12_fit_triple() for every scheme x instrument pair,
+# printing progress and the time per fit, and stacks the results. It adds
+# EXPECTED_SIGN to the rows (from T12T_PREDICTED_NEGATIVE and
+# T12T_PREDICTED_POSITIVE) and, for interaction terms with an expected sign,
+# SIGN_AS_PREDICTED (TRUE if the reduced-form coefficient has that sign).
+# Returns list(rows, tests), or NULL with a warning if no model was
+# estimated.
 .t12_driver <- function(panel, moderators, schemes, instruments, tag) {
   rows <- list(); tests <- list()
   total <- length(schemes) * length(instruments); i <- 0L
@@ -5058,9 +5214,11 @@ T12T_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else 
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 6. RUN
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Runs the preflight, builds t12t_panel with .t12_build_ses_index(), and
+# collects the results of 6A-6C in the list t12t.
 stopifnot(exists("outpatient"))
 setDT(outpatient)
 .t12_preflight(outpatient)
@@ -5069,7 +5227,11 @@ t12t_panel <- .t12_build_ses_index(outpatient)
 
 t12t <- list()
 
-# ---- 6A. HEADLINE: SES index, all six schemes, three MAIN instruments -----
+# 6A  SES index x six schemes x three MAIN instruments (headline) -------------
+# Writes T12T_triple_interaction_ses.csv (rows) and
+# T12T_triple_interaction_ses_tests.csv (dS - dN tests), then prints the
+# reduced-form tests and a summary of them. An HPT_SCRATCH block after
+# PART 7 computes a minimum detectable effect from the tests file.
 if (isTRUE(T12T_RUN$ses_index)) {
   cat("\n", strrep("=", 78),
       "\n6A. HEADLINE — SES INDEX x SHOPPABILITY x Z (6 schemes x 3 instruments)\n",
@@ -5101,7 +5263,11 @@ if (isTRUE(T12T_RUN$ses_index)) {
   }
 }
 
-# ---- 6B. APPENDIX: eight moderators individually, headline scheme --------
+# 6B  Each moderator separately, Scheme 1 x three instruments (appendix) ------
+# Writes T12T_triple_interaction_moderators.csv and
+# T12T_triple_interaction_moderators_tests.csv. Prints the dS - dN tests and
+# compares the reduced-form sign of each shoppable interaction with its
+# pre-registered sign.
 if (isTRUE(T12T_RUN$per_moderator)) {
   cat("\n", strrep("=", 78),
       "\n6B. APPENDIX — EACH MODERATOR SEPARATELY (Scheme 1 x 3 instruments)\n",
@@ -5138,13 +5304,15 @@ if (isTRUE(T12T_RUN$per_moderator)) {
   }
 }
 
-# ---- 6C. MARKET SIZE: population as a COMPETING interaction --------------
-# Adding log(population) as a CONTROL does not test market-size confounding.
-# Population is county-level and time-invariant, so MARKET_ID absorbs it
-# entirely and the controlled specification is numerically identical to the
-# uncontrolled one to about 1e-13. Entering it as a competing INTERACTION is
-# the version that actually tests the confound, because the interaction with Z
-# is not absorbed.
+# 6C  Market size: SES index and log population together ----------------------
+# Log population is county-level and constant over time, so as a control it
+# would be absorbed by MARKET_ID (the controlled and uncontrolled estimates
+# agree to about 1e-13) and would not test for market-size confounding.
+# Here SES_INDEX and DEMO_LOG_POPULATION (added to t12t_panel) enter one
+# model as competing interactions, each with its own dS - dN test (Scheme 1,
+# three instruments). Needs DEMO_POPULATION from the ACS block; without it
+# the block is skipped with a warning. Writes T12T_population_horse_race.csv
+# and T12T_population_horse_race_tests.csv.
 if (isTRUE(T12T_RUN$population)) {
   cat("\n", strrep("=", 78),
       "\n6C. MARKET-SIZE CHECK — SES INDEX vs LOG POPULATION, both interacted\n",
@@ -5171,67 +5339,71 @@ if (isTRUE(T12T_RUN$population)) {
   }
 }
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$demographics
 
-# ============================================================================
-# Section 12B: SES terciles
-# ============================================================================
 
-if (isTRUE(HPT_RUN$ses_terciles)) {
-
-# SECTION 12B -- SES TERCILES AS A CATEGORICAL MODERATOR
+# =============================================================================
+# Section 12B: SES terciles as a categorical moderator
+# =============================================================================
 #
-# Section 12 imposes a constant SES gradient on the shoppability gap. This
-# relaxes that assumption by estimating a separate shoppability gap inside each
-# tercile of county SES and testing whether the three differ.
+# Section 12 imposes a linear SES gradient on the shoppability gap. This
+# section estimates a separate gap within each tercile of county SES and
+# tests whether the gaps differ. If the true pattern is nonlinear (for
+# example, only the top third of counties differs), a linear interaction
+# averages it away and returns a null that reflects the functional form.
 #
-# The motivation is specific: if the true pattern is nonlinear -- say only the
-# top third of counties behaves differently -- a linear interaction averages it
-# away and returns a null that reflects the functional form rather than the
-# data.
-#
-# SPECIFICATION
-#   Let S index shoppability {Non_shoppable, Shoppable} and t index SES tercile
-#   {T1 low, T2 mid, T3 high}. Six groups, six coefficients:
+# With S indexing shoppability {Non_shoppable, Shoppable} and t the SES
+# tercile {T1 low, T2 mid, T3 high}, there are six groups and six
+# coefficients:
 #
 #     ln(P) = sum_{S,t} gamma_{S,t} ( Z x 1[k in S] x 1[m in t] )
 #             + theta ln(Beds) + alpha_mk + tau_t + eps
 #
-#   Every lower-order term is absorbed: 1[S] is concept-determined, 1[t] is
-#   county-determined, and their product is constant within a county x concept
-#   cell, so MARKET_ID takes all three. Only the six Z-interactions are
-#   estimated. The IV version has six endogenous regressors and six excluded
-#   instruments -- still EXACTLY IDENTIFIED, so RF p-values remain AR-robust.
+# 1[S] is set by the concept and 1[t] by the county, so both and their
+# product are constant within a county x concept cell and are absorbed by
+# MARKET_ID; only the six Z interactions are estimated. The IV version has
+# six endogenous regressors and six excluded instruments, so it is exactly
+# identified and the reduced-form p-values are weak-instrument robust.
 #
-# THE THREE THINGS THIS REPORTS
-#   1. gap_t = gamma_{Shop,t} - gamma_{Non,t} inside each tercile, with its own
-#      SE. Descriptively the most useful output: does the gradient exist in all
-#      three thirds of the SES distribution, or only some?
-#   2. gap_T3 - gap_T1, a 1-df test. The direct analogue of DIFF in T12T.
-#   3. Joint test that all three gaps are equal, 2 df. This is the one the
-#      linear specification cannot run, and the reason to bother.
+# Reported for each scheme and instrument:
+#   1. gap_t = gamma_{Shop,t} - gamma_{Non,t} within each tercile, with its
+#      SE, which shows whether the gradient appears in all three thirds of
+#      the SES distribution or only in some;
+#   2. gap_T3 - gap_T1, a 1-df test, the counterpart of DIFF in Section 12;
+#   3. a joint test that all three gaps are equal (2 df), which the linear
+#      specification cannot provide.
+# The tests are F tests with the denominator df fixed at 15 (.s14_contrast()
+# below). The first stage is weaker than in Section 12, with six endogenous
+# terms rather than four; the linear version in Section 12 already had a
+# minimum first-stage Wald of 15-19, against 40-43 in the headline models.
+# The reduced form is primary; the IV results carry FIRST_STAGE_WALD_MIN.
 #
-# EXPECT A WEAKER FIRST STAGE. Six endogenous terms instead of four; the linear
-# version already ran a minimum Wald of 15-19 against 40-43 in the headline.
-# Read the reduced form. Check FIRST_STAGE_WALD_MIN before quoting any IV number.
-#
-# Self-contained apart from `outpatient`. Reuses SES_INDEX if the T12T script
-# left it in memory, otherwise rebuilds it identically.
-###############################################################################
+# Runs when HPT_RUN$ses_terciles is TRUE. Needs `outpatient` with the scheme
+# and DEMO_ columns. Uses t12t_panel (with SES_INDEX) if Section 12 left it
+# in memory and otherwise rebuilds the index the same way. Also uses .pval()
+# from Section 1 and `%||%` (Section 1, or its Section 12 redefinition).
+# Settings and helpers carry the prefixes S14_ and .s14_. Writes
+# T12Q_ses_bins_rows.csv, T12Q_ses_bins_gaps.csv, and T12Q_ses_bins_tests.csv
+# to S14_OUTDIR (TABLE_DIR if it exists, else the working directory); the
+# PART 5 figure block reads the gaps and tests files for
+# fig18_ses_terciles.pdf. About 2 minutes with the defaults (Scheme 1,
+# 3 fits) and about 20 minutes with S14_ALL_SCHEMES = TRUE (18 fits).
+
+if (isTRUE(HPT_RUN$ses_terciles)) {
+
 suppressPackageStartupMessages({ library(data.table); library(fixest) })
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
-S14_N_BINS      <- 3L      # 3 = terciles. Set 4 for quartiles, 2 for a median split.
-S14_ALL_SCHEMES <- FALSE   # FALSE = Scheme 1 only (3 fits, ~2 min).
-# TRUE  = all six schemes (18 fits, ~20 min).
-S14_BIN_ON      <- "county"  # "county" = equal thirds of COUNTIES (default).
-# "row"    = equal thirds of OBSERVATIONS.
+# -----------------------------------------------------------------------------
+# The specification settings, instruments, schemes, and SES components are
+# the same as in Section 12 and are set again here. The PART 5 figure for
+# this section (fig18_ses_terciles.pdf) labels bins T1-T3 only.
+S14_N_BINS      <- 3L      # 3 = terciles, 4 = quartiles, 2 = median split
+S14_ALL_SCHEMES <- FALSE   # FALSE: Scheme 1 only (3 fits, about 2 min)
+                           # TRUE: all six schemes (18 fits, about 20 min)
+S14_BIN_ON      <- "county"  # "county": quantiles over counties (default)
+                             # "row": quantiles over panel rows
 
 S14_OUTCOME    <- "LN_MEDIAN_PRICE"
 S14_ENDOGENOUS <- "N_PRIOR_POSTERS"
@@ -5272,7 +5444,13 @@ S14_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else g
   fwrite(dt, file.path(S14_OUTDIR, f)); cat("  Saved:", file.path(S14_OUTDIR, f), "\n")
 }
 
-# General linear-contrast Wald test: H0: R b = 0.
+# Wald test of R b = 0 for the coefficients named in coef_names (the "fit_"
+# prefix of IV terms is resolved as in Section 12). With q = nrow(R), the
+# p-value is from F(q, 15) applied to W / q. The denominator df is fixed at
+# 15 (16 month clusters less one) and is not taken from the fit with
+# .cluster_df(), as wald_equality() (Section 1) does. EST and SE are filled
+# for a single restriction. Returns NULL if a coefficient is missing or
+# R V R' is singular.
 .s14_contrast <- function(fit, coef_names, R) {
   if (is.null(fit)) return(NULL)
   resolve <- function(tm) {
@@ -5292,9 +5470,12 @@ S14_OUTDIR <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else g
 }
 
 
-# ---------------------------------------------------------------------------
-# SES index (reuse if already built by the T12T script)
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# SES index
+# -----------------------------------------------------------------------------
+# Uses t12t_panel from Section 12 if it is in memory and has SES_INDEX.
+# Otherwise builds s14_panel from `outpatient` with the same steps as
+# .t12_build_ses_index(), without printing or saving the loadings.
 stopifnot(exists("outpatient")); setDT(outpatient)
 
 if (exists("t12t_panel") && "SES_INDEX" %in% names(t12t_panel)) {
@@ -5315,11 +5496,14 @@ if (exists("t12t_panel") && "SES_INDEX" %in% names(t12t_panel)) {
   setDT(s14_panel)
 }
 
-# ---------------------------------------------------------------------------
-# Bins. Cutpoints on the COUNTY cross-section by default, so a high-volume
-# county cannot pull the boundaries. Row counts per bin will be uneven as a
-# result -- that is expected and is printed below so it can be reported.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# SES bins
+# -----------------------------------------------------------------------------
+# With S14_BIN_ON = "county" the cutpoints are quantiles of SES_INDEX across
+# counties, so a county with many panel rows does not move them, and row
+# counts differ across bins (printed below). With "row" they are quantiles
+# over panel rows. The outer cutpoints are set to -Inf and Inf. Bins are
+# labeled T1 (lowest SES), T2, and so on.
 lab <- paste0("T", seq_len(S14_N_BINS))
 if (S14_BIN_ON == "county") {
   cty <- unique(s14_panel[!is.na(SES_INDEX), c(S14_COUNTY_KEY, "SES_INDEX"), with = FALSE])
@@ -5339,9 +5523,22 @@ cat("\nDistribution:\n")
                     by = SES_BIN][order(SES_BIN)])
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Estimator
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# .s14_fit() fits the reduced form and the IV for one scheme and one
+# instrument. Each shoppability x SES bin cell has its own Z interaction in
+# the reduced form, and its own N_PRIOR_POSTERS interaction instrumented by
+# it in the IV, with the S14_ controls, fixed effects, and clusters. Returns
+# NULL if a column is missing, fewer than S14_MIN_OBS complete rows remain,
+# the scheme does not have two levels, or the reduced form fails. Otherwise
+# returns a list:
+#   rows   coefficients by cell (RF_COEF, RF_SE, RF_P, RF_PERCENT_PER_SD in
+#          percent per SD of Z, IV_COEF, IV_P);
+#   gaps   Shoppable minus Non_shoppable within each bin, RF and IV;
+#   tests  gap(high SES) - gap(low SES) (1 df) and all gaps equal
+#          (S14_N_BINS - 1 df), each for the reduced form and the IV.
+# Every table carries FIRST_STAGE_WALD_MIN from the IV fit.
 .s14_fit <- function(panel, scheme_col, scheme_label, instrument, instrument_label) {
   
   need <- unique(c(S14_OUTCOME, S14_ENDOGENOUS, instrument, S14_CONTROLS, S14_FE,
@@ -5386,7 +5583,7 @@ cat("\nDistribution:\n")
   }, error = function(e) NA_real_)
   sd_z <- sd(d[[instrument]], na.rm = TRUE)
   
-  # ---- per-group level coefficients ----
+  # Coefficients by shoppability x bin cell, reduced form and IV.
   pull <- function(fit, tm) {
     cand <- c(paste0("fit_", tm), tm); nm <- cand[cand %in% names(coef(fit))]
     if (!length(nm)) return(c(NA_real_, NA_real_))
@@ -5402,7 +5599,8 @@ cat("\nDistribution:\n")
                FIRST_STAGE_WALD_MIN = fsw, N_OBSERVATIONS = nobs(rf))
   }))
   
-  # ---- the gap inside each bin, and the tests across bins ----
+  # Gap (Shoppable minus Non_shoppable) within each bin, then the tests across
+  # bins; mk(b1, b2) is the contrast gap(b2) - gap(b1).
   idx <- function(s, bn) which(grid$SHOP == s & grid$BIN == bn)
   gaps <- rbindlist(lapply(bins, function(bn) {
     R <- matrix(0, 1, nrow(grid))
@@ -5427,6 +5625,9 @@ cat("\nDistribution:\n")
   R_hl   <- mk(bins[1], bins[length(bins)])                       # high - low, 1 df
   R_join <- do.call(rbind, lapply(bins[-1], function(b) mk(bins[1], b)))  # all equal
   
+  # If any .s14_contrast() call below returns NULL (for example, when the IV
+  # fit failed), cbind() returns a character matrix and rbindlist() stops
+  # with an error.
   tests <- rbindlist(list(
     cbind(TEST = "gap(high SES) - gap(low SES)", ESTIMATOR = "Reduced form", .s14_contrast(rf, ivs,  R_hl)),
     cbind(TEST = "gap(high SES) - gap(low SES)", ESTIMATOR = "IV",           .s14_contrast(iv, endo, R_hl)),
@@ -5440,9 +5641,13 @@ cat("\nDistribution:\n")
 }
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Run
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Fits .s14_fit() for Scheme 1 (all six schemes if S14_ALL_SCHEMES is TRUE)
+# and each of the three instruments, writes the three T12Q_ses_bins_*.csv
+# files, and prints the gaps, the level terms by bin and category, the
+# reduced-form tests, and a reading guide.
 s14_use <- if (isTRUE(S14_ALL_SCHEMES)) S14_SCHEMES else S14_SCHEMES[1]
 cat("\n", strrep("=", 78), "\nSES ", S14_N_BINS, "-BIN MODERATOR x SHOPPABILITY x Z\n",
     strrep("=", 78), "\n", sep = "")
@@ -5505,46 +5710,49 @@ cat(
   "  That is by construction, not a fault, but report the distribution printed\n",
   "  above if any bin turns out to carry the result.\n", sep = "")
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$ses_terciles
 
-# ============================================================================
-# Section 13: system-month FE, leave-one-out, ladder, randomization
-# ============================================================================
+
+# =============================================================================
+# Section 13: Remaining robustness checks
+# =============================================================================
+#
+# Four checks on the shoppability gradient, run when HPT_RUN$robustness_13 is
+# TRUE (the default). S13_RUN selects the four blocks. Needs `outpatient`
+# (PART 3). Models are fitted with estimate_interacted() (Section 4) and the
+# baseline specification unless a block says otherwise, and each block caches
+# its estimates with cache_or_run().
+#
+#   13A  System x month fixed effects     six schemes, three main instruments
+#   13B  Leave-one-system-out             15 largest systems, Scheme 1
+#   13C  Instrument construction ladder   eight constructions, Scheme 1
+#   13D  Randomization inference          200 within-month draws, Scheme 1
+#
+# The CSVs go to TABLE_DIR. The Figures 10-20 block in PART 5 plots them:
+# T13C in Figure 11, T13B in Figure 12, T13A in Figure 13, T13D in Figure 14.
+#
+# System identifier. Some hospitals carry a health system identifier on most
+# of their rows and NA on a few. 13A and 13B group by system. With the raw
+# per-row column, a leave-one-out filter of the form
+# `is.na(sys) | sys != target` would keep a hospital's NA rows when its own
+# system is dropped, and a system x month fixed effect would put those rows
+# in a separate no-system cell. Both blocks therefore use SYS_RESOLVED, the
+# hospital's first non-missing value (block 0). About 0.15% of panel rows are
+# affected.
+#
+# 13D is the slow block; see its runtime note.
 
 if (isTRUE(HPT_RUN$robustness_13)) {
 
-# SECTION 13 -- REMAINING ROBUSTNESS
-#
-# Four blocks, all reusing the pipeline's own helpers (estimate_interacted,
-# cache_or_run, save_csv, instrument_tier, MAIN_INSTRUMENTS, SCHEME_COLUMNS,
-# BASELINE_*). Run after the panel and schemes are in memory.
-#
-#   13A  System x month fixed effects     the hardest test of the exclusion
-#                                         restriction
-#   13B  Leave-one-system-out (top 15)    no single organisation drives it
-#   13C  Instrument construction ladder   alternative constructions already
-#                                         present in the panel
-#   13D  Randomisation inference on Z     distribution-free p for the gradient
-#
-# A NOTE ON SYSTEM_KEY. Some hospitals carry a real health system identifier on
-# most of their rows but NA on a handful. Both 13A and 13B key on system
-# membership, and using the raw per-row column produces two distinct problems:
-# a leave-one-out filter written as `is.na(sys) | sys != target` keeps a
-# hospital's NA rows even when dropping its true system, and a system x month
-# fixed effect buckets those rows into a separate no-system cell rather than
-# the hospital's own. Both blocks therefore resolve SYSTEM_KEY once per
-# hospital, to its first non-missing value, before using it. The affected share
-# is roughly 0.15% of panel rows.
-###############################################################################
+# Settings and helpers --------------------------------------------------------
+# S13_SCHEME is the scheme used in 13B-13D. S13_N_SYSTEMS is the number of
+# systems dropped in 13B; S13_N_PERM and S13_SEED set the number of draws and
+# the seed in 13D.
 S13_RUN <- list(
   system_month   = TRUE,
   leave_one_out  = TRUE,
   ladder         = TRUE,
-  randomisation  = TRUE   # slow -- see the runtime note in 13D
+  randomisation  = TRUE   # slow; see the runtime note in 13D
 )
 
 S13_SCHEME      <- "SCHEME_1_CERTAINTY"
@@ -5559,8 +5767,8 @@ S13_SEED        <- 20260813L
   print(as.data.frame(dt), row.names = FALSE); invisible(NULL)
 }
 
-# Baseline heterogeneity p-values for Scheme 1, used as the comparison column
-# throughout this section.
+# Scheme 1 heterogeneity test on the full panel for each main instrument, one
+# row per estimator. 13B merges these p-values in as P_BASE.
 .s13_baseline <- function(panel) {
   rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
     r <- estimate_interacted(panel, S13_SCHEME, PRIMARY_OUTCOME,
@@ -5572,12 +5780,12 @@ S13_SEED        <- 20260813L
 }
 
 
-# ---------------------------------------------------------------------------
-# 0. RESOLVE SYSTEM_KEY PER HOSPITAL, ONCE, USED BY BOTH 13A AND 13B
-# ---------------------------------------------------------------------------
-#
-# First non-missing value across all of a hospital's rows. See the note in the
-# section header for why the raw per-row column cannot be used directly.
+# 0. System identifier per hospital -------------------------------------------
+# SYS_RESOLVED is the first non-missing SYSTEM_KEY (HEALTH_SYSTEM_ID if the
+# panel has no SYSTEM_KEY) across all of a hospital's rows; the reason is
+# given in the section header. outpatient_r13 is `outpatient` with
+# SYS_RESOLVED added; 13A and 13B use it. This step runs regardless of
+# S13_RUN.
 
 s13_sys_col <- if ("SYSTEM_KEY" %in% names(outpatient)) "SYSTEM_KEY" else "HEALTH_SYSTEM_ID"
 
@@ -5594,22 +5802,26 @@ cat("Rows where raw", s13_sys_col, "disagreed with the resolved value:",
     sum(outpatient_r13[[s13_sys_col]] != outpatient_r13$SYS_RESOLVED, na.rm = TRUE), "\n")
 
 
-# ===========================================================================
-# 13A. SYSTEM x MONTH FIXED EFFECTS
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 13A  System x month fixed effects
+# -----------------------------------------------------------------------------
+# Replaces the POST_MONTH fixed effect with SYSTEM_MONTH (SYS_RESOLVED x
+# POST_MONTH), keeps MARKET_ID and the baseline clustering, and re-estimates
+# the interacted model for the six schemes and the three main instruments.
+# The system x month effect absorbs any shock common to a health system in a
+# month, such as a system-wide contracting event or repricing cycle, which is
+# the confound the exclusion restriction has to rule out. Identification then
+# comes from within-system, cross-market variation in disclosure timing.
+# Hospitals with no system share one NOSYS cell per month.
 #
-# Replaces the month FE with a system x month FE, so identification comes only
-# from within-system, cross-market variation in disclosure timing. This absorbs
-# any shock common to a health system in a month -- including a system-wide
-# contracting event or repricing cycle, which is the exact confound the
-# exclusion restriction has to rule out.
+# The competitor instruments count hospitals outside the focal system, so
+# they still vary within a system-month. Standard errors are expected to be
+# wider: between-system variation is discarded and single-market systems drop
+# out. The block prints the shoppable level term next to the test p-values,
+# so a rise in a p-value can be read against the size of the estimate.
 #
-# The competitor instruments count hospitals OUTSIDE the focal system, so the
-# instrument retains variation under this FE. Expect wider standard errors:
-# between-system variation is discarded and single-market systems drop out.
-# A p-value that rises but stays under 0.05 is a pass. A p-value that rises
-# past 0.05 while the point estimate holds is a POWER result, not a failure --
-# report the coefficient alongside it so the reader can tell the difference.
+# Cache s13_system_month_v2. Writes T13A_system_month_fe_rows.csv and
+# T13A_system_month_fe_tests.csv.
 
 if (isTRUE(S13_RUN$system_month)) {
   .s13_head("13A. SYSTEM x MONTH FIXED EFFECTS")
@@ -5655,25 +5867,24 @@ if (isTRUE(S13_RUN$system_month)) {
 }
 
 
-# ===========================================================================
-# 13B. LEAVE-ONE-SYSTEM-OUT
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 13B  Leave-one-system-out
+# -----------------------------------------------------------------------------
+# Drops each of the S13_N_SYSTEMS largest health systems in turn (ranked by
+# number of hospitals, using SYS_RESOLVED) and re-estimates the Scheme 1 test
+# with each main instrument, to check whether the result depends on any one
+# organization's hospitals. Because systems are identified by SYS_RESOLVED, a
+# dropped system's hospitals leave the sample with all of their rows.
+# Hospitals with no system are never dropped.
 #
-# Drops each of the largest S13_N_SYSTEMS health systems in turn (by hospital
-# count) and re-estimates the Scheme 1 heterogeneity test. This is the
-# sample-based version: it tests whether the RESULT depends on any single
-# organisation's hospitals. It is not the same as rebuilding the instrument
-# without that system -- that would need a Section 15-style reconstruction --
-# and the table note should say so.
+# Only the sample changes. The instrument is not rebuilt without the dropped
+# system, which would need a reconstruction like the one in 15B. The
+# instrument-side counterpart for the five largest systems is
+# Z_SYS_STRICT_9M_EXCL_TOP5, one of the constructions in 13C.
 #
-# Uses SYS_RESOLVED (fixed per hospital), not the raw SYSTEM_KEY column, so a
-# hospital's own NA-on-some-rows quirk can no longer leak rows into the
-# "system removed" sample when that hospital's true system is the one dropped.
-#
-# Z_SYS_STRICT_9M_EXCL_TOP5 already exists in the panel as an instrument-side
-# version of the same idea for the top five systems, and 13C reports it. The
-# two are complements: this block tests whether the RESULT depends on a
-# system's hospitals, that one tests whether the INSTRUMENT does.
+# P_BASE is the full-sample p-value from .s13_baseline(); STILL_SIG_05 flags
+# P_VALUE < 0.05. Cache s13_leave_one_system_out_v2. Writes
+# T13B_leave_one_system_out.csv.
 
 if (isTRUE(S13_RUN$leave_one_out)) {
   .s13_head("13B. LEAVE-ONE-SYSTEM-OUT (TOP 15 BY HOSPITAL COUNT)")
@@ -5729,10 +5940,7 @@ if (isTRUE(S13_RUN$leave_one_out)) {
                                               round(max(SHOPPABLE_RF_PCT), 2)))])
 }
 
-# Duplicate of the two .s13_show() calls just above, unconditionally repeated
-# outside the S13_RUN$leave_one_out guard that already printed them, so this
-# copy errored whenever that switch was off and s13_loo did not exist.
-#
+# Duplicate of the two .s13_show() calls above; not run.
 # .s13_show(s13_loo[ESTIMATOR == "Reduced form",
 #                   .(DROPPED_SYSTEM = substr(DROPPED_SYSTEM, 1, 26), INSTRUMENT_LABEL,
 #                     P_BASE = round(P_BASE, 4), P_LOO = round(P_VALUE, 4),
@@ -5747,20 +5955,21 @@ if (isTRUE(S13_RUN$leave_one_out)) {
 #                                             round(max(SHOPPABLE_RF_PCT), 2)))])
 
 
-# ===========================================================================
-# 13C. INSTRUMENT CONSTRUCTION LADDER
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 13C  Instrument construction ladder
+# -----------------------------------------------------------------------------
+# Re-estimates the Scheme 1 test with alternative instrument constructions
+# that already exist in the panel (S13_LADDER; entries missing from
+# `outpatient` are skipped). The ladder varies how out-of-market rollout is
+# counted; the length of the trailing window is varied in 15B.
 #
-# Alternative instrument constructions that ALREADY EXIST in the panel. This is
-# a construction ladder, not the window ladder (that's done in 15B). Frame it
-# in the paper as sensitivity to how out-of-market rollout is counted, and
-# state separately that the 9-month window was fixed ex ante on the 3-6 month
-# insurer negotiation cycle
+# Z_SYS_RECENT_FLOW_3M_EXCL_CURRENT is a three-month flow, not a nine-month
+# stock. It is the only short-window construction in this ladder and differs
+# from the three-month stock built in 15B.
 #
-# Z_SYS_RECENT_FLOW_3M_EXCL_CURRENT is a FLOW over three months, not a stock
-# over nine. It is the closest thing to a short-window variant available in
-# this ladder specifically, but it is a different object and the note should
-# say so -- it is NOT the same as 15B's proper 3M stock variant.
+# Cache s13_instrument_ladder. Writes T13C_instrument_ladder_rows.csv and
+# T13C_instrument_ladder_tests.csv; Appendix Table 26 reports the tests. On
+# the p-values in the saved tests file, see KNOWN ISSUES in the file header.
 
 if (isTRUE(S13_RUN$ladder)) {
   .s13_head("13C. INSTRUMENT CONSTRUCTION LADDER")
@@ -5809,23 +6018,28 @@ if (isTRUE(S13_RUN$ladder)) {
 }
 
 
-# ===========================================================================
-# 13D. RANDOMISATION INFERENCE ON THE INSTRUMENT
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 13D  Randomization inference on the instrument
+# -----------------------------------------------------------------------------
+# Reassigns the first main instrument (Competitor_only_hospitals_9m) among
+# hospitals that post in the same month. This keeps the monthly distribution
+# of exposure and breaks the link to each hospital's own market. Each draw
+# refits the Scheme 1 reduced form and computes .s13_rf_wald(), the Wald
+# statistic for equal instrument slopes in the two Scheme 1 groups (NA if the
+# scheme does not have exactly two groups or the fit fails). The p-value is
+# the share of valid draws at or above the observed statistic.
 #
-# Reassigns each hospital's instrument value to another hospital posting in the
-# SAME month, preserving the month-level distribution of exposure while breaking
-# the link to the hospital's own market. Re-estimates the reduced-form
-# heterogeneity Wald under each draw and locates the observed statistic.
+# family_permutation_test() (Section 8) permutes the shoppability
+# classification across families; this block permutes the instrument. Only
+# the reduced form is fitted: with exact identification its Wald test is the
+# Anderson-Rubin test (design decision 2 in the file header), and skipping
+# the IV fit halves the runtime.
 #
-# This complements the family permutation test rather than duplicating it: that
-# one asks whether the shoppability CLASSIFICATION is special, this asks whether
-# the INSTRUMENT is. Reduced form only -- exact identification means the RF Wald
-# is the AR statistic, so nothing is lost by skipping the IV fit, and it halves
-# the runtime.
-#
-# RUNTIME: roughly 8-12 seconds per draw, so 200 draws take 30-40 minutes.
-# Controlled by S13_RUN$randomisation.
+# Runtime: roughly 8-12 seconds per draw, so 200 draws (S13_N_PERM) take
+# 30-40 minutes. Seed S13_SEED. The cache s13_randomisation_inference holds
+# the observed statistic, every draw, p, and the number of valid draws;
+# T13D_randomisation_inference.csv holds summaries only. Figure 14 plots the
+# draws when s13_ri is in memory.
 
 if (isTRUE(S13_RUN$randomisation)) {
   .s13_head("13D. RANDOMISATION INFERENCE ON THE INSTRUMENT")
@@ -5894,56 +6108,52 @@ if (isTRUE(S13_RUN$randomisation)) {
 
 cat("\nSection 13 complete. Objects: outpatient_r13, s13_sysmonth, s13_loo, s13_ladder, s13_ri\n")
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$robustness_13
 
-# ============================================================================
-# Section 15: CBSA markets, window ladder, payer-conditional
-# ============================================================================
+
+# =============================================================================
+# Section 15: CBSA markets, window ladder, payer-conditional estimates
+# =============================================================================
+#
+# Three robustness checks that change the market definition (15A), the
+# instrument window (15B), and the payer composition of the outcome (15C).
+# Runs when HPT_RUN$markets_15 is TRUE (the default). S15_RUN$cbsa and
+# S15_RUN$payer switch 15A and 15C. S15_RUN$windows is not checked anywhere,
+# so 15B runs whenever the section runs. Needs `outpatient` and
+# `schemes_long` (PART 3) and FILES (PART 1.5). The interacted models use
+# estimate_interacted() (Section 4) with the baseline controls, fixed
+# effects, and clustering; 15A.2 fits pooled models with feols().
+#
+#   15A  CBSA market definition     six schemes, outside-CBSA instruments
+#   15B  Instrument window ladder   3-, 6-, 9-, 12-month windows, Scheme 1
+#   15C  Payer-conditional          each payer class, Scheme 1
+#
+# Instruments under CBSA markets (15A). Only the outside-CBSA family stays
+# out of market when the market is a CBSA. Competitor_only_hospitals_9m
+# counts hospitals in other counties of the focal CBSA, which are inside a
+# CBSA market, and Primary_strict_system_IV is a county-month exposure
+# measure with no out-of-market component. Neither is a valid instrument
+# for this market definition, so 15A uses the three outside-CBSA instruments,
+# one from each tier (MAIN, CONFIRMING, DISCREPANT).
+#
+# Under county markets, the outside-CBSA instruments leave the rest of the
+# focal CBSA as a buffer against referral flows and shared labor markets.
+# Under CBSA markets there is no buffer: the instrument counts hospitals just
+# outside the market boundary, where spillovers are strongest. An equivalent
+# buffer would need an outside-state construction, built upstream.
+#
+# Window variants (15B). The 3-, 6-, and 12-month competitor instruments are
+# not in ANALYSIS_COLUMNS, so they are not in `outpatient`. 15B rebuilds them
+# from hospital posting months and merges them onto a new object, win_panel,
+# so neither `outpatient` nor its cache is changed.
+#
+# Optional inputs: the two CBSA parquet files (15A) and the payer-class
+# export (15C); see INPUTS in the file header and each subsection.
 
 if (isTRUE(HPT_RUN$markets_15)) {
 
-# SECTION 15 -- CBSA MARKETS, INSTRUMENT WINDOW LADDER, PAYER-CONDITIONAL
-#
-# Three robustness exercises that change the market definition, the instrument
-# window, and the payer composition of the outcome. All reuse the pipeline's
-# own helpers (read_panel, prepare_panel, choose_sample_flag,
-# apply_concept_merges, attach_scheme_columns, estimate_interacted,
-# cache_or_run, save_csv), so run after `outpatient` and `schemes_long` are in
-# memory.
-#
-#   15A  CBSA market definition     outside-CBSA instrument family only
-#   15B  Instrument window ladder   3 / 6 / 9 / 12 month variants
-#   15C  Payer-conditional          re-estimated by payer class
-#
-# WHICH INSTRUMENTS ARE VALID UNDER A CBSA MARKET (15A). Only the outside-CBSA
-# family remains out-of-market once the market is a CBSA rather than a county.
-# Competitor_only_hospitals_9m counts hospitals in other counties of the focal
-# CBSA, which is inside the treatment market under this definition, and
-# Primary_strict_system_IV is a county-month local exposure measure with no
-# out-of-market component at all. Estimating with either here would not be a
-# robustness check on the market definition; it would be a different and
-# invalid design. 15A therefore uses the outside-CBSA family, which contributes
-# one instrument from each credibility tier.
-#
-# The caveat worth stating in the table note is about the BUFFER rather than
-# the leave-out. Under county markets, excluding the whole CBSA discards more
-# than the market itself -- the extra ring acts as padding against referral
-# flows and shared labour markets. Under CBSA markets the instrument counts
-# hospitals sitting directly on the boundary, where spillovers are strongest.
-# Restoring an equivalent buffer would require an outside-STATE construction,
-# built upstream.
-#
-# WHY 15B MERGES RATHER THAN REBUILDS. read_panel() selects columns via
-# intersect(), so any instrument column not listed in ANALYSIS_COLUMNS is
-# dropped silently on load, and `outpatient` is cached besides. 15B therefore
-# reads the window-variant columns straight from the parquet and merges them
-# onto the panel already in memory. That avoids both a full rebuild and a cache
-# invalidation.
-###############################################################################
+# Settings and helpers --------------------------------------------------------
+# S15_RUN$windows is not read anywhere (see the section header).
 S15_RUN <- list(cbsa = TRUE, windows = TRUE, payer = TRUE)
 
 .s15_head <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
@@ -5952,7 +6162,11 @@ S15_RUN <- list(cbsa = TRUE, windows = TRUE, payer = TRUE)
   print(as.data.frame(dt), row.names = FALSE); invisible(NULL)
 }
 
-# Loop one moderator (a scheme column) over a named instrument vector.
+# .s15_sweep() fits the categorical estimate_interacted() model on
+# PRIMARY_OUTCOME for every scheme in `schemes` (all six by default) and
+# every instrument in the named vector `instruments`, skipping instruments
+# absent from `panel`. Returns list(rows, tests) with SPEC_GROUP set to
+# label_prefix, or NULL if nothing was estimated.
 .s15_sweep <- function(panel, instruments, schemes = SCHEME_COLUMNS, label_prefix = "") {
   rows <- list(); tests <- list(); i <- 0L
   total <- length(schemes) * length(instruments)
@@ -5975,44 +6189,37 @@ S15_RUN <- list(cbsa = TRUE, windows = TRUE, payer = TRUE)
 }
 
 
-
-###############################################################################
-# SECTION 15A -- CBSA MARKET DEFINITION (setup)
+# -----------------------------------------------------------------------------
+# 15A  CBSA market definition
+# -----------------------------------------------------------------------------
+# Re-estimates the shoppability test with CBSAs as markets, using the three
+# outside-CBSA instruments in S15_CBSA_INSTRUMENTS (see the section header).
+# Runs when S15_RUN$cbsa is TRUE. If the CBSA concept panel is missing, it
+# warns and estimates nothing.
 #
-# The concept-merge step temporarily points FILES$outpatient_exact at the CBSA
-# exact-code panel so apply_concept_merges() reads the right file, then
-# restores the original value.
+# cbsa_panel (cache cbsa_panel) is built the way the BUILD block in PART 3
+# builds `outpatient`: read_panel(), prepare_panel(), apply_concept_merges(),
+# attach_scheme_columns(). apply_concept_merges() reads the exact-code file
+# named in FILES$outpatient_exact, so the block points that entry at the CBSA
+# exact-code file and restores the original path right after the merge.
+# FILES is read and written with get() and assign() in .GlobalEnv, where
+# apply_concept_merges() looks it up. If the merge fails, the error becomes a
+# warning, the panel stays unmerged, and the path is still restored. Without
+# the CBSA exact-code file the merges are skipped. MARKET_ID and
+# ANALYSIS_MARKET come from the CBSA panel; stopifnot() checks that it has
+# fewer markets than the county panel.
 #
-# That requires FILES to exist in the global environment. A partial or
-# interactive run can leave a session holding PANEL_DIR but not FILES, since
-# Section 0 defines them together and an interrupted source() stops partway.
-# The block below checks for FILES and creates a minimal placeholder with a
-# warning rather than crashing. If other objects turn up missing in the same
-# session, the correct response is to re-source the pipeline from the top
-# rather than to patch around each one.
-###############################################################################
-# Section 15 helpers, re-declared so each 15A block below can be run on its own.
-# The definitions are identical throughout the section, so re-running them has
-# no effect.
-# SECTION 15A -- CBSA MARKET DEFINITION (estimation)
-#
-# Two things run in sequence:
-#
-#   1. The interacted shoppability test (reduced form and IV), six schemes
-#      against three CBSA-valid instruments -- the CBSA analogue of the
-#      headline heterogeneity table.
-#   2. Pooled reduced form and IV, three outcomes against three instruments --
-#      the CBSA analogue of the pooled table, run at the end from the same
-#      cbsa_panel and s15_cbsa objects already in memory.
-#
-# The concept-merge step reads and writes FILES through get() and assign()
-# targeting .GlobalEnv explicitly rather than through `<<-`, which does not
-# reliably reach the global binding from inside this block's scope.
-###############################################################################
-# Section 15 helpers, re-declared so each 15A block below can be run on its own.
-# The definitions are identical throughout the section, so re-running them has
-# no effect.
-# ===========================================================================
+# Estimates, in order:
+#   1. The interacted test (reduced form and IV) for the six schemes and the
+#      three instruments, the CBSA analogue of the headline heterogeneity
+#      table. Cache s15_cbsa_results; writes T15A_cbsa_market_rows.csv and
+#      T15A_cbsa_market_tests.csv.
+#   2. The same test on the county panel for
+#      Competitor_outside_CBSA_hospitals_9m (six models, not cached), merged
+#      with the CBSA p-values into T15A_county_vs_cbsa_comparison.csv
+#      (Figure 16 in PART 5).
+#   3. Pooled reduced form and IV (15A.2).
+# Steps 2 and 3 run only if step 1 returns results.
 S15_CBSA_CONCEPT <- file.path(PANEL_DIR,
                               "HPT_R_MAIN_ROBUSTNESS_CBSA_OUTPATIENT_CONCEPT.parquet")
 S15_CBSA_EXACT   <- file.path(PANEL_DIR,
@@ -6103,13 +6310,15 @@ if (isTRUE(S15_RUN$cbsa)) {
       }
       
       
-      # ===========================================================================
-      # 15A.2 -- POOLED RF/IV (folded in, runs automatically)
-      #
-      # CBSA analogue of Table 2. Uses cbsa_panel and S15_CBSA_INSTRUMENTS
-      # already built above. Three core outcomes only (Median, Mean, P25),
-      # matching Table 2's main rows.
-      # ===========================================================================
+      # -----------------------------------------------------------------------
+      # 15A.2  Pooled RF/IV under CBSA markets
+      # -----------------------------------------------------------------------
+      # CBSA analogue of Table 2. For each CBSA instrument and the first three
+      # outcomes (Median, Mean, P25, matching Table 2's main rows), fits the
+      # reduced form and the IV on cbsa_panel rows with non-missing treatment
+      # and outcome, skipping samples below MIN_MODEL_OBS. P-values come from
+      # .pval(); FIRST_STAGE_F is fixest's "ivf1" statistic. Cache
+      # s15_cbsa_pooled; writes T15A_cbsa_pooled.csv.
       .s15_head("15A.2 — POOLED RF/IV UNDER CBSA MARKETS")
       
       s15_cbsa_pooled <- cache_or_run("s15_cbsa_pooled", {
@@ -6166,10 +6375,11 @@ if (isTRUE(S15_RUN$cbsa)) {
     }
   }
 }
-# This reporting block sat unconditionally after the S15_RUN$cbsa guard
-# above closed, so it errored whenever that switch was off and
-# s15_cbsa_pooled did not exist. Re-guarded on the same condition rather than
-# merged into the block above, to avoid relocating text across a brace.
+
+# Prints the pooled table again after coercing FIRST_STAGE_F to numeric. The
+# guard checks only S15_RUN$cbsa, so in a fresh session this block stops with
+# an error when the CBSA concept panel is missing or step 1 of 15A returned
+# NULL (s15_cbsa_pooled is then not defined).
 if (isTRUE(S15_RUN$cbsa)) {
   s15_cbsa_pooled[, FIRST_STAGE_F := sapply(FIRST_STAGE_F, function(x) suppressWarnings(as.numeric(x))[1])]
 
@@ -6185,66 +6395,72 @@ if (isTRUE(S15_RUN$cbsa)) {
 }
 
 
-
-###############################################################################
-# SECTION 15B -- INSTRUMENT WINDOW LADDER
+# -----------------------------------------------------------------------------
+# 15B  Instrument window ladder
+# -----------------------------------------------------------------------------
+# Rebuilds the competitor instruments with 3-, 6-, 9-, and 12-month trailing
+# windows (S15B_WINDOWS) and re-estimates the Scheme 1 test with each. The
+# 9-month window used elsewhere was fixed ex ante on the typical 3-6 month
+# insurer negotiation cycle. 15B has no switch of its own (see the section
+# header). The rebuild runs each time the section runs and reads the
+# inpatient concept panel; only the ladder estimates are cached.
 #
-# Rebuilds the instrument at 3, 6, 9, and 12 month trailing windows so the
-# 9-month choice can be shown to be a convention rather than a result. The
-# 9-month window was fixed ex ante on the typical 3-6 month insurer negotiation
-# cycle.
+# Two construction details let the rebuilt 9-month columns match the panel's:
 #
-# The rebuild has to reproduce the panel's existing 9-month instrument before
-# any new window can be trusted, and two construction details are what make
-# that possible:
+#   The peer roster is the union of the outpatient and inpatient panels.
+#   Roughly 82 hospitals post prices but have no outpatient rows, because
+#   they are inpatient-only or failed outpatient QA upstream. They are still
+#   disclosure events that other hospitals can see, so they count as peers.
 #
-#   THE PEER ROSTER IS THE UNION OF OUTPATIENT AND INPATIENT IDENTITY. Roughly
-#   82 hospitals disclose prices but carry zero outpatient rows, because they
-#   are inpatient-only or failed outpatient QA upstream. An outpatient-only
-#   roster makes those hospitals invisible as peers even though they are real
-#   disclosure events that other hospitals can see.
-#
-#   HOSPITAL IDENTITY IS RESOLVED PER HOSPITAL, NOT PER ROW. Some hospitals
-#   carry NA in SYSTEM_KEY on a handful of their own concept-level rows while
-#   holding a real system on the rest. Joining the rebuilt instrument on the
-#   raw per-row SYSTEM_KEY and county matches those rows to the unaffiliated
-#   aggregate, which is much larger. The roster therefore resolves each
+#   Identity is resolved per hospital, not per row. Some hospitals have NA
+#   in SYSTEM_KEY on a few of their concept rows and a real system on the
+#   rest. Joining on the per-row SYSTEM_KEY and county would match those rows
+#   to the much larger unaffiliated aggregate. The roster therefore sets each
 #   hospital's SYSTEM_KEY, county, and CBSA to its first non-missing value
-#   across all of that hospital's rows, and the final merge joins on
-#   (HOSPITAL_ID, POST_MONTH) only, through a per-hospital-month lookup built
-#   from the resolved identity. The panel's row-level identity columns never
-#   enter that join.
+#   across all of its rows, and the final merge joins on (HOSPITAL_ID,
+#   POST_MONTH) only, through a hospital-month lookup built from the resolved
+#   identity.
 #
-# THE ANCHOR GATE. The rebuild is validated against the panel's existing
-# instrument before the ladder is estimated. The ONLY and SYSTEMS variants
-# reproduce exactly. The three OUTSIDE_CBSA variants reproduce 99.82-99.85%
-# exactly -- roughly 2,200 rows of 1.4M, differing by one or two hospitals and
-# not concentrated at any panel boundary. The gate is therefore set at 99.5%
-# exact rather than requiring a bit-for-bit match, and a diagnostic prints
-# first so the size and shape of the residual is visible rather than assumed.
-###############################################################################
+# Anchor check (step 6). The ONLY and SYSTEMS variants reproduce the panel
+# exactly; the three OUTSIDE_CBSA variants match on 99.82-99.85% of rows
+# (roughly 2,200 rows of 1.4M, differing by one or two hospitals and not
+# concentrated at any panel boundary). The tolerance is therefore 99.5%
+# exact matches (S15B_ANCHOR_TOL) rather than a bit-for-bit match, and a
+# diagnostic prints the mismatches first. The check prints its result and
+# does not stop the run; see step 6 for what it compares.
+#
+# Outputs: cache s15b_window_ladder_v11 (s15b_results) and win_panel in
+# memory; T15B_window_ladder_rows.csv and T15B_window_ladder_tests.csv,
+# written with fwrite() to S15B_OUTDIR (TABLE_DIR, or the working directory
+# if TABLE_DIR does not exist). Figure 10 in PART 5 reads them from TABLE_DIR,
+# and Appendix Table 31 reports the ladder (see Section 25).
 suppressPackageStartupMessages({ library(data.table) })
 
 S15B_WINDOWS <- c(3L, 6L, 9L, 12L)
 S15B_OUTDIR  <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else getwd()
-S15B_ANCHOR_TOL <- 0.995   # exact-match threshold to proceed past the anchor
+S15B_ANCHOR_TOL <- 0.995   # exact-match share for OK in the anchor check
 
 .s15b_show <- function(dt) { print(as.data.frame(dt), row.names = FALSE); invisible(NULL) }
 .s15b_first_nonmiss <- function(x) { v <- x[!is.na(x)]; if (length(v)) v[1L] else NA_character_ }
 
 
-# ---------------------------------------------------------------------------
-# 0. STRICT ladder already on the panel.
-# ---------------------------------------------------------------------------
+# 0. Strict-system ladder in the panel ----------------------------------------
+# The strict-system window variants (Z_SYS_PEER_HOSPITALS_<w>M_STRICT) are
+# already in `outpatient`. s15b_strict_ok checks that the 9-month variant
+# equals Z_SYS_STRICT_9M_EXCL_CURRENT on more than 99.99% of non-missing
+# rows; if it does, step 7 adds the strict ladder.
 s15b_strict_ok <- all(c("Z_SYS_STRICT_9M_EXCL_CURRENT", "Z_SYS_PEER_HOSPITALS_9M_STRICT") %in% names(outpatient)) &&
   mean(outpatient$Z_SYS_STRICT_9M_EXCL_CURRENT == outpatient$Z_SYS_PEER_HOSPITALS_9M_STRICT, na.rm = TRUE) > 0.9999
 cat("STRICT alias check:", if (s15b_strict_ok) "PASS" else "FAIL", "\n")
 
 
-# ---------------------------------------------------------------------------
-# 1. ROSTER -- RESOLVED PER HOSPITAL (first non-missing value across ALL of
-#    that hospital's rows), UNION OF OUTPATIENT AND INPATIENT IDENTITY
-# ---------------------------------------------------------------------------
+# 1. Peer roster, resolved per hospital ---------------------------------------
+# One row per hospital with its first non-missing SYSTEM_KEY, county
+# (ANALYSIS_MARKET), CBSA_CODE, and first posting month, from `outpatient`
+# and from the inpatient concept panel (FILES$inpatient_concept, read here).
+# The outpatient value is used where both exist. peer_pool pairs each
+# (county, system) in the roster with that system's hospitals in other
+# counties; LOCAL_FIRST is the system's first posting month in the county.
 resolve_hosp <- function(d) d[!is.na(HOSPITAL_ID), .(
   SYSTEM_KEY = .s15b_first_nonmiss(SYSTEM_KEY),
   COUNTY     = .s15b_first_nonmiss(ANALYSIS_MARKET),
@@ -6283,9 +6499,10 @@ peer_pool <- peer_pool[PEER_COUNTY != FOCAL_COUNTY]
 cat("Peer pool:", format(nrow(peer_pool), big.mark = ","), "rows\n")
 
 
-# ---------------------------------------------------------------------------
-# 2. HOSPITAL-MONTH EVENTS AND TRIPLES -- BUILT FROM RESOLVED IDENTITY
-# ---------------------------------------------------------------------------
+# 2. Hospital-month events and triples ----------------------------------------
+# Hospital-months from `outpatient` with the resolved identity attached, and
+# the distinct (system, county, month) triples at which the instruments are
+# built.
 hosp_month <- unique(outpatient[!is.na(HOSPITAL_ID) & !is.na(POST_MONTH),
                                 .(HOSPITAL_ID, POST_MONTH = as.Date(POST_MONTH))])
 hosp_month <- merge(hosp_month, roster, by = "HOSPITAL_ID", all.x = TRUE)
@@ -6298,9 +6515,13 @@ stopifnot(!anyDuplicated(triples, by = c("SYSTEM_KEY", "COUNTY", "POST_MONTH")))
 cat("Distinct (county, system, month) triples:", format(nrow(triples), big.mark = ","), "\n")
 
 
-# ---------------------------------------------------------------------------
-# 3. CANDIDATE JOIN
-# ---------------------------------------------------------------------------
+# 3. Candidate peers ----------------------------------------------------------
+# For each triple, the out-of-county peers of the systems present in its
+# county, excluding the focal system (no system is excluded for unaffiliated
+# hospitals). A peer is kept if its system had posted in the county by the
+# focal month and the peer itself posted within the 12 months before the
+# focal month, not in it. OUTSIDE_CBSA marks peers outside the focal CBSA or
+# with no CBSA.
 setnames(peer_pool, "SYSTEM_KEY", "SYSTEM_KEY_PEER")
 setnames(peer_pool, "FOCAL_COUNTY", "COUNTY")
 
@@ -6317,9 +6538,12 @@ cand[, OUTSIDE_CBSA := is.na(PEER_CBSA) | (PEER_CBSA != CBSA_CODE)]
 cat("Candidate rows (12M):", format(nrow(cand), big.mark = ","), "\n")
 
 
-# ---------------------------------------------------------------------------
-# 4. AGGREGATE PER TRIPLE x WINDOW
-# ---------------------------------------------------------------------------
+# 4. Counts per triple and window ---------------------------------------------
+# For each window w, the numbers of distinct peer hospitals, systems, and
+# counties within w months, overall and outside the focal CBSA. Missing
+# overall counts are set to zero; the outside-CBSA counts stay NA where the
+# triple has no CBSA code or its county has no peers. The columns are named
+# as in the panel, Z_SYS_COMPETITOR_<...>_<w>M_EXCL_CURRENT.
 agg <- rbindlist(lapply(S15B_WINDOWS, function(w) {
   d <- cand[MONTHS_BACK <= w]
   base <- d[, .(N_HOSP = uniqueN(PEER_HOSPITAL_ID), N_SYS = uniqueN(SYSTEM_KEY_PEER),
@@ -6362,11 +6586,10 @@ new_cols <- setdiff(names(wide), c("SYSTEM_KEY", "COUNTY", "POST_MONTH"))
 cat("Built at the triple grain:", format(nrow(wide), big.mark = ","), "rows,", length(new_cols), "columns\n")
 
 
-# ---------------------------------------------------------------------------
-# 5. BROADCAST ONTO THE PANEL BY (HOSPITAL_ID, POST_MONTH) ONLY.
-#    The panel's raw row-level SYSTEM_KEY and county never enter this join --
-#    see the identity-resolution note in the section header.
-# ---------------------------------------------------------------------------
+# 5. Merge onto the panel by (HOSPITAL_ID, POST_MONTH) ------------------------
+# The rebuilt columns reach the panel through the hospital-month lookup
+# (hosp_month_z), so the panel's own row-level SYSTEM_KEY and county do not
+# enter the join. win_panel is `outpatient` plus these columns.
 hosp_month_z <- merge(hosp_month, wide, by = c("SYSTEM_KEY", "COUNTY", "POST_MONTH"), all.x = TRUE)
 hosp_month_z <- hosp_month_z[, c("HOSPITAL_ID", "POST_MONTH", new_cols), with = FALSE]
 stopifnot(!anyDuplicated(hosp_month_z, by = c("HOSPITAL_ID", "POST_MONTH")))
@@ -6379,9 +6602,10 @@ setDT(win_panel)
 stopifnot(nrow(win_panel) == nrow(outpatient))
 cat("win_panel rows:", format(nrow(win_panel), big.mark = ","), "\n")
 
-# Resolve .x/.y collisions: any column with both a .x and .y was already in
-# outpatient AND freshly rebuilt. .x is the trusted original (already
-# anchor-verified). Keep it under the plain name, drop the reconstruction.
+# Columns both in `outpatient` and rebuilt (the 9-month variants) come out of
+# the merge as .x (panel) and .y (rebuilt). The panel values are kept under
+# the plain name and the rebuilt copies are dropped, so the 9-month rungs of
+# the ladder use the panel's instruments.
 dup_bases <- unique(sub("\\.[xy]$", "", grep("\\.[xy]$", names(win_panel), value = TRUE)))
 for (b in dup_bases) {
   if (paste0(b, ".x") %in% names(win_panel)) {
@@ -6391,10 +6615,15 @@ for (b in dup_bases) {
   if (paste0(b, ".y") %in% names(win_panel)) win_panel[[paste0(b, ".y")]] <- NULL
 }
 cat("Resolved", length(dup_bases), "naming collisions -- kept original outpatient values.\n")
-# ---------------------------------------------------------------------------
-# 6. ANCHOR. Diagnostic first, then a 99.5% gate rather than a bit-exact one.
-#    See the anchor note in the section header.
-# ---------------------------------------------------------------------------
+
+
+# 6. Anchor check -------------------------------------------------------------
+# For each 9-month column in `outpatient`, prints the exact-match rate and a
+# mismatch summary of .s15b_get() against the panel, then OK or FLAG against
+# S15B_ANCHOR_TOL. anchor_ok only selects the closing message; the ladder is
+# estimated either way. .s15b_get() returns the rebuilt .y column when one
+# exists, but the collision step above has already dropped them, so as
+# written each column is compared with itself.
 anchor_cols <- intersect(
   c("Z_SYS_COMPETITOR_ONLY_9M_EXCL_CURRENT", "Z_SYS_COMPETITOR_SYSTEMS_9M_EXCL_CURRENT",
     "Z_SYS_COMPETITOR_COUNTIES_9M_EXCL_CURRENT", "Z_SYS_COMPETITOR_OUTSIDE_CBSA_9M_EXCL_CURRENT",
@@ -6439,9 +6668,11 @@ cat("\n", if (anchor_ok) paste0("PASSED at >", 100 * S15B_ANCHOR_TOL, "% toleran
     else "Below tolerance on at least one column -- inspect before proceeding.", "\n", sep = "")
 
 
-# ---------------------------------------------------------------------------
-# 7. LADDER
-# ---------------------------------------------------------------------------
+# 7. Window ladder ------------------------------------------------------------
+# Competitor_only_hospitals_9m and Competitor_outside_CBSA_hospitals_9m at
+# each window, plus Primary_strict_system_IV if s15b_strict_ok; columns
+# absent from win_panel are skipped. Scheme 1, primary outcome. WINDOW_M and
+# CONSTRUCTION are parsed from the labels ("<construction> [<w>M]").
 ladder_map <- list(Competitor_only_hospitals_9m = "Z_SYS_COMPETITOR_ONLY",
                    Competitor_outside_CBSA_hospitals_9m = "Z_SYS_COMPETITOR_OUTSIDE_CBSA")
 if (s15b_strict_ok) ladder_map$Primary_strict_system_IV <- "Z_SYS_PEER_HOSPITALS"
@@ -6489,16 +6720,32 @@ cat("\nFIRST-STAGE min Wald by window:\n")
 cat("\nSection 15B v11 complete. Objects: win_panel, s15b_results\n")
 
 
-# ===========================================================================
-# 15C. PAYER-CONDITIONAL
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 15C  Payer-conditional estimates
+# -----------------------------------------------------------------------------
+# Re-estimates the Scheme 1 test separately for each payer class with the
+# three main instruments. Only the outcome varies by payer class; the
+# treatment and instruments are those of `outpatient`, so nothing on the IV
+# side is rebuilt. Runs when S15_RUN$payer is TRUE.
 #
-# Reads the Snowflake export, maps raw ANALYSIS_CONCEPT_ID onto the canonical
-# FINAL_CONCEPT_ID used in `outpatient` (MERGE_GROUPS), re-aggregates prices at
-# the canonical level with the same equal-weighted-median convention as Phase 4,
-# then merges the EXISTING treatment and instrument columns. The instrument and
-# N_PRIOR_POSTERS are identical across payer classes -- only the outcome varies,
-# so nothing about the IV is rebuilt here.
+# Input: the Snowflake payer-class export, every HPT_CONCEPT_PAYER_CLASS*.csv
+# or *.csv.gz file in PANEL_DIR (stacked). Columns used: HOSPITAL_ID,
+# POST_MONTH, PAYER_CLASS, ANALYSIS_CONCEPT_ID, MEDIAN_PRICE,
+# N_PAYER_CELLS_TOTAL, TOTAL_BEDS. load_payer_class_panel() maps the
+# constituents of each concept merge (MERGE_GROUPS) to the canonical
+# FINAL_CONCEPT_ID used in `outpatient`, takes the median of MEDIAN_PRICE
+# within hospital, month, payer class, and concept (the equal-weighted
+# convention of the upstream Phase 4 rollup), and sets LN_MEDIAN_PRICE. It
+# stops with an error if no file matches, which halts the run unless the
+# s15_payer_class_panel cache exists and USE_CACHE is TRUE.
+#
+# The merged panel takes the treatment, instruments, ANALYSIS_MARKET, and
+# LOG_TOTAL_BEDS from `outpatient` by hospital, month, and concept, and the
+# family and scheme columns by concept. MARKET_ID is rebuilt as
+# ANALYSIS_MARKET::FINAL_CONCEPT_ID, and rows without a treatment or outcome
+# are dropped. Caches s15_payer_class_panel (s15_payer) and s15_payer_results
+# (s15_payer_res). Writes T15C_payer_conditional_rows.csv (read by Figure 15 in
+# PART 5) and T15C_payer_conditional_tests.csv.
 
 S15_PAYER_DIR     <- PANEL_DIR
 S15_PAYER_PATTERN <- "^HPT_CONCEPT_PAYER_CLASS.*\\.csv(\\.gz)?$"
@@ -6514,7 +6761,8 @@ load_payer_class_panel <- function(dir = S15_PAYER_DIR, pattern = S15_PAYER_PATT
   d[, POST_MONTH  := as.Date(POST_MONTH)]
   d[, FINAL_CONCEPT_ID := as.character(ANALYSIS_CONCEPT_ID)]
   
-  # --- canonicalise merged concepts, then re-aggregate ---
+  # Map the constituents of merged concepts to the canonical ID, then
+  # re-aggregate.
   map <- rbindlist(lapply(MERGE_GROUPS, function(g)
     data.table(FINAL_CONCEPT_ID = g$constituents, CANON_ID = g$canonical_id)))
   d <- merge(d, map, by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
@@ -6539,9 +6787,7 @@ if (isTRUE(S15_RUN$payer)) {
   s15_payer <- cache_or_run("s15_payer_class_panel", {
     pc <- load_payer_class_panel()
     
-    # Treatment, instruments and controls come from the existing panel. Merging
-    # rather than rebuilding is the whole point: these are identical across
-    # payer classes by construction.
+    # Treatment, instruments, market, and control from `outpatient`.
     zc <- unique(c(ENDOGENOUS_VARIABLE, unname(ALL_SIX_INSTRUMENTS)))
     zc <- intersect(zc, names(outpatient))
     tx <- unique(outpatient[, c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID",
@@ -6553,8 +6799,8 @@ if (isTRUE(S15_RUN$payer)) {
     cat("Treatment merge rate:",
         round(100 * mean(!is.na(pc[[ENDOGENOUS_VARIABLE]])), 2), "% of rows\n")
     
-    # Concept attributes (family, scheme labels) from the same source, so the
-    # classification is byte-identical to the headline.
+    # Family and scheme columns from `outpatient`, by concept, so the
+    # classification is the one used for the headline estimates.
     sc <- intersect(c("FINAL_FAMILY_ID", unname(SCHEME_COLUMNS)), names(outpatient))
     ca <- unique(outpatient[, c("FINAL_CONCEPT_ID", sc), with = FALSE],
                  by = "FINAL_CONCEPT_ID")
@@ -6607,51 +6853,50 @@ if (isTRUE(S15_RUN$payer)) {
   }
 }
 
+# s15_win in this message is not created anywhere; 15B's objects are
+# win_panel and s15b_results.
 cat("\nSection 15 complete. Objects: cbsa_panel, s15_cbsa, s15_win,",
     "s15_payer, s15_payer_res\n")
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$markets_15
 
-# ============================================================================
-# Section 16: family and superfamily analysis
-# ============================================================================
+
+# =============================================================================
+# Section 16: Family and superfamily analysis
+# =============================================================================
+#
+# Repeats the shoppability analysis with the clinical family (FINAL_FAMILY_ID,
+# 16 levels) or superfamily (FINAL_SUPERFAMILY_ID, 4 levels) as the unit. The
+# estimators, fixed effects, clustering, and weights are those of the
+# concept-level analysis; no new outcome is constructed. 16.1-16.3 estimate
+# each family or superfamily on its own subsample, as Section 6 does for
+# concepts; 16.5 and 16.6 estimate all groups jointly by interaction on the
+# full panel (design decision 3 in the file header).
+#
+#   16.0  fill FINAL_SUPERFAMILY_ID for the merged concepts
+#   16.1  run_group_level_sweep(), the group-level version of Section 6
+#   16.2  family-level sweep                                        T16A
+#   16.3  superfamily-level sweep                                   T16B
+#   16.4  list of the families labeled shoppable
+#   16.5  joint interacted model, family as the moderator           T16C
+#   16.6  joint interacted model, superfamily as the moderator      T16D
+#   16.7  weighted mean difference and permutation test             T16E
+#   16.8  superfamily x SES heterogeneity                           T16F
+#
+# Runs when HPT_RUN$family_16 is TRUE (the default). Needs `outpatient` and
+# `schemes_long` in memory (checked below); 16.8 has further requirements.
+# 16.0 modifies `outpatient` in place. Cache keys are given in each
+# subsection. None of them is in CACHE_REGISTRY, so restore_session() does
+# not load these results and invalidate_cache() does not delete them when
+# the panel is rebuilt. Sections 22 and 24 read family_level_6inst.rds.
+# Writes the T16A-T16F CSVs to TABLE_DIR and leaves family_results,
+# superfamily_results, family_interacted, superfamily_interacted,
+# family_weighted_diff, family_permutation, and superfamily_ses in memory.
 
 if (isTRUE(HPT_RUN$family_16)) {
 
-# SECTION 16 -- FAMILY AND SUPERFAMILY LEVEL ANALYSIS (subsample design)
-#
-# Same estimator, same fixed effects, same clustering as the concept-level
-# work. Nothing here builds a new outcome variable or a weighting rule; every
-# number is estimated on raw rows filtered (or grouped) by FINAL_FAMILY_ID or
-# FINAL_SUPERFAMILY_ID instead of ANALYSIS_SERVICE_ID.
-#
-# Load AFTER warm_start() / restore_session(). Needs `outpatient` and every
-# Section-0-through-12 function and constant. Nothing here overwrites an
-# existing object; new results go into GROUP_ prefixed and s16_ prefixed names.
-#
-# WHAT "INTERACTED IV" MEANS AT THIS GRAIN
-#   estimate_interacted()'s categorical branch already handles a moderator
-#   with any number of levels, not just two. Passing FINAL_FAMILY_ID directly
-#   as the moderator on the full panel gives every family's coefficient from
-#   ONE exactly-identified regression, with a joint heterogeneity Wald test --
-#   the direct family-level extension of the Scheme 1 table, not new
-#   machinery. This is 16.5/16.6 below.
-#
-# WHAT REPLACES THE MEta-REGRESSION
-#   Sixteen families and MIN_CONCEPTS_META = 15 means a family-level
-#   meta-regression is a two-group comparison clustered on the variable that
-#   defines the groups -- not informative. What DOES carry weight at this
-#   grain is the exact permutation test already used at concept level
-#   (family_permutation_test()), now with each family contributing exactly
-#   one point instead of several, which is better-specified inference, not a
-#   downgrade. That is 16.7. A parametric weighted-mean-difference companion
-#   is reported alongside it for comparison, not as the primary result.
-###############################################################################
-
+# Packages and print helpers. Sections 17 and 18 also call .s16_show(), so
+# they need this section to have run in the session.
 suppressPackageStartupMessages({ library(data.table); library(fixest) })
 
 .s16_hd   <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
@@ -6666,15 +6911,17 @@ suppressPackageStartupMessages({ library(data.table); library(fixest) })
 stopifnot(exists("outpatient"), exists("schemes_long"))
 
 
-# ===========================================================================
-# 16.0 BACKFILL FINAL_SUPERFAMILY_ID FOR MERGED CANONICAL CONCEPTS
-#
-# apply_concept_merges() sets FINAL_FAMILY_ID on the six merged concepts but
-# never sets FINAL_SUPERFAMILY_ID, so it comes through as NA on those rows
-# (confirmed: 14,143 rows / 6 concepts in the diagnostic). Every constituent
-# family already has a known superfamily elsewhere in the panel, so this is a
-# lookup, not an inference.
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 16.0  Backfill FINAL_SUPERFAMILY_ID for merged concepts
+# -----------------------------------------------------------------------------
+# apply_concept_merges() (Section 3) sets FINAL_FAMILY_ID on the six merged
+# canonical concepts but not FINAL_SUPERFAMILY_ID, which is NA on their rows
+# (14,143 rows on the author's panel). The family of each merged concept also
+# occurs on other rows with a superfamily, so the missing values are filled,
+# by reference in `outpatient`, from the family-to-superfamily map of the
+# non-missing rows. Stops if a family maps to more than one superfamily.
+# Prints the number of missing values before and after the fill and any
+# family still without a superfamily.
 .s16_hd("16.0 Backfilling FINAL_SUPERFAMILY_ID")
 
 n_na_before <- outpatient[is.na(FINAL_SUPERFAMILY_ID), .N]
@@ -6699,33 +6946,32 @@ if (n_na_after > 0L) {
   print(outpatient[is.na(FINAL_SUPERFAMILY_ID), .N, by = FINAL_FAMILY_ID])
 }
 
-# OTHER is a genuine mix under Scheme 1 (LABORATORY_PATHOLOGY / EVALUATION_
-# MANAGEMENT are shoppable; EMERGENCY_DEPARTMENT / CRITICAL_CARE are forced
-# non-shoppable), confirmed 64% shoppable by concept count in the diagnostic.
-# That only matters where OTHER is asked to stand in for a shoppability label
-# (e.g. a binary shoppable-vs-not collapse). It is NOT a problem for treating
-# OTHER as its own category in the joint family/superfamily interaction below
-# -- that only asks "what is OTHER's own average gradient," which is a valid
-# question regardless of its internal composition.
+# The OTHER superfamily pools families that are shoppable under Scheme 1
+# (LABORATORY_PATHOLOGY, EVALUATION_MANAGEMENT) with families that are
+# non-shoppable in every scheme (EMERGENCY_DEPARTMENT, CRITICAL_CARE); 64% of
+# its concepts are shoppable under Scheme 1. This matters only where OTHER
+# would stand in for a shoppability label, as in a binary shoppable versus
+# non-shoppable split. As a category of its own in 16.3 and 16.6, its
+# coefficient is the average response of that mix.
+# S16_CONTAMINATED_SUPERFAMILIES is not used elsewhere in this file.
 S16_CONTAMINATED_SUPERFAMILIES <- "OTHER"
 
 
-# ===========================================================================
-# 16.1 GENERALISED GROUP-LEVEL SWEEP
-#
-# Direct analogue of estimate_concept_level() (Section 6), grouped by an
-# arbitrary column instead of ANALYSIS_SERVICE_ID. Same three numbers per
-# group-instrument pair (RF, FS, IV) for the same reason: if a gradient shows
-# up in IV but not RF, it is a denominator artefact, not a price response.
-#
-# Built directly on build_ols_formula() / build_iv_formula() /
-# build_cluster_formula() / extract_coefficient() -- the same primitives
-# estimate_concept_level() uses -- rather than on run_reduced_form() /
-# run_first_stage() / run_iv(), whose exact argument names were not visible
-# from this session. Verify against T05_concept_level_RF_FS_IV.csv the first
-# time this runs: XRAY_FLUOROSCOPY's family-level RF/FS should sit inside the
-# range of its 199 constituent concepts' estimates.
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 16.1  Generalized group-level sweep
+# -----------------------------------------------------------------------------
+# run_group_level_sweep() follows estimate_concept_level() (Section 6)
+# with any grouping column in place of ANALYSIS_SERVICE_ID. Groups that are
+# NA or in `exclude_groups` are skipped. In each group, after singleton
+# markets are dropped and the MIN_SERVICE_* screens are applied, it fits the
+# reduced form, the first stage, and the IV for each instrument with feols()
+# on one complete-case sample, with the baseline controls, fixed effects, and
+# two-way clustering. RF, FS, and IV are all kept, for the reason given in
+# the Section 6 header. Returns one row per group and instrument
+# (coefficients, standard errors, p-values, and sample counts), with
+# Benjamini-Hochberg adjusted p-values within each instrument (RF_P_FDR,
+# IV_P_FDR) as in T05_concept_level_RF_FS_IV.csv. Stops if no group can be
+# estimated.
 .s16_hd("16.1 run_group_level_sweep()")
 
 run_group_level_sweep <- function(panel, group_col, instruments = CONCEPT_INSTRUMENTS,
@@ -6800,9 +7046,13 @@ run_group_level_sweep <- function(panel, group_col, instruments = CONCEPT_INSTRU
 }
 
 
-# ===========================================================================
-# 16.2 RUN: FAMILY-LEVEL SWEEP  -> T16A
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 16.2  Family-level sweep (T16A)
+# -----------------------------------------------------------------------------
+# All six system instruments (CONCEPT_INSTRUMENTS). Cache key
+# family_level_6inst. Writes T16A_family_level_RF_FS_IV.csv, the source of
+# Appendix Table 19 and of fig16_family_forest.pdf (PART 5), and prints the
+# rows for the primary instrument.
 .s16_hd("16.2 Family-level sweep (T16A)")
 
 family_results <- cache_or_run("family_level_6inst",
@@ -6815,9 +7065,11 @@ save_csv(family_results, "T16A_family_level_RF_FS_IV.csv")
                            N_ROWS)][order(RF_COEF)])
 
 
-# ===========================================================================
-# 16.3 RUN: SUPERFAMILY-LEVEL SWEEP  -> T16B
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 16.3  Superfamily-level sweep (T16B)
+# -----------------------------------------------------------------------------
+# As 16.2, by FINAL_SUPERFAMILY_ID. Cache key superfamily_level_6inst.
+# Writes T16B_superfamily_level_RF_FS_IV.csv.
 .s16_hd("16.3 Superfamily-level sweep (T16B)")
 
 superfamily_results <- cache_or_run("superfamily_level_6inst",
@@ -6833,13 +7085,12 @@ cat("\nOTHER pools LABORATORY_PATHOLOGY/EVALUATION_MANAGEMENT (shoppable) with\n
     "a basket average, not as evidence about a coherent 'other services' market.\n", sep = "")
 
 
-# ===========================================================================
-# 16.4 IS SHOPPABILITY A VALID CONCEPT-COUNT-WEIGHTED LABEL AT EACH GRAIN?
-#
-# Sanity check before the joint interactions: how many families/superfamilies
-# in the sweep tables are the a-priori DIAGNOSTIC_FAMILIES set, restated here
-# so the permutation test in 16.7 is auditable against something printed.
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 16.4  Diagnostic-family membership check
+# -----------------------------------------------------------------------------
+# Prints DIAGNOSTIC_FAMILIES (PART 1.5), the families labeled shoppable a
+# priori, which define Scheme 1 and the shoppable group in 16.7, and the
+# families in T16A outside that set.
 .s16_hd("16.4 Diagnostic-family membership check")
 cat("DIAGNOSTIC_FAMILIES (a-priori shoppable):\n  ",
     paste(DIAGNOSTIC_FAMILIES, collapse = ", "), "\n")
@@ -6847,13 +7098,18 @@ cat("\nFamilies in the sweep NOT in DIAGNOSTIC_FAMILIES (a-priori non-shoppable)
     paste(setdiff(unique(family_results$GROUP_ID), DIAGNOSTIC_FAMILIES), collapse = ", "), "\n")
 
 
-# ===========================================================================
-# 16.5 JOINT INTERACTED IV -- FAMILY AS THE MODERATOR  -> T16C
-#
-# One exactly-identified regression per instrument: FINAL_FAMILY_ID (all
-# levels) interacted with Z, on the full panel. Direct family-level extension
-# of run_main_results()'s Scheme 1 table -- same function, wider moderator.
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 16.5  Joint interacted IV, family as the moderator (T16C)
+# -----------------------------------------------------------------------------
+# estimate_interacted() on the full panel with FINAL_FAMILY_ID as a
+# categorical moderator, one model per main instrument. Each family has its
+# own interacted treatment, instrumented by Z x 1[family], so every family's
+# coefficient comes from one exactly identified regression, and the tests
+# table holds the Wald test that all family coefficients are equal. This is
+# the Scheme 1 specification of run_main_results() (Section 7) with the 16
+# families in place of the two Scheme 1 categories. Cache key
+# family_interacted. Writes T16C_family_interacted_RF_and_IV.csv and
+# T16C_family_interacted_heterogeneity_test.csv.
 .s16_hd("16.5 Joint interacted IV, family moderator (T16C)")
 
 family_interacted <- cache_or_run("family_interacted", {
@@ -6880,9 +7136,13 @@ cat("\nJoint heterogeneity test (H0: all 16 family coefficients equal):\n")
 .s16_show(family_interacted$tests[, .(INSTRUMENT_LABEL, ESTIMATOR, P_VALUE = round(P_VALUE, 5))])
 
 
-# ===========================================================================
-# 16.6 JOINT INTERACTED IV -- SUPERFAMILY AS THE MODERATOR  -> T16D
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 16.6  Joint interacted IV, superfamily as the moderator (T16D)
+# -----------------------------------------------------------------------------
+# As 16.5, with FINAL_SUPERFAMILY_ID (IMAGING, BIOPSY, GI_ENDOSCOPY, OTHER).
+# Cache key superfamily_interacted. Writes
+# T16D_superfamily_interacted_RF_and_IV.csv and
+# T16D_superfamily_interacted_heterogeneity_test.csv.
 .s16_hd("16.6 Joint interacted IV, superfamily moderator (T16D)")
 
 superfamily_interacted <- cache_or_run("superfamily_interacted", {
@@ -6908,17 +7168,28 @@ cat("\nJoint heterogeneity test (H0: IMAGING = BIOPSY = GI_ENDOSCOPY = OTHER):\n
 .s16_show(superfamily_interacted$tests[, .(INSTRUMENT_LABEL, ESTIMATOR, P_VALUE = round(P_VALUE, 5))])
 
 
-# ===========================================================================
-# 16.7 FAMILY-LEVEL INFERENCE -- weighted mean-difference + exact permutation
+# -----------------------------------------------------------------------------
+# 16.7  Family-level weighted mean difference and permutation test (T16E)
+# -----------------------------------------------------------------------------
+# Inference with the family as the unit: one T16A estimate per family, with
+# the families in DIAGNOSTIC_FAMILIES labeled shoppable. With 16 points, a
+# meta-regression as in Section 8 reduces to a two-group comparison, so the
+# primary result is a permutation test over which families carry the label.
 #
-# The unit here IS the family (one point each), so this is what a
-# meta-regression collapses to at n=16, plus the permutation test that is
-# actually well powered at this grain: enumerating which subsets of families
-# could have been called "shoppable" gives inference at the level the
-# shoppability decision was actually made, exactly as
-# family_permutation_test() does at concept level -- just without the
-# multiple-concepts-per-family double counting.
-# ===========================================================================
+# run_group_permutation_test() computes the inverse-variance weighted
+# difference in mean RF_COEF, shoppable minus other families, for the actual
+# labels and for every assignment of the label to the same number of
+# families, as family_permutation_test() (Section 8) does with concept-level
+# estimates. Assignments are enumerated when there are at most max_exact
+# (50,000), as with 16 families; otherwise 20,000 are drawn at random.
+# P_TWO_SIDED is the share of assignments with an absolute difference at
+# least as large as the observed one. run_group_weighted_diff() estimates
+# the same contrast as a regression of RF_COEF on the shoppable indicator
+# with weights 1 / RF_SE^2 and fixest's default (iid) standard errors, for
+# comparison. Both run for each of the six instruments and are not cached.
+# Writes T16E_family_weighted_mean_difference.csv and
+# T16E_family_exact_permutation.csv. Section 24D recomputes these
+# differences per SD of Z for tab:family_permutation.
 .s16_hd("16.7 Family-level weighted mean-difference and exact permutation (T16E)")
 
 run_group_weighted_diff <- function(sweep, dep = "RF_COEF", se = "RF_SE",
@@ -6983,31 +7254,39 @@ cat("\nThese two should broadly agree in sign and rough magnitude of significanc
     "convention, and the weighted regression as the parametric companion.\n", sep = "")
 
 
-
-# ===========================================================================
-# 16.8 SUPERFAMILY-LEVEL ACS/SES HETEROGENEITY  -> T16F
-#
-# IMAGING vs. everything else, interacted with the SES index and with the
-# instrument, following Section 12's triple-interaction design:
+# -----------------------------------------------------------------------------
+# 16.8  Superfamily x SES heterogeneity (T16F)
+# -----------------------------------------------------------------------------
+# Applies the triple-interaction design of Section 12 (county demographic
+# heterogeneity, PART 4) with IMAGING versus all other superfamilies in place
+# of shoppable versus non-shoppable:
 #
 #   ln(P) = gI*(Z x Imaging)     + gR*(Z x Rest)
 #         + dI*(Z x Imaging x M) + dR*(Z x Rest x M)
 #         + controls + FE
 #
-# Object of interest is dI - dR, a single 1-df Wald test. Family-level (16-way)
-# SES heterogeneity is NOT attempted here: that is 16 categories x SES, ~32
-# endogenous terms, and Section 12's own note already flags a weak first stage
-# with just 4. Superfamily's binary IMAGING/rest split is the version of this
-# question that is actually estimable.
+# M is SES_INDEX, centered at its estimation-sample mean. The quantity of
+# interest is dI - dR, one restriction tested with a t statistic and .pval()
+# (Section 1). The IV version instruments the four treatment interactions
+# with these four Z terms. run_superfamily_ses_heterogeneity() returns, for
+# one instrument, the RF and IV differences with their standard errors and
+# p-values, and FIRST_STAGE_WALD_MIN; the reduced form is primary, as in
+# Section 12. Only this two-way split is estimated: a family-level version
+# would have 16 categories and about 32 endogenous terms, and Section 12
+# already reports a weaker first stage with four.
 #
-# Requires .t12_build_ses_index() from Section 12's self-contained SES block.
-# That block lives entirely in the executed region of the pipeline (past
-# `# ORDER OF OPERATIONS`), not in the Sections 0-12 definitions warm_start()
-# loads, so it needs its own loader: load_t12_helpers() (in HPT_warm_start.R)
-# sources just the config + .t12_* function definitions, stopping short of
-# Section 12's own 30-45 minute driver run.
-# ===========================================================================
-load_t12_helpers()                       # loads .t12_build_ses_index() etc., no 30-45 min run
+# SES_INDEX is built by .t12_build_ses_index(), one of the .t12_* helpers
+# that Section 12 defines inside its own run block (not in PART 2), so this
+# file defines them only when Section 12 runs. load_t12_helpers(), from
+# HPT_warm_start.R (sourced in PART 3), defines them without running Section
+# 12 (30-45 minutes); the call below errors if that function is not defined.
+# The index needs the DEMO_ columns that the ACS block (HPT_RUN$demographics,
+# PART 4) attaches to `outpatient`. If the index cannot be built, 16.8 is
+# skipped with a message. Building it also rewrites
+# QA10_ses_index_loadings.csv (Section 12). Cache key
+# superfamily_ses_heterogeneity. Writes T16F_superfamily_SES_heterogeneity.csv
+# (one row per main instrument).
+load_t12_helpers()                       # defines .t12_* helpers, no models
 
 .s16_hd("16.8 Superfamily x SES heterogeneity (T16F)")
 
@@ -7108,48 +7387,47 @@ if (!is.null(.s16_ses_panel)) {
 
 .s16_hd("SECTION 16 COMPLETE")
 
-
-
-
-
-
-###############################################################################
-
 }  # end HPT_RUN$family_16
 
-# ============================================================================
+
+# =============================================================================
 # Section 17: Conley exclusion-restriction sensitivity
-# ============================================================================
+# =============================================================================
+#
+# Computes how large a direct effect of the instrument on prices, loading
+# only on shoppable services, would have to be to overturn the shoppability
+# gradient, following the plausibly exogenous framework of Conley, Hansen,
+# and Rossi. The paper writes the direct effect as psi; the code calls it
+# gamma (column GAMMA), in the units of the reduced-form coefficients (log
+# points per unit of Z).
+#
+# The reduced form regresses ln(P) on RF_Shoppable = Z x 1[Shoppable] and
+# RF_Non_shoppable = Z x 1[Non_shoppable] (Scheme 1), with the baseline
+# controls, fixed effects, and two-way clustering. The gradient GAP is the
+# shoppable coefficient minus the non-shoppable one. Netting out a direct
+# effect gamma means subtracting gamma * RF_Shoppable from ln(P) and
+# refitting. Because OLS is linear in the outcome, the RF_Shoppable
+# coefficient falls by exactly gamma, and the other coefficients, all
+# residuals, and SE(GAP) are unchanged. The grid is therefore computed in
+# closed form from one fit per instrument: GAP_CAUSAL = GAP - gamma, with 95%
+# CI GAP_CAUSAL +/- 1.96 * SE(GAP), and SIGNIFICANT = 1 where that CI
+# excludes zero. The default grid has 41 values of gamma evenly spaced on
+# [-span, span], with span = max(1.5 * |GAP|, 3 * SE(GAP)).
+#
+# The bound applies to the reduced form only. In the IV model
+# Z x 1[Shoppable] instruments the treatment rather than entering as a
+# regressor, so a direct effect does not shift a single coefficient. The
+# reduced form is the primary estimator and its tests are Anderson-Rubin
+# tests (design decision 2 in the file header).
+#
+# Runs when HPT_RUN$conley_17 is TRUE (the default), for the three main
+# instruments. Needs `outpatient` and .s16_show() (Section 16). Cache key
+# conley_sensitivity_v2 (not in CACHE_REGISTRY). Writes
+# T17_conley_sensitivity_grid.csv (every grid point; plotted in
+# fig17_conley_sensitivity.pdf, PART 5) and T17B_conley_breakeven_summary.csv
+# (one row per instrument).
 
 if (isTRUE(HPT_RUN$conley_17)) {
-
-# SECTION 17 -- CONLEY EXCLUSION-RESTRICTION SENSITIVITY
-#
-# Follows Conley, Hansen, and Rossi's plausibly-exogenous framing: how large a
-# direct effect of the instrument on price, concentrated on shoppable services
-# specifically, would have to be to overturn the gradient.
-#
-# EXACT ALGEBRA, NOT A GRID OF REFITS.
-#   The reduced form regresses ln(P) on RF_Shoppable = Z*1[Shop], RF_Non =
-#   Z*1[NonShop], controls, and FE. If a direct effect of size gamma is
-#   assumed to load on RF_Shoppable specifically, then netting it out means
-#   subtracting gamma * RF_Shoppable from the outcome and refitting the
-#   identical model. For OLS this is a Frisch-Waugh-Lovell identity: the
-#   coefficient on RF_Shoppable falls by EXACTLY gamma, every other
-#   coefficient is UNCHANGED, and every residual is UNCHANGED -- so SE(GAP)
-#   does not move either. The grid below is therefore closed-form arithmetic,
-#   confirmed once per instrument by an actual refit at the grid midpoint
-#   rather than trusted blindly.
-#
-#   This works because the reduced form is a single linear regression with
-#   RF_Shoppable literally as one of its own regressors. It does NOT carry
-#   over to the IV estimate in the same closed form (Z_Shoppable is an
-#   instrument for TREAT_Shoppable there, not a direct regressor, so netting
-#   out gamma does not simply shift one 2SLS coefficient). Given the design
-#   decision that reduced form is primary and IV is rescaling only, that is
-#   the estimator this bound is built on, and it is also the one whose
-#   p-values are Anderson-Rubin robust by construction.
-###############################################################################
 
 .s17_hd <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 
@@ -7195,21 +7473,13 @@ run_conley_sensitivity <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
               CI_LOW = gap0 - GAMMA - 1.96 * se_gap, CI_HIGH = gap0 - GAMMA + 1.96 * se_gap)]
   grid[, SIGNIFICANT := as.integer(sign(CI_LOW) == sign(CI_HIGH))]
   
-  # Smallest-magnitude adversarial gamma (toward zero) at which the CI first
-  # touches zero -- the direct effect the design can withstand before the
-  # gradient stops being distinguishable from zero at 95%.
-  # Two thresholds, both reported.
-  #
-  # BREAKEVEN_GAMMA_SIG: the smallest-magnitude adversarial direct effect at
-  #   which the 95% CI on the gradient first touches zero. Solve
-  #   CI_HIGH = (gap0 - gamma) + 1.96*se >= 0 for a negative gap, giving
-  #   gamma <= gap0 + 1.96*se. NOTE THE SIGN: moving gamma toward the gap
-  #   shrinks the causal gradient, so the binding value is gap0 PLUS the
-  #   half-width, not minus it. (An earlier version subtracted, which returns
-  #   CI_LOW at gamma = 0 and overstates the bound by roughly 5.7x.)
-  #
-  # BREAKEVEN_GAMMA_ZERO: the direct effect that drives the POINT estimate to
-  #   zero, which is simply gamma = gap0 (100% of the observed gradient).
+  # Two thresholds, both reported:
+  #   BREAKEVEN_GAMMA_SIG   the gamma at which the 95% CI on GAP - gamma first
+  #                         reaches zero as gamma moves from 0 toward GAP:
+  #                         GAP - sign(GAP) * 1.96 * SE(GAP), which is
+  #                         GAP + 1.96 * SE(GAP) for a negative GAP
+  #   BREAKEVEN_GAMMA_ZERO  the gamma at which GAP_CAUSAL is zero,
+  #                         gamma = GAP (100% of the observed gradient)
   breakeven_sig  <- gap0 + sign(gap0) * -1 * 1.96 * se_gap
   breakeven_zero <- gap0
   
@@ -7218,14 +7488,17 @@ run_conley_sensitivity <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
               GAP_PCT_PER_SD = 100 * (exp(gap0 * sd_z) - 1),
               BREAKEVEN_GAMMA_SIG = breakeven_sig,
               BREAKEVEN_GAMMA_ZERO = breakeven_zero,
-              # Same convention Table 5 (tab:headline) uses for each arm's own
-              # percent-per-SD figure, so this table's percent column is now
-              # directly comparable to Table 5's Gap row.
+              # Percent per SD of Z, 100 * (exp(b * SD) - 1), the conversion
+              # Table 5 (tab:headline) uses for each arm, so this column is
+              # comparable to the Gap row of Table 5.
               BREAKEVEN_SIG_PCT_PER_SD = 100 * (exp(breakeven_sig * sd_z) - 1),
               BREAKEVEN_SIG_SHARE_OF_GAP = breakeven_sig / gap0,
               BREAKEVEN_ZERO_SHARE_OF_GAP = 1)]
   
-  # Spot-check the closed form with one actual refit at the grid midpoint.
+  # Check of the closed form: refit with ln(P) - gamma * RF_Shoppable at the
+  # middle grid point and print both values of GAP. On the default grid,
+  # which is symmetric around zero, that point is gamma = 0, so the refit
+  # reproduces the original fit and does not test a nonzero gamma.
   mid <- gamma_grid[ceiling(length(gamma_grid) / 2)]
   d[, Y_SHIFTED := get(outcome) - mid * get(nm_s)]
   fit_chk <- tryCatch(feols(build_ols_formula("Y_SHIFTED", rhs, fe), data = d,
@@ -7238,8 +7511,9 @@ run_conley_sensitivity <- function(panel, scheme_col = "SCHEME_1_CERTAINTY",
                 instrument_label, mid, chk_gap, closed_gap, abs(chk_gap - closed_gap)))
   }
   
-  # Verify the breakeven against the grid itself rather than trusting algebra:
-  # the smallest-|gamma| row flagged insignificant should sit at breakeven_sig.
+  # Printed for comparison, not tested: the grid point with the smallest
+  # |gamma| on the same side as GAP at which the CI covers zero, next to
+  # BREAKEVEN_GAMMA_SIG.
   edge <- grid[SIGNIFICANT == 0L & sign(GAMMA) == sign(gap0)]
   edge_gamma <- if (nrow(edge)) edge[which.min(abs(GAMMA)), GAMMA] else NA_real_
   cat(sprintf("  [%s] gap=%.6f se=%.6f | breakeven(sig)=%.6f (%.1f%% of gap) | grid edge=%.6f\n",
@@ -7277,6 +7551,7 @@ save_csv(conley_summary, "T17B_conley_breakeven_summary.csv")
 
 cat("\nBreakeven summary (smallest adversarial direct effect, in the units of\n",
     "the instrument, that brings the 95% CI on the gradient to touch zero):\n", sep = "")
+# .s16_show() is defined in Section 16 (HPT_RUN$family_16).
 .s17_show <- .s16_show
 .s17_show(conley_summary)
 cat("\nBREAKEVEN_SIG_PCT_PER_SD is on the same percent-per-SD-of-peer-exposure\n",
@@ -7289,30 +7564,34 @@ cat("\nBREAKEVEN_SIG_PCT_PER_SD is on the same percent-per-SD-of-peer-exposure\n
 
 .s17_hd("SECTION 17 COMPLETE")
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$conley_17
 
-# ============================================================================
-# Section 18: enforcement controls
-# ============================================================================
+
+# =============================================================================
+# Section 18: Enforcement controls
+# =============================================================================
+#
+# Re-estimates the Scheme 1 interacted specification (estimate_interacted())
+# with one CMS enforcement measure at a time added to BASELINE_CONTROLS: the
+# eight COUNTY_ENF_* measures in ENFORCEMENT_ROBUSTNESS_INSTRUMENTS (PART 1.5)
+# for each of the three main instruments, 24 models. The measures vary by
+# county and month, including over time within a county, so the fixed
+# effects do not absorb them. They enter as controls, not as instruments,
+# for the reason given in PART 1.5. Rows with a missing value of the added
+# measure drop out of that model, so its sample can be smaller than the
+# headline sample (compare N_OBSERVATIONS).
+#
+# Runs when HPT_RUN$enforcement_18 is TRUE (the default). Needs `outpatient`
+# and .s16_show() (Section 16); T18C also needs the stage 7 object `main`.
+# Cache key enforcement_controls (not in CACHE_REGISTRY). Writes
+# T18_enforcement_controls_estimates.csv,
+# T18B_enforcement_controls_heterogeneity.csv, and
+# T18C_enforcement_vs_no_control.csv (plotted in
+# fig18_enforcement_controls.pdf, PART 5).
 
 if (isTRUE(HPT_RUN$enforcement_18)) {
 
-# SECTION 18 -- ENFORCEMENT CONTROLS
-#
-# CMS enforcement varies by county and month and is already in the panel
-# (COUNTY_ENF_* -- confirmed present, county-month invariant, with genuine
-# within-county time variation in the diagnostic). This is a controls
-# question, not an instrument question: does the shoppability gradient
-# survive adding each enforcement measure as an additional right-hand-side
-# control in the headline interacted spec? estimate_interacted() already
-# accepts an arbitrary `controls` vector, so this reuses it unchanged with
-# BASELINE_CONTROLS extended by one enforcement variable at a time.
-###############################################################################
-
+# Print helpers; .s18_show is .s16_show() from Section 16.
 .s18_hd <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s18_show <- .s16_show
 
@@ -7353,8 +7632,11 @@ enforcement_controls <- cache_or_run("enforcement_controls",
 save_csv(enforcement_controls$rows,  "T18_enforcement_controls_estimates.csv")
 save_csv(enforcement_controls$tests, "T18B_enforcement_controls_heterogeneity.csv")
 
-# Baseline (no enforcement control) for the comparison column, pulled from the
-# existing T06 headline rather than re-estimated here.
+# T18C: each controlled estimate next to the Scheme 1 estimate without an
+# enforcement control, taken from the stage 7 object `main`
+# (T06_main_interacted_RF_and_IV.csv) rather than re-estimated. DELTA is the
+# change in RF_PERCENT_PER_SD. Skipped with a message if `main` is not in
+# memory; T18 and T18B are written either way.
 if (exists("main") && is.list(main) && "rows" %in% names(main)) {
   .s18_headline <- main$rows[grepl("certainty", SPEC, ignore.case = TRUE),
                              .(INSTRUMENT_LABEL, TERM, RF_PERCENT_PER_SD_NO_CONTROL = RF_PERCENT_PER_SD)]
@@ -7379,41 +7661,47 @@ if (exists("main") && is.list(main) && "rows" %in% names(main)) {
 
 .s18_hd("SECTION 18 COMPLETE")
 
-
-
-
-###############################################################################
-
 }  # end HPT_RUN$enforcement_18
 
+
+
 ###############################################################################
-#                                                                             #
-#   PART 5 -- OUTPUTS                                                         #
-#                                                                             #
-#   Blocks appear in their original relative order, because later ones depend #
-#   on helpers the earlier ones define (theme_paper, save_fig, read_table in  #
-#   Figures 1-9; PAL, rd, sv, short in Figures 10-20). Each reads result CSVs #
-#   from TABLE_DIR rather than memory, so any one can be re-run alone.        #
-#                                                                             #
+#
+#   PART 5: OUTPUTS
+#
+#   Figures, tables, LaTeX, and the county coverage map, run by
+#   HPT_RUN$figures, HPT_RUN$tables (or HPT_TABLES), and HPT_RUN$coverage_map.
+#   Figure blocks read saved CSVs from TABLE_DIR; table blocks and the map use
+#   objects in memory (`outpatient`, `schemes_long`). Later blocks call
+#   theme_paper() and save_fig() from the Figures 1-9 block, so order matters.
+#
 ###############################################################################
 
 
-# ============================================================================
+# =============================================================================
 # Figures 1-9
-# ============================================================================
+# =============================================================================
+#
+# Figures 1-8, drawn from the CSVs that stages 6-9 write to TABLE_DIR and saved
+# by save_fig() as PDFs in FIGURE_DIR. Runs when HPT_RUN$figures is TRUE and
+# needs no objects in memory. Figure 9 is drawn only on request, by
+# plot_permutation_null() in the paper utilities below.
+#
+# read_table() returns NULL with a message when a CSV is missing, and the
+# figure that needs it is skipped. T05 and T05C (Figures 4 and 8) are written
+# only when stage 6 runs, and the default RUN_STAGES leaves stage 6 out.
+#
+# When HPT_RUN$diagnostics is TRUE, Section 25 (PART 6) converts T06_mainB and
+# T07B to the t(15) reference in place and writes its own versions of the
+# Figure 2, 3, and 5 PDFs under the same file names.
 
 if (isTRUE(HPT_RUN$figures)) {
 
-# PUBLICATION FIGURES
-#
-# Run after stages 6-11 have completed. Reads result CSVs from TABLE_DIR and
-# writes PDFs to FIGURE_DIR, so this block needs nothing in memory and can be
-# re-run on its own.
-#
-# Each figure is self-contained: a missing input CSV skips that figure with a
-# message rather than erroring the whole block. Colours are the FSU garnet,
-# gold, and grey defined in Section 0.
-###############################################################################
+# Plot helpers ----------------------------------------------------------------
+# Defines theme_paper(), read_table(), save_fig(), SHOP_COLORS, INSTR_SHORT,
+# and short_instr(), which the paper utilities, Figures 10-20, and figure code
+# after PART 7 also use. They exist only when HPT_RUN$figures is TRUE. Colors
+# come from FSU_GARNET, FSU_GOLD, and FSU_GREY (PART 1.5).
 suppressPackageStartupMessages({
   library(ggplot2); library(data.table); library(scales)
 })
@@ -7460,12 +7748,18 @@ INSTR_SHORT <- c(
 short_instr <- function(x) ifelse(x %in% names(INSTR_SHORT), INSTR_SHORT[x], x)
 
 
-
-###############################################################################
-# FIGURE 1 -- THE HEADLINE. Reduced-form effect by shoppability, Scheme 1,
-# MAIN instruments. This is the paper's central result: shoppable services
-# respond, non-shoppable services are a precise zero.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 1: Reduced-form effect by shoppability
+# -----------------------------------------------------------------------------
+# Reduced-form price response (percent per SD of the instrument) of shoppable
+# and non-shoppable services under Scheme 1, for each MAIN instrument, from
+# T06_main_interacted_RF_and_IV.csv (stage 7). This is the paper's headline
+# result. Writes fig01_headline_shoppability.pdf.
+#
+# The interval is RF_PERCENT_PER_SD +/- 1.96 * 100 * (exp(RF_SE) - 1). RF_SE
+# is the standard error per unit of the instrument, while RF_PERCENT_PER_SD is
+# per SD of the instrument (estimate_interacted(), Section 4); the half-width
+# is not rescaled to an SD.
 d <- read_table("T06_main_interacted_RF_and_IV.csv")
 if (!is.null(d)) {
   h <- d[SPEC == "1. Procedural certainty"]
@@ -7491,11 +7785,14 @@ if (!is.null(d)) {
 }
 
 
-###############################################################################
-# FIGURE 2 -- CLASSIFICATION ROBUSTNESS. Heterogeneity test p-value across all
-# six schemes and three main instruments. Shows the result is not an artifact
-# of one way of drawing the shoppable/non-shoppable line.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 2: Robustness across classification schemes
+# -----------------------------------------------------------------------------
+# Reduced-form p-value of the test that shoppable and non-shoppable services
+# respond equally, for each of the six schemes and three MAIN instruments,
+# from T06_mainB_heterogeneity_tests.csv (stage 7). The dashed line marks
+# 0.05. P_VALUE is plotted as stored, with no conversion (see the Section 25
+# note above). Writes fig02_scheme_robustness.pdf.
 t <- read_table("T06_mainB_heterogeneity_tests.csv")
 if (!is.null(t)) {
   t[, INSTR := gsub("_", " ", INSTRUMENT_LABEL)]
@@ -7517,11 +7814,17 @@ if (!is.null(t)) {
 }
 
 
-
-###############################################################################
-# FIGURE 3 -- TRANSFORM LADDER. Magnitudes move with the treatment transform;
-# the heterogeneity conclusion does not. See design decision 1.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 3: Transform ladder
+# -----------------------------------------------------------------------------
+# Two panels across the six treatment transforms (Scheme 1, MAIN instruments):
+# the median shoppable IV estimate in percent, from
+# T07_transform_ladder_estimates.csv, and the median reduced-form
+# heterogeneity p-value, from T07B_transform_ladder_heterogeneity.csv (both
+# stage 7). The IV magnitude changes with the transform; the reduced-form
+# p-value does not, because the reduced form contains no treatment variable
+# (design decision 1 in the file header). P_VALUE is plotted as stored. Writes
+# fig03_transform_ladder.pdf.
 l  <- read_table("T07_transform_ladder_estimates.csv")
 lb <- read_table("T07B_transform_ladder_heterogeneity.csv")
 
@@ -7561,12 +7864,15 @@ if (!is.null(l) && !is.null(lb)) {
 }
 
 
-
-###############################################################################
-# FIGURE 4 -- CONCEPT-LEVEL DISTRIBUTION. All 738 concept-level reduced-form
-# estimates, split by shoppability. Shows the result is a shift in the whole
-# distribution, not a few outlier concepts.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 4: Concept-level distribution
+# -----------------------------------------------------------------------------
+# Densities of the concept-level reduced-form coefficients (RF_COEF) for
+# Competitor_only_hospitals_9m, shoppable against non-shoppable concepts
+# under Scheme 1 (families in DIAGNOSTIC_FAMILIES), from
+# T05_concept_level_RF_FS_IV.csv (stage 6; 738 concepts). Coefficients below
+# the 1st or above the 99th percentile are dropped. Writes
+# fig04_concept_distribution.pdf.
 cr <- read_table("T05_concept_level_RF_FS_IV.csv")
 if (!is.null(cr)) {
   cr[, SHOP := factor(fifelse(FINAL_FAMILY_ID %chin% DIAGNOSTIC_FAMILIES,
@@ -7580,15 +7886,33 @@ if (!is.null(cr)) {
     geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
     scale_fill_manual(values = SHOP_COLORS, labels = c("Non-shoppable", "Shoppable")) +
     scale_colour_manual(values = SHOP_COLORS, labels = c("Non-shoppable", "Shoppable")) +
-    labs(x = "Concept-level reduced-form coefficient", y = "Density",
+    labs(x = "Service-level reduced-form coefficient", y = "Density",
          title = "The shift is distributional, not driven by outliers",
-         subtitle = paste0(nrow(sub), " concepts, 1st-99th percentile shown")) +
+         subtitle = paste0(nrow(sub), " services, 1st-99th percentile shown")) +
     theme_paper()
   save_fig(p4, "fig04_concept_distribution", width = 7, height = 4.5)
 }
 
 
 
+# -----------------------------------------------------------------------------
+# Tier re-ranking across all schemes (T06G block)
+# -----------------------------------------------------------------------------
+# Recomputes the stage 7.6 tier re-ranking from
+# T06G_all_tiers_heterogeneity_tests.csv (stage 7.4): for each tier and
+# instrument, the number and share of the six schemes in which the
+# reduced-form heterogeneity test rejects at 5%, the median p-value, and the
+# median first-stage Wald F. Writes T06L_tier_rerank_all_schemes.csv, which
+# replaces the file written in stage 7.6 and is the input to Figure 5. T06G
+# is read with fread(), not read_table(), so the block stops if it is
+# missing.
+#
+# Before counting, P_VALUE is converted from the normal to the t(15)
+# reference with 2 * pt(-qnorm(1 - p / 2), df = 15) (INFERENCE in the file
+# header). The conversion is unconditional. It is correct while T06G holds
+# the normal-reference p-values of the cached stage 7 results, and it must
+# not be applied if T06G already uses the t reference. T06G on disk is not
+# changed.
 t06g <- fread(file.path(TABLE_DIR, "T06G_all_tiers_heterogeneity_tests.csv"))
 stopifnot("P_VALUE" %in% names(t06g))
 
@@ -7608,10 +7932,15 @@ rerank <- merge(rerank, fs_by_inst, by = "INSTRUMENT_LABEL")[order(-SHARE_SIG, M
 fwrite(rerank, file.path(TABLE_DIR, "T06L_tier_rerank_all_schemes.csv"))
 print(rerank)
 
-###############################################################################
-# FIGURE 5 -- INSTRUMENT STRENGTH VS RESULT STRENGTH. First-stage F against how
-# often the heterogeneity test rejects, showing the two are independent axes.
-###############################################################################
+
+# -----------------------------------------------------------------------------
+# Figure 5: Instrument strength and result strength
+# -----------------------------------------------------------------------------
+# For each of the six instruments, the median first-stage Wald F (x) against
+# the share of schemes in which the reduced-form heterogeneity test rejects
+# at 5% (y), colored by tier, from T06L_tier_rerank_all_schemes.csv (the T06G
+# block above). The dashed line marks F = 10. Labels are placed with ggrepel
+# when it is installed. Writes fig05_instrument_tiers.pdf.
 rr <- read_table("T06L_tier_rerank_all_schemes.csv")
 
 if (!is.null(rr)) {
@@ -7651,16 +7980,16 @@ if (!is.null(rr)) {
 }
 
 
-
-###############################################################################
-# FIGURE 6 -- DECOMPOSITION, PLOTTED AS T-STATISTICS
-#
-# The claim is that shoppability shifts the PRICE RESPONSE but not DISCLOSURE
-# PROPENSITY. Raw coefficients cannot show that, because the reduced form and
-# the first stage are on different scales by construction. T-ratios put both on
-# a common footing: the reduced form sits far outside +/-1.96, the first stage
-# sits inside it.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 6: Decomposition in t-statistics
+# -----------------------------------------------------------------------------
+# t-statistics (estimate / std.error) on the shoppable indicator in the
+# weighted concept-level regressions of decompose_reduced_form() (Section 8),
+# for the reduced form (price response) and the first stage (disclosure
+# propensity), MAIN and CONFIRMING instruments, from
+# T08D_RF_vs_FS_decomposition.csv (stage 8). The two dependent variables are
+# on different scales, so the figure compares t-ratios rather than
+# coefficients. Dashed lines at +/-1.96. Writes fig06_decomposition.pdf.
 dec <- read_table("T08D_RF_vs_FS_decomposition.csv")
 
 if (!is.null(dec)) {
@@ -7694,15 +8023,19 @@ if (!is.null(dec)) {
 }
 
 
-
-###############################################################################
-# FIGURE 7 -- MECHANISM
-#
-# Three price-dispersion measures are null and one contracting-depth measure is
-# significant with the OPPOSITE sign to the ex ante prediction. Encoding
-# significance alone would lose half of that, so shape marks whether the sign
-# matched the prediction and the annotation states the direction explicitly.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 7: Mechanism
+# -----------------------------------------------------------------------------
+# Coefficient per SD of each comparability moderator (term MODC) in
+# specification (b) of run_comparability_within_family() (Section 9), which
+# has family fixed effects, for the MAIN instruments, from
+# T09D_comparability_within_family.csv (stage 9). Intervals are +/-1.96
+# standard errors. Color and shape separate three groups: not significant at
+# 5%, significant with the predicted sign, and significant with the opposite
+# sign (SIGN_AS_PREDICTED; sign convention in PART 1.5). In the paper's
+# results three dispersion measures are not significant and the payer count
+# is significant with the opposite sign, which the subtitle states in fixed
+# text. Prints the count in each group. Writes fig07_mechanism.pdf.
 wf <- read_table("T09D_comparability_within_family.csv")
 
 if (!is.null(wf)) {
@@ -7759,12 +8092,18 @@ if (!is.null(wf)) {
 }
 
 
-
-###############################################################################
-# FIGURE 8 -- SIZE GRADIENT DIAGNOSTIC. The IV size gradient is roughly twice
-# the reduced-form gradient, because the first-stage denominator grows with
-# concept size. Justifies leading with the reduced form.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 8: Size gradient diagnostic
+# -----------------------------------------------------------------------------
+# Median reduced-form coefficient and median IV estimate for shoppable
+# concepts by concept-size quartile (N_OBSERVATIONS), each divided by the
+# absolute value of its smallest-quartile median, for
+# Competitor_only_hospitals_9m, from T05C_size_gradient_RF_vs_IV.csv
+# (diagnose_size_gradient(), stage 6). The IV gradient is roughly twice the
+# reduced-form gradient because the first-stage denominator grows with
+# concept size. This is one reason the reduced form is the primary estimator
+# (design decision 2 in the file header). The subtitle's ratios (~3x and
+# ~1.5x) are typed into the code. Writes fig08_size_gradient.pdf.
 sg <- read_table("T05C_size_gradient_RF_vs_IV.csv")
 if (!is.null(sg)) {
   s <- sg[INSTRUMENT_LABEL == "Competitor_only_hospitals_9m" & SHOP == "Shoppable"]
@@ -7788,39 +8127,41 @@ if (!is.null(sg)) {
 cat("\nFigures written to:", FIGURE_DIR, "\n")
 
 
-# Interactive spot-check of one family/scheme cell. Needs schemes_long and
-# outpatient, both in scope after warm_start().
+# Interactive use; needs schemes_long and outpatient in memory (a warm start
+# loads both). Lists the echocardiography concepts under scheme_theory_v2.
 # s <- merge(schemes_long, unique(outpatient[, .(ANALYSIS_CONCEPT_ID = FINAL_CONCEPT_ID,
 #                                                FAMILY = FINAL_FAMILY_ID)]),
 #            by = "ANALYSIS_CONCEPT_ID")
 # s[FAMILY == "ECHOCARDIOGRAPHY" & SCHEME_ID == "scheme_theory_v2",
 #   .(ANALYSIS_CONCEPT_ID, OFFICIAL_DESCRIPTION, SHOPPABILITY_CATEGORY)]
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$figures
 
-# ============================================================================
+
+# =============================================================================
 # Paper utilities: summary statistics, permutation figure, scheme tables
-# ============================================================================
+# =============================================================================
+#
+# Three utilities for interactive use: build_summary_stats() for the summary
+# statistics table; permutation_null_distribution() and
+# plot_permutation_null() for Figure 9, the family permutation null; and
+# build_scheme_table() for the scheme classification by family. The block
+# defines the functions only; their calls are commented out, so sourcing the
+# file computes nothing here. Runs when HPT_RUN$tables is TRUE (see
+# HPT_TABLES in PART 1.3).
 
 if (isTRUE(HPT_RUN$tables)) {
 
-# PAPER UTILITIES -- summary statistics, permutation figure, scheme tables
-#
-# Three independent blocks, each writing both a CSV and a ready-to-input LaTeX
-# file. Blocks 1 and 3 need `outpatient` from the BUILD block; block 2 needs
-# `concept_results` from stage 6.
-###############################################################################
-###############################################################################
-# BLOCK 1 -- SUMMARY STATISTICS TABLE
-#
-# Regenerates the summary statistics table against the panel currently in
-# memory. Three panels: prices, treatment and instruments, hospital
-# characteristics.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Summary statistics table
+# -----------------------------------------------------------------------------
+# build_summary_stats(panel) describes the panel passed to it, normally
+# `outpatient`: prices, treatment and instruments, hospital characteristics,
+# market demographics (the DEMO_ columns, if present), and the sample
+# structure. Prints the tables and writes T01_summary_statistics.csv,
+# T01B_sample_structure.csv, and tab_summstats.tex, all to TABLE_DIR. Adds
+# IN_SYSTEM (and IS_SHORT_TERM, if HOSPITAL_TYPE exists) to `panel` by
+# reference. Returns the three tables invisibly.
 build_summary_stats <- function(panel) {
   
   fmt <- function(x, digits = 2) formatC(x, format = "f", digits = digits, big.mark = ",")
@@ -7911,7 +8252,10 @@ build_summary_stats <- function(panel) {
   save_csv(rbind(rows, demo_rows, fill = TRUE), "T01_summary_statistics.csv")
   save_csv(structure_rows, "T01B_sample_structure.csv")
   
-  # ---- Emit LaTeX ----------------------------------------------------------
+  # LaTeX table ---------------------------------------------------------------
+  # Panels A-C take rows 1-5, 6-11, and 12 onward of `rows`. Panel B has seven
+  # rows (6-12), so its last row, out-of-CBSA competitor system exposure, is
+  # printed at the top of Panel C.
   tex <- c(
     "\\begin{table}[!htbp]", "\\centering",
     "\\caption{Summary Statistics}", "\\label{tab:summstats}",
@@ -7956,19 +8300,25 @@ build_summary_stats <- function(panel) {
   invisible(list(stats = rows, demographics = demo_rows, structure = structure_rows))
 }
 
-# Interactive: builds and writes the summary-statistics table on demand.
+# Interactive use; needs `outpatient` in memory.
 # build_summary_stats(outpatient)
 
 
-
-###############################################################################
-# BLOCK 2 -- PERMUTATION NULL FIGURE
-#
-# family_permutation_test() writes only summary statistics, so the null
-# distribution itself cannot be recovered from T08E. This regenerates it for a
-# single instrument and plots the observed statistic against the full exact
-# enumeration of C(16,10) = 8,008 family assignments.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Figure 9: Permutation null distribution
+# -----------------------------------------------------------------------------
+# family_permutation_test() (Section 8) saves only summary statistics of the
+# null (T08E), so this recomputes the full null for one instrument.
+# permutation_null_distribution(mi, instrument_label) takes the
+# meta-regression input from prepare_meta_input() and computes the shoppable
+# minus non-shoppable difference in the mean of RF_COEF (dep), weighted by
+# 1 / RF_SE^2 (se), for the actual assignment (DIAGNOSTIC_FAMILIES) and for
+# every assignment of the same number of families: with 16 families and 10
+# shoppable, all C(16,10) = 8,008. Returns the observed difference, the null
+# values, and the two-sided p-value; stops if fewer than MIN_CONCEPTS_META
+# concepts remain. plot_permutation_null() draws the null histogram with the
+# observed value and its mirror image and writes fig09_permutation_null.pdf
+# to FIGURE_DIR.
 permutation_null_distribution <- function(mi, instrument_label,
                                           dep = "RF_COEF", se = "RF_SE",
                                           shoppable_families = DIAGNOSTIC_FAMILIES) {
@@ -8023,27 +8373,30 @@ plot_permutation_null <- function(perm, filename = "fig09_permutation_null") {
   p
 }
 
-# Interactive: generates the permutation-null figure on demand from
-# concept_results and schemes_long, both already in scope after warm_start().
+# Interactive use; needs concept_results and schemes_long in memory, and
+# theme_paper() and save_fig() from the Figures 1-9 block.
 # meta_input <- prepare_meta_input(concept_results, schemes_long)
 # perm <- permutation_null_distribution(meta_input, "Competitor_only_hospitals_9m")
 # plot_permutation_null(perm)
 
 
-
-###############################################################################
-# BLOCK 3 -- SCHEME CLASSIFICATION TABLES
-#
-# Regenerates the scheme classification table directly from the keyword rules
-# in Section 3, so the printed table and the estimation universe cannot drift
-# apart.
-#
-# Reported at FAMILY level, since the codebook holds 738 concepts across 16
-# families and a concept-level table would be unreadable. Where a family splits
-# across categories within a scheme, the cell shows the modal category and the
-# share of concepts agreeing with it, so within-family variation stays visible
-# rather than being hidden by the aggregation.
-###############################################################################
+# -----------------------------------------------------------------------------
+# Scheme classification by family
+# -----------------------------------------------------------------------------
+# build_scheme_table(schemes_long, panel) reports each scheme at the family
+# level, since the codebook holds 738 concepts in 16 families. It works from
+# schemes_long (Section 3), the classification the estimation uses, with each
+# concept's family taken from `panel`. Each family-scheme cell shows the
+# modal category and the share of the family's concepts in it:
+#   S, N   HIGH or LOW, with at least 90% of the family's concepts
+#   s, n   HIGH or LOW, with less than 90%
+#   B      INTERMEDIATE
+#   ?      anything else
+# Prints the table and up to 15 of the cells below 90%, and writes
+# T02B_scheme_classification_by_family.csv (one row per family) and
+# T02C_scheme_classification_detail.csv (one row per cell) to TABLE_DIR. The
+# appendix table of family-level scheme assignments (tab_schemes_family.tex)
+# comes from the Three builds block later in PART 5.
 build_scheme_table <- function(schemes_long, panel) {
   
   fam_map <- unique(panel[, .(ANALYSIS_CONCEPT_ID = FINAL_CONCEPT_ID,
@@ -8088,13 +8441,14 @@ build_scheme_table <- function(schemes_long, panel) {
   invisible(wide)
 }
 
-# Interactive: builds and writes the scheme classification table on demand.
+# Interactive use; needs schemes_long and outpatient in memory.
 # build_scheme_table(schemes_long, outpatient)
 
 
-# Wu-Hausman test of OLS exogeneity.
-# Interactive: Wu-Hausman summary read from the T03 CSV that PART 5's
-# "Three builds" block writes.
+# Interactive use (needs only TABLE_DIR): Wu-Hausman test of OLS exogeneity
+# and the OLS-IV gap, from T03_pooled_OLS_RF_IV_all_outcomes.csv, which
+# run_pooled_models() (stage 5) and the Three builds block later in PART 5
+# both write.
 # t3 <- fread(file.path(TABLE_DIR, "T03_pooled_OLS_RF_IV_all_outcomes.csv"))
 #
 # t3[, .(INSTRUMENT_LABEL, OUTCOME,
@@ -8108,35 +8462,40 @@ build_scheme_table <- function(schemes_long, panel) {
 # cat("Wu-Hausman rejects at 5% in",
 #     t3[WU_HAUSMAN_P < 0.05, .N], "of", t3[is.finite(WU_HAUSMAN_P), .N], "\n")
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$tables
 
-# ============================================================================
+
+# =============================================================================
 # Figures 10-20
-# ============================================================================
+# =============================================================================
+#
+# Figures for the robustness and market-heterogeneity sections, drawn from
+# CSVs in TABLE_DIR written by Sections 12, 12B, 13, and 15 (and stage 7 for
+# Figure 13), and saved to FIG_DIR by sv(). Runs when HPT_RUN$figures is TRUE,
+# after the Figures 1-9 block, whose theme_paper() it uses. Figure 14 uses
+# s13_ri when it is in memory; Figure 20 plots values typed into the code.
+#
+#   fig10_window_ladder.pdf         instrument window ladder (15B)
+#   fig11_construction.pdf          instrument construction ladder (13C)
+#   fig12_leave_one_out.pdf         leave-one-system-out (13B)
+#   fig13_sysmonth.pdf              system x month fixed effects (13A)
+#   fig14_randinf.pdf               randomization inference (13D)
+#   fig15_payer.pdf                 payer-conditional decomposition (15C)
+#   fig16_cbsa.pdf                  county vs CBSA market definition (15A)
+#   fig17_ses_gradient.pdf          SES index interaction, 18 tests (12)
+#   fig18_ses_terciles.pdf          gap by SES tercile (12B)
+#   fig19_demo_moderators.pdf       individual moderators (12)
+#   fig20a_franchise_families.pdf   within-system dispersion by family
+#   fig20b_franchise_systems.pdf    centrally priced systems
+#   fig20_franchise.pdf             20a and 20b combined (needs patchwork)
 
 if (isTRUE(HPT_RUN$figures)) {
 
-# FIGURES FOR THE ROBUSTNESS AND MARKET-HETEROGENEITY SECTIONS
-#
-# Reads only the saved CSV outputs in TABLE_DIR. No re-estimation and no panel
-# in memory required, so this runs standalone.
-#
-# Produces (into FIG_DIR):
-#   fig10_window_ladder.pdf      window sensitivity, coefficient + first stage
-#   fig11_construction.pdf       instrument construction ladder
-#   fig12_leave_one_out.pdf      leave-one-system-out distribution
-#   fig13_sysmonth.pdf           system x month FE: what changed
-#   fig14_randinf.pdf            randomisation inference null distribution
-#   fig15_payer.pdf              payer-conditional decomposition
-#   fig16_cbsa.pdf               county vs CBSA market definition
-#   fig17_ses_gradient.pdf       SES index interaction, all 18 tests
-#   fig18_ses_terciles.pdf       gap by SES tercile with CIs
-#   fig19_demo_moderators.pdf    individual moderators, predicted vs observed
-###############################################################################
+# Local helpers ---------------------------------------------------------------
+# PAL is the color palette, rd() reads a CSV from TABLE_DIR with fread() (no
+# file check, so a missing CSV stops the block), and short() shortens the
+# three MAIN instrument labels. sv(), defined under Figure 10, saves a plot to
+# FIG_DIR.
 suppressPackageStartupMessages({
   library(data.table); library(ggplot2); library(scales)
 })
@@ -8151,11 +8510,18 @@ short <- function(x) {
 }
 
 
-# ===========================================================================
-# FIG 10 -- INSTRUMENT WINDOW LADDER
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Figure 10: Instrument window ladder
+# -----------------------------------------------------------------------------
+# Shoppable reduced-form estimate (percent per SD) and minimum first-stage
+# Wald F against the trailing window (S15B_WINDOWS: 3, 6, 9, 12 months) for
+# each instrument construction, from T15B_window_ladder_rows.csv (Section
+# 15B). The window is parsed from the "[NM]" suffix of INSTRUMENT_LABEL.
+# T15B_window_ladder_tests.csv is read into w_test but not used. Writes
+# fig10_window_ladder.pdf; Section 25 (PART 6) writes another version under
+# the same name when HPT_RUN$diagnostics is TRUE.
 sv <- function(p, f, w = 7, h = 4.5) {
-  ggsave(file.path(FIG_DIR, f), p, width = w, height = h)   # no cairo_pdf
+  ggsave(file.path(FIG_DIR, f), p, width = w, height = h)   # grDevices::pdf
   cat("wrote", f, "\n")
 }
 
@@ -8188,31 +8554,32 @@ p10 <- ggplot(d10, aes(WINDOW_M, EST, colour = CONSTRUCTION, group = CONSTRUCTIO
 sv(p10, "fig10_window_ladder.pdf", 8, 4.2)
 
 
-
-# ===========================================================================
-# FIG 11 -- INSTRUMENT CONSTRUCTION LADDER
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Figure 11: Instrument construction ladder
+# -----------------------------------------------------------------------------
+# Shoppable and non-shoppable reduced-form estimates (percent per SD) for the
+# eight instrument constructions of Section 13C, from
+# T13C_instrument_ladder_rows.csv, in two panels: constructions whose
+# reduced-form heterogeneity test rejects at 5% and those that do not
+# (T13C_instrument_ladder_tests.csv). The subtitle's count of constructions
+# that do not reject is computed from the data; the rest of its text is fixed
+# and names own-system rollout and the cumulative measures, the three
+# constructions that do not reject in the paper's results. Writes
+# fig11_construction.pdf.
 #
-# Two fixes.
-#
-# (1) The subtitle asserted "Both constructions failing at 5%". Three fail,
-#     not two: cumulative rollout share, cumulative external hospitals, and
-#     own-system included. The count is now computed from the data so it
-#     cannot drift out of sync with the table again, and the wording adapts
-#     to whatever the count turns out to be.
-#
-# (2) The subtitle used a colon as a sentence separator. Rewritten.
-#
-# NOTE: verify T13C_instrument_ladder_tests.csv carries t(15) p-values before
-# trusting the facet split. If P_VALUE there still equals
-# 2*(1 - pnorm(sqrt(WALD))), it predates the .pval() fix and needs
+# T13C_instrument_ladder_tests.csv holds normal-reference p-values (KNOWN
+# ISSUES in the file header). When P_VALUE matches 2 * (1 - pnorm(sqrt(WALD))),
+# the block warns and converts the reduced-form rows to the t(15) reference
+# in memory, before the split; the CSV on disk is not changed. For a table d,
+# the conversion is
 #   d[, P_VALUE := 2 * pt(-qnorm(1 - P_VALUE/2), df = 15)]
-# applied and re-saved first, exactly as T06_mainB and T07B did.
+# P-values that already use the t reference do not match the check and are
+# not converted.
 
 c_rows <- rd("T13C_instrument_ladder_rows.csv")
 c_test <- rd("T13C_instrument_ladder_tests.csv")[ESTIMATOR == "Reduced form"]
 
-# Guard against the stale-CSV case rather than failing silently.
+# Convert only when P_VALUE matches the normal reference implied by WALD.
 if (nrow(c_test) && "WALD" %in% names(c_test)) {
   implied_normal <- 2 * (1 - pnorm(sqrt(c_test$WALD)))
   if (isTRUE(all.equal(c_test$P_VALUE, implied_normal, tolerance = 1e-6))) {
@@ -8253,9 +8620,15 @@ p11 <- ggplot(d11, aes(EST, LAB, fill = TERM)) +
 sv(p11, "fig11_construction.pdf", 8.5, 5.5)
 
 
-# ===========================================================================
-# FIG 12 -- LEAVE-ONE-SYSTEM-OUT
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Figure 12: Leave-one-system-out
+# -----------------------------------------------------------------------------
+# Shoppable reduced-form estimate (percent per SD) with each of the 15 largest
+# health systems dropped in turn, for each MAIN instrument, from
+# T13B_leave_one_system_out.csv (Section 13B). The dashed baseline at -4.806
+# and the subtitle's "44 of 45 remain significant" are typed into the code,
+# not read from the results, and the baseline is one value for all three
+# instruments. Writes fig12_leave_one_out.pdf.
 loo <- rd("T13B_leave_one_system_out.csv")[ESTIMATOR == "Reduced form"]
 loo[, INST := short(INSTRUMENT_LABEL)]
 
@@ -8272,10 +8645,15 @@ p12 <- ggplot(loo, aes(SHOPPABLE_RF_PCT, INST, colour = INST)) +
 sv(p12, "fig12_leave_one_out.pdf", 7.5, 3.6)
 
 
-# ===========================================================================
-# FIG 13 -- SYSTEM x MONTH FE: WHAT CHANGED
-# ===========================================================================
-# Baseline (T06) against system x month (T13A), both arms, Scheme 1.
+# -----------------------------------------------------------------------------
+# Figure 13: System x month fixed effects
+# -----------------------------------------------------------------------------
+# Shoppable and non-shoppable reduced-form estimates (percent per SD) under
+# Scheme 1 for the MAIN instruments: the baseline, from
+# T06_main_interacted_RF_and_IV.csv (stage 7), beside the estimates with
+# system x month fixed effects, from T13A_system_month_fe_rows.csv (Section
+# 13A). Stars mark RF_P < 0.05, as stored in each file. Writes
+# fig13_sysmonth.pdf.
 
 base13 <- rd("T06_main_interacted_RF_and_IV.csv")[SPEC == "1. Procedural certainty",
                                                   .(INSTRUMENT_LABEL, TERM, EST = RF_PERCENT_PER_SD, P = RF_P)]
@@ -8305,14 +8683,18 @@ p13 <- ggplot(d13, aes(EST, INST, fill = TERM)) +
 sv(p13, "fig13_sysmonth.pdf", 8.5, 4)
 
 
-# ===========================================================================
-# FIG 14 -- RANDOMISATION INFERENCE
-# ===========================================================================
-# The saved table holds summary statistics only. If s13_ri is still in memory
-# the full draw vector plots directly; otherwise this falls back to an
-# indicative chi-squared(1) reference density with the observed value marked.
-# The fallback is illustrative and should not be presented as the empirical
-# null.
+# -----------------------------------------------------------------------------
+# Figure 14: Randomization inference
+# -----------------------------------------------------------------------------
+# Null distribution of the reduced-form heterogeneity Wald statistic under
+# within-month reassignment of the instrument (Section 13D), with the observed
+# statistic and the null 95th percentile from
+# T13D_randomisation_inference.csv, which holds summary statistics only. When
+# s13_ri is in memory (after Section 13D, or a warm start that loads it), the
+# histogram shows its draws; the subtitle's draw count (200) is typed in, and
+# S13_N_PERM sets the actual number. Otherwise the histogram shows 2,000
+# draws from a chi-squared(1) distribution as a reference; that histogram is
+# illustrative and is not the randomization null. Writes fig14_randinf.pdf.
 
 ri <- rd("T13D_randomisation_inference.csv")
 if (exists("s13_ri") && !is.null(s13_ri$draws)) {
@@ -8339,9 +8721,13 @@ p14 <- ggplot(d14, aes(WALD)) +
 sv(p14, "fig14_randinf.pdf", 7, 4)
 
 
-# ===========================================================================
-# FIG 15 -- PAYER-CONDITIONAL DECOMPOSITION
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Figure 15: Payer-conditional decomposition
+# -----------------------------------------------------------------------------
+# Shoppable and non-shoppable reduced-form estimates (percent per SD) by
+# instrument, one panel per payer class (commercial, managed Medicaid,
+# Medicare Advantage), from T15C_payer_conditional_rows.csv (Section 15C).
+# Stars mark RF_P < 0.05. Writes fig15_payer.pdf.
 pay <- rd("T15C_payer_conditional_rows.csv")
 pay[, INST := short(INSTRUMENT_LABEL)]
 pay[, CLASS := factor(gsub("_", " ", PAYER_CLASS),
@@ -8365,9 +8751,14 @@ p15 <- ggplot(pay, aes(RF_PERCENT_PER_SD, INST, fill = TERM)) +
 sv(p15, "fig15_payer.pdf", 8, 6)
 
 
-# ===========================================================================
-# FIG 16 -- COUNTY VS CBSA MARKET DEFINITION
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Figure 16: County vs CBSA market definition
+# -----------------------------------------------------------------------------
+# Reduced-form heterogeneity p-value (log scale) for each of the six schemes
+# under the county and the CBSA market definitions, instrument
+# Competitor_outside_CBSA_hospitals_9m, from
+# T15A_county_vs_cbsa_comparison.csv (Section 15A). The dashed line marks
+# 0.05. Writes fig16_cbsa.pdf.
 cmp <- rd("T15A_county_vs_cbsa_comparison.csv")
 d16 <- melt(cmp, id.vars = "SPEC", measure.vars = c("P_COUNTY", "P_CBSA"),
             variable.name = "MARKET", value.name = "P")
@@ -8390,9 +8781,14 @@ p16 <- ggplot(d16, aes(P, SPEC, colour = MARKET)) +
 sv(p16, "fig16_cbsa.pdf", 8, 4)
 
 
-# ===========================================================================
-# FIG 17 -- SES INDEX INTERACTION, ALL 18 TESTS
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Figure 17: SES index interaction, all 18 tests
+# -----------------------------------------------------------------------------
+# Change in the shoppable-minus-non-shoppable gap with the county SES index
+# (DIFF, with +/-1.96 DIFF_SE), reduced form, for the six schemes and three
+# MAIN instruments, from T12T_triple_interaction_ses_tests.csv (Section 12).
+# The subtitle's "1 of 18 significant; median p = 0.29" is typed into the
+# code. Writes fig17_ses_gradient.pdf.
 ses <- rd("T12T_triple_interaction_ses_tests.csv")[ESTIMATOR == "Reduced form"]
 ses[, INST := short(INSTRUMENT_LABEL)]
 ses[, LO := DIFF - 1.96 * DIFF_SE][, HI := DIFF + 1.96 * DIFF_SE]
@@ -8412,41 +8808,29 @@ p17 <- ggplot(ses, aes(DIFF, SPEC, colour = INST)) +
 sv(p17, "fig17_ses_gradient.pdf", 8.5, 4.5)
 
 
-
-# ===========================================================================
-# FIG 18 -- GAP BY SES TERCILE
-# ===========================================================================
-#
-# Three fixes.
-#
-# (1) The confidence bands were wrong for two of three instruments. The old
-#     code multiplied every instrument's log-point gap by 15.94, labelled in
-#     the comment as the competitor-hospitals SD. The three instruments have
-#     different exposure SDs, and on this estimation sample (N = 941,013,
-#     smaller than the headline because counties without an ACS index drop)
-#     they are 15.50, 16.64 and 14.38, not 15.94. So the plotted intervals
-#     were on a different scale from the plotted point estimates, which
-#     already used the correct per-instrument SD inside GAP_PCT_PER_SD.
-#
-#     Rather than hardcode three more numbers, recover each instrument's SD
-#     from the data itself. GAP_PCT_PER_SD = 100*(exp(GAP_RF * SD) - 1), so
-#     SD = log1p(GAP_PCT_PER_SD/100) / GAP_RF exactly. Taking it from the
-#     tercile with the largest |GAP_RF| avoids dividing by a near-zero gap.
-#
-# (2) The subtitle hardcoded "joint p = 0.23-0.67". Those were the old
-#     chi-square values. Read the range from the tests file instead, so it
-#     tracks .s14_contrast() automatically.
-#
-# (3) The subtitle ran off the plot edge and used "--". Wrapped, and rewritten
-#     without the dash.
+# -----------------------------------------------------------------------------
+# Figure 18: Gap by SES tercile
+# -----------------------------------------------------------------------------
+# Shoppable-minus-non-shoppable gap (percent per SD of the instrument) in
+# each county SES tercile, by instrument, with 95% intervals, from
+# T12Q_ses_bins_gaps.csv (Section 12B). The subtitle gives the range across
+# instruments of the reduced-form p-value for the joint test that all
+# tercile gaps are equal, read from T12Q_ses_bins_tests.csv; .s14_contrast()
+# (Section 12B) computes it against an F(2, 15) reference. Writes
+# fig18_ses_terciles.pdf.
 
 ter  <- rd("T12Q_ses_bins_gaps.csv")
 tst  <- rd("T12Q_ses_bins_tests.csv")[TEST == "all gaps equal" & ESTIMATOR == "Reduced form"]
 
 ter[, INST := short(INSTRUMENT_LABEL)]
 
-# Per-instrument SD of the instrument, recovered exactly from the two columns
-# the pipeline already wrote. No hardcoded constants.
+# SD_Z, each instrument's SD on the SES estimation sample, is recovered from
+# the saved columns: GAP_PCT_PER_SD = 100 * (exp(GAP_RF * SD) - 1), so SD =
+# log1p(GAP_PCT_PER_SD / 100) / GAP_RF, taken at the tercile with the largest
+# |GAP_RF| to avoid dividing by a gap near zero. The SDs differ by instrument
+# (15.50, 16.64, and 14.38 on this sample, N = 941,013, which excludes
+# counties without an ACS index), so each interval uses its own instrument's
+# SD, as GAP_PCT_PER_SD does.
 ter[, SD_Z := {
   i <- which.max(abs(GAP_RF))
   log1p(GAP_PCT_PER_SD[i] / 100) / GAP_RF[i]
@@ -8478,9 +8862,14 @@ p18 <- ggplot(ter, aes(BIN, GAP_PCT_PER_SD, colour = INST, group = INST)) +
 sv(p18, "fig18_ses_terciles.pdf", 8, 4.4)
 
 
-# ===========================================================================
-# FIG 19 -- INDIVIDUAL MODERATORS: PREDICTED VS OBSERVED
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Figure 19: Individual moderators, predicted vs observed
+# -----------------------------------------------------------------------------
+# t-statistic (DIFF / DIFF_SE) of the change in the shoppability gap with each
+# county demographic moderator, entered one at a time, Scheme 1, reduced form,
+# by instrument, from T12T_triple_interaction_moderators_tests.csv (Section
+# 12). Shape marks the predicted sign (PRED_POS, PRED_NEG, or none); dotted
+# lines at +/-1.96. Writes fig19_demo_moderators.pdf.
 mod <- rd("T12T_triple_interaction_moderators_tests.csv")[ESTIMATOR == "Reduced form"]
 mod[, INST := short(INSTRUMENT_LABEL)]
 PRED_POS <- c("DEMO_POVERTY_RATE", "DEMO_BLACK_SHARE", "DEMO_HISPANIC_SHARE", "DEMO_AGE65PLUS_SHARE")
@@ -8489,7 +8878,7 @@ mod[, PRED := fcase(MODERATOR %chin% PRED_POS, "Predicted +",
                     MODERATOR %chin% PRED_NEG, "Predicted -",
                     default = "No prediction")]
 mod[, NICE := gsub("_", " ", gsub("^DEMO_", "", MODERATOR))]
-# standardise the coefficient so moderators on different scales are comparable
+# t-statistic, so that moderators on different scales are comparable
 mod[, Z := DIFF / DIFF_SE]
 mod[, NICE := factor(NICE, levels = rev(unique(mod[order(-abs(Z))]$NICE)))]
 
@@ -8578,14 +8967,21 @@ sv(
 )
 
 
-# ===========================================================================
-# FIG 20 -- FRANCHISE VS INTEGRATED PRICING
-# ===========================================================================
-# Panel A: within-system cross-county dispersion against the within-market
-#          cross-hospital benchmark, by clinical family (CPT/HCPCS only).
-# Panel B: share of concept-payer cells with essentially zero cross-county
-#          dispersion, by health system, against each system's share of
-#          hospitals -- identifies centrally priced systems and their weight.
+# -----------------------------------------------------------------------------
+# Figure 20: Franchise vs integrated pricing
+# -----------------------------------------------------------------------------
+# Panel A: within-system cross-county price dispersion relative to the
+# within-market cross-hospital benchmark, by clinical family (CPT/HCPCS only).
+# Panel B: share of concept-payer cells with near-zero cross-county
+# dispersion in each health system, against the system's share of all
+# hospitals; it shows which systems price centrally and how many hospitals
+# they cover. The dashed line at 40% marks the centralized-pricing threshold.
+#
+# Both panels plot values typed into the code (`fam`, `sys20`); no CSV is
+# read. Panel B calls ggrepel::geom_text_repel() without checking that
+# ggrepel is installed, so the block stops if it is missing. Writes
+# fig20a_franchise_families.pdf, fig20b_franchise_systems.pdf, and, if
+# patchwork is installed, the combined fig20_franchise.pdf.
 
 fam <- data.table(
   FAMILY = c("Vascular ultrasound", "MRI/MRA", "Mammography", "CT/CTA",
@@ -8595,10 +8991,11 @@ fam <- data.table(
              "Laboratory/pathology", "Evaluation & management", "Other"),
   RATIO  = c(0.25, 0.27, 0.30, 0.32, 0.33, 0.34, 0.35, 0.36,
              0.37, 0.38, 0.39, 0.40, 0.41, 0.42, 0.43, 0.44))
-# The reported quantities are the median ratio (0.358) and its range across
-# families (0.25-0.44). Per-family labels here are illustrative; substitute the
-# exact per-family values from the dispersion query output to have them match a
-# specific run exactly.
+# The paper reports the median ratio (0.358) and its range across families
+# (0.25-0.44). The 16 per-family values above span that range but are
+# illustrative; the exact values come from the dispersion query output, which
+# this file does not compute. The median line and its label show the median
+# of these values.
 
 p20a <- ggplot(fam, aes(RATIO, reorder(FAMILY, RATIO))) +
   geom_vline(xintercept = 1, linetype = 2, colour = "grey45") +
@@ -8642,45 +9039,46 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
   sv(p20a / p20b, "fig20_franchise.pdf", 7.5, 8.5)
 }
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$figures
 
-# ============================================================================
-# County coverage statistics and print-safe map
-# ============================================================================
+
+# =============================================================================
+# County coverage statistics and coverage map
+# =============================================================================
+#
+# Counts the counties in three nested tiers and the share of all U.S. counties
+# and of the 2023 U.S. population that each tier covers:
+#
+#   IN_PANEL            at least one row in `outpatient`
+#   COMPLETE_CASES      at least one row with no missing model variable
+#   ESTIMATION_SAMPLE   at least one row that feols keeps in the headline
+#                       model after removing fixed-effect singletons
+#
+# Coverage of the full panel overstates what the estimates rest on. About 31%
+# of complete cases are dropped as singletons of the county x concept and
+# month fixed effects, and a county whose rows are all dropped contributes
+# nothing to any coefficient. Counties in IN_PANEL but not in
+# ESTIMATION_SAMPLE are present in the data but contribute no identifying
+# variation. The ESTIMATION_SAMPLE row of the summary is the coverage figure
+# intended for the paper.
+#
+# Writes to COVERAGE_DIR (08_Coverage):
+#   HPT_R_COVERAGE_SUMMARY.csv          counties and population by tier
+#   HPT_R_STATE_COVERAGE.csv            coverage by state
+#   HPT_R_COUNTY_CROSSWALK.csv          tier of every county
+#   HPT_R_COVERAGE_MAP_CONUS.pdf/.png   map of the contiguous states and DC
+#   HPT_R_COVERAGE_MAP_BWCHECK.png      grayscale copy of the map (magick)
+#   HPT_R_COVERAGE_QA.csv               consistency checks
+#
+# Runs when HPT_RUN$coverage_map is TRUE (FALSE by default). Needs
+# `outpatient` with COUNTY_FIPS and the columns of the headline specification
+# (checked by stopifnot()), the packages sf and tigris, and internet access
+# for the Census population file and shapefiles unless they are cached.
 
 if (isTRUE(HPT_RUN$coverage_map)) {
 
-# COUNTY AND POPULATION COVERAGE, BUILT FROM THE ESTIMATION SAMPLE
-#
-# Coverage measured on the full panel -- every county with any usable price
-# observation -- overstates what the estimates actually rest on. Roughly 31% of
-# complete cases are dropped by cascading singleton removal across the county x
-# concept and month fixed effects, and a county whose every row sits in a
-# singleton cell contributes nothing to any coefficient even though it appears
-# in the data.
-#
-# This script measures three nested tiers and maps them separately:
-#
-#   1. IN PANEL            county has at least one row in `outpatient`
-#   2. COMPLETE CASES      at least one row with no missing model variable
-#   3. ESTIMATION SAMPLE   at least one row actually used by feols after
-#                          singleton removal -- the honest denominator for
-#                          "what the paper's estimates cover"
-#
-# The gap between tiers 1 and 3 is the number worth reporting: counties present
-# in the data but contributing nothing to identification.
-#
-# OUTPUTS (into COVERAGE_DIR):
-#   HPT_R_COVERAGE_SUMMARY.csv        counties and population by tier
-#   HPT_R_STATE_COVERAGE.csv          state-level breakdown
-#   HPT_R_COUNTY_CROSSWALK.csv        county-level tier membership
-#   HPT_R_COVERAGE_MAP_CONUS.pdf/.png three-category CONUS map
-#   HPT_R_COVERAGE_QA.csv             validation checks
-###############################################################################
+# COVERAGE_DIR is set again below from TABLE_DIR; it is the same 08_Coverage
+# folder as in PART 1.2.
 suppressPackageStartupMessages({
   library(data.table); library(fixest); library(sf)
   library(ggplot2); library(tigris); library(scales)
@@ -8693,20 +9091,20 @@ dir.create(COVERAGE_DIR, showWarnings = FALSE, recursive = TRUE)
 
 # 50 states plus DC. Territories excluded to match the Census denominator.
 VALID_STATE_FIPS <- sprintf("%02d", c(1:2, 4:6, 8:13, 15:42, 44:51, 53:56))
-NON_CONUS <- c("02", "15")   # Alaska, Hawaii -- in the statistics, off the map
+NON_CONUS <- c("02", "15")   # Alaska, Hawaii: counted, not mapped
 
 .cv_msg <- function(...) cat(..., "\n", sep = "")
 .cv_show <- function(dt) { print(as.data.frame(dt), row.names = FALSE); invisible(NULL) }
 .cv_head <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 
-# ===========================================================================
-# 1. WHICH ROWS DOES feols ACTUALLY USE?
-# ===========================================================================
-#
-# fixest stores the observations it dropped in fit$obs_selection, a list of
-# index vectors applied sequentially. This recovers the surviving row indices.
-# A manual cascading-singleton fallback is included in case the field is
-# absent or restructured in a future version.
+# -----------------------------------------------------------------------------
+# 1.  Estimation sample
+# -----------------------------------------------------------------------------
+# .cv_used_rows() recovers the rows that feols kept from fit$obs_selection,
+# the list of index vectors that fixest applies in turn when it drops
+# observations. If that field is missing, it warns and returns NULL, and
+# .cv_manual_singletons() then drops fixed-effect singletons repeatedly until
+# none remain.
 
 .cv_used_rows <- function(fit, n_total) {
   idx <- seq_len(n_total)
@@ -8751,8 +9149,12 @@ cv_complete <- cv_panel[cc]
 .cv_msg("Panel rows: ", format(n_panel, big.mark = ","),
         " | complete cases: ", format(nrow(cv_complete), big.mark = ","))
 
-# Build the interacted design exactly as the headline model does, then fit
-# reduced form only -- the estimation sample is identical for RF and IV.
+# Reduced form of the headline interacted model, built as in
+# estimate_interacted() (Section 4): the outcome on Z x 1[category = k] for
+# each Scheme 1 category and the baseline controls, with MARKET_ID and
+# POST_MONTH fixed effects and two-way clusters. The interacted IV has the
+# same complete cases and fixed effects and so keeps the same rows.
+# stopifnot() requires the recovered rows to match nobs(fit) within one row.
 d_fit <- copy(cv_complete)
 d_fit[, GRP := droplevels(factor(get(S_SCHEME)))]
 keys <- levels(d_fit$GRP)
@@ -8791,13 +9193,16 @@ for (nm in names(cv_sets)) .cv_msg("  ", nm, ": ", format(length(cv_sets[[nm]]),
         length(setdiff(cv_sets$IN_PANEL, cv_sets$ESTIMATION_SAMPLE)))
 
 
-# ===========================================================================
-# 2. CENSUS 2023 COUNTY POPULATION
-# ===========================================================================
-#
-# Reads the cached file the Python pipeline already downloaded if present,
-# otherwise pulls it directly. Same source, same vintage, so county and
-# population denominators are comparable across the two pipelines.
+# -----------------------------------------------------------------------------
+# 2.  Census 2023 county population
+# -----------------------------------------------------------------------------
+# Census county population estimates (co-est2023-alldata.csv, column
+# POPESTIMATE2023). The file is read from COVERAGE_DIR; if it is not there, it
+# is copied from 07_Coverage in the same results folder (the Python
+# pipeline's copy) or downloaded from PEP_URL. Using the same source and
+# vintage keeps the county and population denominators comparable across the
+# two pipelines. State rows (COUNTY = 0) and areas outside VALID_STATE_FIPS
+# are dropped.
 
 .cv_head("2. CENSUS POPULATION")
 
@@ -8832,9 +9237,12 @@ TOTAL_COUNTIES <- uniqueN(pep$COUNTY_FIPS)
         " | 2023 population: ", format(round(TOTAL_POP), big.mark = ","))
 
 
-# ===========================================================================
-# 3. COVERAGE SUMMARY
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 3.  Coverage by tier
+# -----------------------------------------------------------------------------
+# HPT_R_COVERAGE_SUMMARY.csv, one row per tier: counties in the data,
+# counties matched to the Census file, unmatched codes, and the matched
+# counties' share of all counties and of the 2023 population.
 .cv_head("3. COVERAGE BY TIER")
 
 cv_summary <- rbindlist(lapply(names(cv_sets), function(nm) {
@@ -8863,9 +9271,14 @@ fwrite(cv_summary, file.path(COVERAGE_DIR, "HPT_R_COVERAGE_SUMMARY.csv"))
                big.mark = ","))
 
 
-# ===========================================================================
-# 4. COUNTY CROSSWALK AND STATE-LEVEL COVERAGE
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 4.  County crosswalk and state coverage
+# -----------------------------------------------------------------------------
+# HPT_R_COUNTY_CROSSWALK.csv lists every Census county with 0/1 indicators
+# for the three tiers and the TIER label used by the map.
+# HPT_R_STATE_COVERAGE.csv gives, by state, the counties and population in
+# the estimation sample and their shares of the state totals, sorted by
+# population share.
 cw <- copy(pep)
 for (nm in names(cv_sets)) set(cw, j = nm, value = as.integer(cw$COUNTY_FIPS %chin% cv_sets[[nm]]))
 cw[, TIER := fcase(ESTIMATION_SAMPLE == 1L, "Estimation sample",
@@ -8888,28 +9301,26 @@ fwrite(state_cov, file.path(COVERAGE_DIR, "HPT_R_STATE_COVERAGE.csv"))
 .cv_show(rbind(head(state_cov, 5), tail(state_cov, 5)))
 
 
-
-###############################################################################
-# COVERAGE MAP, PRINT-SAFE
+# -----------------------------------------------------------------------------
+# Coverage map
+# -----------------------------------------------------------------------------
+# Uses cw and cv_summary from steps 3 and 4. Counties fall in three
+# categories: in the estimation sample, in the data but not in the estimation
+# sample, and not in the data (COMPLETE_CASES is not mapped). Alaska and
+# Hawaii are in the statistics but not on the map. MAP_STYLE sets the fills:
 #
-# Needs cw, cv_summary, cv_sets and pep from the coverage blocks above.
-#
-# Designed for black-and-white printing first and colour second. The three
-# fills sit at clearly separated luminance levels, roughly 23%, 78%, and 100%,
-# so they stay distinguishable when the paper is printed on a laser printer or
-# photocopied.
-#
-#   MAP_STYLE = "grayscale"  three grey levels          (default, print-safe)
-#             = "hatched"    grey + diagonal hatching   (needs ggpattern)
-#             = "colour"     blue palette               (screen / slides)
-###############################################################################
+#   "grayscale"  three gray levels (default), legible in black-and-white print
+#   "hatched"    gray levels plus hatching of the middle category; needs
+#                ggpattern, otherwise falls back to grayscale with a warning
+#   "colour"     blue palette for screen use; output names end in _colour
 MAP_STYLE <- "grayscale"
 
 suppressPackageStartupMessages({ library(sf); library(ggplot2); library(tigris) })
 
-# ---------------------------------------------------------------------------
-# Geometry
-# ---------------------------------------------------------------------------
+# Geometry --------------------------------------------------------------------
+# Census cartographic boundary files (2023, 1:20m) from tigris. Counties with
+# no crosswalk row are labeled "No disclosure data". The contiguous states and
+# DC are projected to EPSG:5070 and simplified with a 1 km tolerance.
 cty <- tigris::counties(cb = TRUE, resolution = "20m", year = 2023, progress_bar = FALSE)
 sts <- tigris::states(cb = TRUE, resolution = "20m", year = 2023, progress_bar = FALSE)
 
@@ -8932,9 +9343,9 @@ conus_sts <- st_as_sf(sts[!(STATEFP %chin% NON_CONUS)])
 conus_cty <- st_simplify(st_transform(conus_cty, 5070), dTolerance = 1000, preserveTopology = TRUE)
 conus_sts <- st_simplify(st_transform(conus_sts, 5070), dTolerance = 1000, preserveTopology = TRUE)
 
-# ---------------------------------------------------------------------------
-# Labels
-# ---------------------------------------------------------------------------
+# Labels ----------------------------------------------------------------------
+# The subtitle and caption take their counts and population shares from the
+# ESTIMATION_SAMPLE and IN_PANEL rows of cv_summary.
 est <- cv_summary[TIER == "ESTIMATION_SAMPLE"]
 pan <- cv_summary[TIER == "IN_PANEL"]
 
@@ -8950,10 +9361,9 @@ cap_txt <- sprintf(paste0(
   format(pan$N_MATCHED_TO_CENSUS, big.mark = ","), pan$POPULATION_COVERAGE_PCT,
   format(pan$N_MATCHED_TO_CENSUS - est$N_MATCHED_TO_CENSUS, big.mark = ","))
 
-# ---------------------------------------------------------------------------
-# Palettes. Grayscale values chosen for separation under photocopying:
-# ~23% / ~78% / 100% luminance.
-# ---------------------------------------------------------------------------
+# Palettes --------------------------------------------------------------------
+# The gray fills (#3A3A3A, #C8C8C8, white) sit at about 23%, 78%, and 100%
+# luminance, so they remain distinct when printed or photocopied.
 PAL_GREY   <- setNames(c("#3A3A3A", "#C8C8C8", "#FFFFFF"), LV)
 PAL_COLOUR <- setNames(c("#1F4E79", "#B9D2E5", "#FFFFFF"), LV)
 fills <- if (MAP_STYLE == "colour") PAL_COLOUR else PAL_GREY
@@ -8981,8 +9391,8 @@ base_map <- ggplot() +
     plot.margin       = margin(10, 12, 8, 12))
 
 if (MAP_STYLE == "hatched" && requireNamespace("ggpattern", quietly = TRUE)) {
-  # Hatching the middle category guarantees separation even if the two greys
-  # merge on a low-contrast printer.
+  # The middle category is hatched so that it stays distinct even if the two
+  # gray levels print alike.
   library(ggpattern)
   p <- ggplot() +
     geom_sf(data = conus_sts, fill = "grey97", colour = NA) +
@@ -9013,9 +9423,9 @@ if (MAP_STYLE == "hatched" && requireNamespace("ggpattern", quietly = TRUE)) {
   p <- base_map + scale_fill_manual(values = fills, drop = FALSE)
 }
 
-# ---------------------------------------------------------------------------
-# Save. PDF is vector and is what the paper should embed.
-# ---------------------------------------------------------------------------
+# Save ------------------------------------------------------------------------
+# PDF (vector) and PNG (400 dpi), 10.5 x 7.4 inches. The PDF is the version
+# for the paper.
 sfx <- if (MAP_STYLE == "colour") "_colour" else ""
 ggsave(file.path(COVERAGE_DIR, paste0("HPT_R_COVERAGE_MAP_CONUS", sfx, ".pdf")),
        p, width = 10.5, height = 7.4)
@@ -9025,10 +9435,10 @@ ggsave(file.path(COVERAGE_DIR, paste0("HPT_R_COVERAGE_MAP_CONUS", sfx, ".png")),
 .cv_msg("Map written (", MAP_STYLE, ") to ", COVERAGE_DIR)
 
 
-# ---------------------------------------------------------------------------
-# Print check: convert the PNG to greyscale and confirm the three fills remain
-# separated. Only runs if magick is installed.
-# ---------------------------------------------------------------------------
+# Grayscale copy --------------------------------------------------------------
+# If magick is installed, writes a grayscale version of the PNG
+# (HPT_R_COVERAGE_MAP_BWCHECK.png) for a visual check that the three
+# categories stay distinct. The check itself is not automated.
 if (requireNamespace("magick", quietly = TRUE)) {
   img <- magick::image_read(file.path(COVERAGE_DIR,
                                       paste0("HPT_R_COVERAGE_MAP_CONUS", sfx, ".png")))
@@ -9039,9 +9449,14 @@ if (requireNamespace("magick", quietly = TRUE)) {
 }
 
 
-# ===========================================================================
-# 6. QA
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 6.  QA
+# -----------------------------------------------------------------------------
+# Five checks marked PASS, FAIL, or WARN: unique Census county codes,
+# estimation rows equal to nobs(fit) within one row, estimation counties a
+# subset of panel counties, every estimation county matched to the Census
+# file (WARN otherwise), and population coverage above 0 and at most 100
+# percent. The table records the results and does not stop the run.
 qa <- data.table(
   CHECK = c("Census county key unique",
             "Estimation rows match feols nobs",
@@ -9065,27 +9480,33 @@ fwrite(qa, file.path(COVERAGE_DIR, "HPT_R_COVERAGE_QA.csv"))
 .cv_msg("\nFor the paper: report the ESTIMATION_SAMPLE row of ",
         "HPT_R_COVERAGE_SUMMARY.csv, not IN_PANEL.")
 
-
-
-###############################################################################
-
 }  # end HPT_RUN$coverage_map
 
-# ============================================================================
-# Three builds: pooled table, family-scheme grid, shoppable shares
-# ============================================================================
+
+# =============================================================================
+# Tables built from the current panel
+# =============================================================================
+#
+# Three builds from `outpatient` and `schemes_long` as they are in memory:
+#
+#   BLOCK 1  pooled OLS, reduced-form, and IV estimates for each outcome and
+#            main instrument (T03, tab_pooled.tex) and the sample audit (QA01)
+#   BLOCK 2  shoppability by clinical family and scheme, 16 x 18, for the
+#            appendix (T02B, tab_schemes_family.tex)
+#   BLOCK 3  shoppable shares for the magnitude calculation (QA11, CSV only)
+#
+# CSVs go to TABLE_DIR and .tex files to OUT_TEX. BLOCK 1 rewrites the T03
+# file and the `pooled` object that stage 5 also creates (see BLOCK 1).
+#
+# Runs when HPT_RUN$tables is TRUE (the default). HPT_TABLES, set before
+# sourcing, overrides the switch, also after a warm start. Needs `outpatient`,
+# `schemes_long`, and the PART 2 functions.
 
 if (isTRUE(HPT_RUN$tables)) {
 
-# THREE BUILDS FOR THE PAPER
-#
-#   BLOCK 1  Pooled estimates and the sample audit, on the current panel
-#   BLOCK 2  Appendix table: family-level scheme assignment, 16 x 18
-#   BLOCK 3  Shoppable share inputs for the magnitude calculation
-#
-# Run after the main pipeline, with `outpatient` and `schemes_long` in memory.
-# Each block writes both a CSV and a ready-to-\input LaTeX file.
-###############################################################################
+# OUT_TEX is set again from OUT_TAB (TABLE_DIR, or the working directory if
+# TABLE_DIR does not exist); with TABLE_DIR in place it is the 02_Tables_TEX
+# folder of PART 1.2. .wr() writes a .tex file to OUT_TEX.
 suppressPackageStartupMessages({ library(data.table); library(fixest) })
 
 OUT_TAB <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else getwd()
@@ -9096,8 +9517,9 @@ dir.create(OUT_TEX, showWarnings = FALSE, recursive = TRUE)
 .sh <- function(d) { print(as.data.frame(d), row.names = FALSE); invisible(NULL) }
 .wr <- function(txt, f) { writeLines(txt, file.path(OUT_TEX, f)); cat("  wrote", f, "\n") }
 
-# fitstat returns a length-4 vector (stat, p, df1, df2) for ivf1 in some fixest
-# versions. Always take the first element and coerce defensively.
+# .stat1() returns the first element of fixest::fitstat(fit, what), or NA if
+# the call fails. For the IV tests fitstat() returns the statistic followed by
+# its p-value and degrees of freedom, so .stat1() returns the statistic.
 .stat1 <- function(fit, what) {
   v <- tryCatch(suppressWarnings(as.numeric(fixest::fitstat(fit, what, simplify = TRUE))),
                 error = function(e) NA_real_)
@@ -9105,16 +9527,31 @@ dir.create(OUT_TEX, showWarnings = FALSE, recursive = TRUE)
 }
 
 
-# ===========================================================================
-# BLOCK 1 -- POOLED ESTIMATES AND THE SAMPLE AUDIT
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# BLOCK 1  Pooled estimates and the sample audit
+# -----------------------------------------------------------------------------
+# For each main instrument and each outcome in P_OUTCOMES: pooled OLS of the
+# outcome on the treatment, the reduced form on the instrument, and the IV,
+# each on complete cases with the baseline control, MARKET_ID and POST_MONTH
+# fixed effects, and two-way clustering by county and month. Outcomes absent
+# from the panel and samples below MIN_MODEL_OBS rows are skipped.
 #
-# Regenerates the pooled table and the sample audit against the panel currently
-# in memory, so the reported N and the reported coefficients come from the same
-# vintage. Panel size has moved across rebuilds of the upstream data (for
-# instance 1,444,901 rows and 959,661 estimated, against 1,431,814 and 951,178
-# after the concept merge), and those are not just different N labels -- the
-# coefficients were estimated on a different sample.
+# The estimates come from the panel in memory, so that the table's N and its
+# coefficients belong to the same panel: 1,431,814 rows and 951,178 estimated
+# rows after the concept merges, against 1,444,901 and 959,661 without them.
+# They are cached under t02_pooled_current_vintage (a warm start restores
+# them as pooled_t02). A cached table from an earlier panel is reused until
+# invalidate_cache(..., dry_run = FALSE) deletes that key, directly or through
+# outpatient_panel, which cascades to it. The CSV and .tex files are written
+# on every run.
+#
+# The table is saved as T03_pooled_OLS_RF_IV_all_outcomes.csv and assigned to
+# `pooled`, the file and object names that run_pooled_models() uses in stage
+# 5, so after a full run both hold this block's version. Its columns differ
+# from stage 5's: OLS_PERCENT and IV_PERCENT are 100 * (exp(b) - 1) rather
+# than 100 * b, FIRST_STAGE_F is the first-stage Wald statistic of the IV
+# fit, WU_HAUSMAN_P holds the Wu-Hausman statistic, and there are no SE, RF
+# p-value, or star columns.
 
 .hd("BLOCK 1 — POOLED ESTIMATES AND SAMPLE AUDIT")
 
@@ -9165,7 +9602,8 @@ pooled <- cache_or_run("t02_pooled_current_vintage", {
         RF_COEF     = b_rf,
         IV_PERCENT  = 100 * (exp(b_iv) - 1),
         IV_P        = .pval(b_iv / s_iv, iv),
-        FIRST_STAGE_F = .stat1(iv, "ivwald1"),   # was "ivf1"
+        FIRST_STAGE_F = .stat1(iv, "ivwald1"),   # first-stage Wald statistic
+        # .stat1() returns the Wu-Hausman statistic here, not its p-value.
         WU_HAUSMAN_P  = .stat1(iv, "wh"),
         N_OBSERVATIONS = nobs(iv))
     }
@@ -9184,7 +9622,10 @@ cat("\nPooled estimates, current vintage:\n")
 cat("\nCHECK: N should be 951,178 (911,861 for ex-CBSA), matching tab:headline.\n")
 cat("Distinct N values observed:", paste(sort(unique(pooled$N_OBSERVATIONS)), collapse = ", "), "\n")
 
-# ---- LaTeX ----
+# LaTeX table -----------------------------------------------------------------
+# tab_pooled.tex (tab:pooled). The note gives the largest N in the table as
+# the main N and the smallest as the ex-CBSA N. Its Wu-Hausman sentence is
+# fixed text, not computed.
 lt <- c("\\begin{table}[!htbp]", "\\centering",
         "\\caption{Pooled Estimates Across the Price Distribution}",
         "\\label{tab:pooled}", "\\begin{threeparttable}", "\\footnotesize",
@@ -9213,7 +9654,13 @@ lt <- c(lt, "\\bottomrule", "\\end{tabular}",
         "\\end{tablenotes}", "\\end{threeparttable}", "\\end{table}")
 .wr(lt, "tab_pooled.tex")
 
-# ---- Sample audit, same vintage ----
+# Sample audit ----------------------------------------------------------------
+# Panel rows, complete cases, and rows kept by the reduced form of the primary
+# outcome on the primary instrument, plus fixed-effect cell counts, written to
+# TABLE_DIR/QA01_estimation_sample_audit.csv. Here a cell is a MARKET_ID x
+# POST_MONTH combination over all panel rows. audit_estimation_sample()
+# (Section 2), run in PART 3, writes a file of the same name to QA_DIR that
+# counts MARKET_ID cells instead.
 y <- PRIMARY_OUTCOME; z <- MAIN_INSTRUMENTS[[1L]]
 keep <- unique(c(y, ENDOGENOUS_VARIABLE, z, BASELINE_CONTROLS,
                  BASELINE_FIXED_EFFECTS, BASELINE_CLUSTERS))
@@ -9237,24 +9684,20 @@ save_csv(audit, "QA01_estimation_sample_audit.csv")
 cat("\nSample audit, current vintage:\n"); .sh(audit)
 
 
-
-###############################################################################
-# BLOCK 2 -- FAMILY-LEVEL SCHEME ASSIGNMENT
+# -----------------------------------------------------------------------------
+# BLOCK 2  Shoppability by clinical family and scheme
+# -----------------------------------------------------------------------------
+# Appendix table of the category that each of the 18 schemes assigns to each
+# clinical family (16 x 18). Families come from the panel (FINAL_FAMILY_ID,
+# 16 families over 738 concepts) rather than from the family column of
+# schemes_long, so the table covers the estimated concepts. A cell is split
+# when the family's concepts fall in more than one category; the number of
+# split cells is printed and quoted in the table notes.
 #
-# Builds the 16 x 18 family-by-scheme table for the appendix. Four details
-# matter for it to describe the estimation universe rather than the codebook:
-#
-#   - the scheme table keys on ANALYSIS_CONCEPT_ID, not FINAL_CONCEPT_ID
-#   - the category column is SHOPPABILITY_CATEGORY, not CATEGORY
-#   - category VALUES are detected at runtime rather than assumed, since the
-#     scheme builder's labels are not guaranteed to be Shoppable /
-#     Intermediate / Non_shoppable
-#   - families come from the PANEL (FINAL_FAMILY_ID, 16 families over 738
-#     concepts) rather than from the scheme table's own family column, so the
-#     table matches the sample the paper actually estimates on
-#
-# Run with `outpatient` and `schemes_long` in memory.
-###############################################################################
+# Writes T02B_family_scheme_long.csv and T02B_family_scheme_wide.csv to
+# TABLE_DIR and tab_schemes_family.tex to OUT_TEX. Section 24E builds a
+# similar grid (T24E files) that counts distinct concepts per cell. The setup
+# lines below repeat those at the top of this section.
 suppressPackageStartupMessages({ library(data.table) })
 
 OUT_TAB <- if (exists("TABLE_DIR") && dir.exists(TABLE_DIR)) TABLE_DIR else getwd()
@@ -9268,9 +9711,11 @@ dir.create(OUT_TEX, showWarnings = FALSE, recursive = TRUE)
 .hd("BLOCK 2 — FAMILY-LEVEL SCHEME ASSIGNMENT")
 
 
-# ---------------------------------------------------------------------------
-# 1. Resolve column names and inspect the category values before mapping.
-# ---------------------------------------------------------------------------
+# 1. Column names and category codes ------------------------------------------
+# SL_KEY, SL_CAT, and SL_SCH take the first candidate column present in
+# schemes_long. For the table built by build_schemes() (Section 3) these are
+# ANALYSIS_CONCEPT_ID (the panel's FINAL_CONCEPT_ID), SHOPPABILITY_CATEGORY
+# (HIGH, INTERMEDIATE, LOW), and SCHEME_NAME.
 SL_KEY <- intersect(c("FINAL_CONCEPT_ID", "ANALYSIS_CONCEPT_ID"), names(schemes_long))[1]
 SL_CAT <- intersect(c("SHOPPABILITY_CATEGORY", "CATEGORY"), names(schemes_long))[1]
 SL_SCH <- intersect(c("SCHEME_NAME", "SCHEME_ID"), names(schemes_long))[1]
@@ -9280,9 +9725,10 @@ cat("Using key =", SL_KEY, "| category =", SL_CAT, "| scheme =", SL_SCH, "\n")
 cat_levels <- sort(unique(as.character(schemes_long[[SL_CAT]])))
 cat("Category values present:", paste(cat_levels, collapse = " | "), "\n")
 
-# Map whatever labels are present onto S / I / N. The ordinal column is the
-# authority where available, since it encodes the intended ordering directly
-# and is immune to label drift.
+# CODE maps each category label to S, I, or N. When SHOPPABILITY_ORDINAL is
+# present (build_schemes() sets HIGH = 3, INTERMEDIATE = 2, LOW = 1), labels
+# are ranked by it; otherwise they are matched by name. stopifnot() requires
+# a code for every label.
 if ("SHOPPABILITY_ORDINAL" %in% names(schemes_long)) {
   ord_map <- unique(schemes_long[, c(SL_CAT, "SHOPPABILITY_ORDINAL"), with = FALSE])
   setnames(ord_map, c("CAT", "ORD"))
@@ -9301,9 +9747,10 @@ cat("\nCode mapping:\n"); print(CODE)
 stopifnot(!anyNA(CODE))
 
 
-# ---------------------------------------------------------------------------
-# 2. Concept -> family map from the PANEL (the estimation universe).
-# ---------------------------------------------------------------------------
+# 2. Concept-to-family map from the panel -------------------------------------
+# cf gives one FINAL_FAMILY_ID per FINAL_CONCEPT_ID in `outpatient` (BLOCK 3
+# also uses it). The inner join keeps scheme rows for panel concepts only and
+# warns if a panel concept has none.
 cf <- unique(outpatient[!is.na(FINAL_CONCEPT_ID),
                         .(FINAL_CONCEPT_ID, FINAL_FAMILY_ID)], by = "FINAL_CONCEPT_ID")
 cat("\nPanel concepts:", nrow(cf), "| families:", uniqueN(cf$FINAL_FAMILY_ID), "\n")
@@ -9320,9 +9767,14 @@ if (uniqueN(sl[[SL_KEY]]) != nrow(cf)) {
 }
 
 
-# ---------------------------------------------------------------------------
-# 3. Modal category per family x scheme, lowercase where the family splits.
-# ---------------------------------------------------------------------------
+# 3. Modal category by family and scheme --------------------------------------
+# CELL is the code of the most frequent category among the family's rows under
+# each scheme, in lower case for a split cell. Counts are over rows of
+# schemes_long, which can hold more than one row per concept (build_schemes()
+# keeps one row per distinct billing code type, family, concept, and
+# description). N_CONCEPTS therefore counts rows, and the modal category
+# weights concepts by their number of rows; see the s24_scheme_crosswalk()
+# item under KNOWN ISSUES in the file header.
 fam_scheme <- sl[, {
   tb    <- sort(table(CAT), decreasing = TRUE)
   modal <- names(tb)[1L]
@@ -9352,9 +9804,11 @@ save_csv(wide,       "T02B_family_scheme_wide.csv")
 cat("\nFamily x scheme grid:\n"); .sh(wide)
 
 
-# ---------------------------------------------------------------------------
-# 4. LaTeX. Landscape, rotated scheme headers, legend in the notes.
-# ---------------------------------------------------------------------------
+# 4. LaTeX table --------------------------------------------------------------
+# Landscape table (tab:schemes_family) with rotated scheme names, each word
+# cut to its first four letters. A dash marks a family that a scheme does not
+# assign; the legend and the split-cell count go in the notes. Needs the
+# LaTeX packages pdflscape and rotating.
 sch  <- setdiff(names(wide), "FINAL_FAMILY_ID")
 abbr <- vapply(sch, function(s) {
   s <- gsub("^(Alt|Alt:)[[:space:]]*", "", s)
@@ -9400,39 +9854,36 @@ lt <- c(lt, "\\bottomrule", "\\end{tabular}",
 cat("\nRequires \\usepackage{pdflscape} and \\usepackage{rotating} -- both already",
     "in your preamble.\n")
 
-# ===========================================================================
-# BLOCK 3 -- SHOPPABLE SHARE FOR THE MAGNITUDE CALCULATION
-# ===========================================================================
+
+# -----------------------------------------------------------------------------
+# BLOCK 3  Shoppable share for the magnitude calculation
+# -----------------------------------------------------------------------------
+# Caveat: none of these shares is a spending share. The disclosure files hold
+# prices but not quantities, and the pipeline has no utilization variable, so
+# a spending-weighted shoppable share cannot be computed from these data. The
+# block computes the three shares that can be computed, under Scheme 1
+# (SCHEME_FOR_SHARE), listed from furthest to closest to a spending share:
 #
-# READ THIS BEFORE USING THE OUTPUT.
+#   (a) Concept share          shoppable share of the 738 concepts; unsuitable
+#                              as a weight for statements about spending
+#   (b) Observation share      shoppable share of hospital-month-concept rows;
+#                              weights a service by how widely it is
+#                              disclosed, which is related to how often it is
+#                              delivered but is not utilization
+#   (c) Price-weighted share   rows times the concept's median price: the
+#                              share if every disclosed service were delivered
+#                              once at its disclosed rate; it assumes uniform
+#                              volume per concept, so it is not spending
 #
-# The disclosure files contain PRICES but not QUANTITIES. There is no
-# utilization variable anywhere in this pipeline, so a genuine
-# spending-weighted shoppable share cannot be computed from these data. What
-# follows are the three shares that can be computed, in ascending order of how
-# close they come to the target:
+# (b) and (c) serve as bounds; neither is spending-weighted. A spending share
+# would need Medicare outpatient utilization merged by HCPCS code; the CMS
+# "Medicare Physician & Other Practitioners" and "Medicare Outpatient
+# Hospitals - by Provider and Service" files publish HCPCS-level service
+# counts.
 #
-#   (a) CONCEPT SHARE          fraction of the 738 concepts that are
-#                              shoppable. The wrong weight for any statement
-#                              about spending.
-#   (b) OBSERVATION SHARE      fraction of hospital-month-concept rows that are
-#                              shoppable. Weights by how widely a service is
-#                              disclosed, which correlates with how commonly it
-#                              is delivered but is not utilization.
-#   (c) PRICE-WEIGHTED SHARE   observation count times median price.
-#                              Interpretable as "if every disclosed service
-#                              were delivered once at its disclosed rate."
-#                              Still not spending, since it assumes uniform
-#                              volume per concept.
-#
-# A true spending share would require merging Medicare outpatient utilization
-# by HCPCS. Both the CMS "Medicare Physician & Other Practitioners" and
-# "Medicare Outpatient Hospitals - by Provider and Service" files publish
-# HCPCS-level service counts and would supply it.
-#
-# Report (b) and (c) as bounds and state plainly that neither is
-# spending-weighted. That is defensible. Calling either one a spending share is
-# not.
+# Writes QA11_shoppable_shares.csv and QA11_shoppable_shares_by_family.csv
+# (price-weighted, by clinical family) to TABLE_DIR. The family breakdown uses
+# `cf` from BLOCK 2.
 
 .hd("BLOCK 3 — SHOPPABLE SHARE INPUTS")
 
@@ -9470,30 +9921,34 @@ setorder(fam_share, -SHARE_OF_TOTAL_PCT)
 save_csv(fam_share, "QA11_shoppable_shares_by_family.csv")
 .sh(fam_share)
 
-
-###############################################################################
-
 }  # end HPT_RUN$tables
 
-# ============================================================================
-# Figures 16-18
-# ============================================================================
+
+# =============================================================================
+# Figures for Sections 16-18
+# =============================================================================
+#
+# Figures for Sections 16, 17, and 18, drawn from the CSVs those sections save
+# in TABLE_DIR and written to FIGURE_DIR with ggsave():
+#
+#   fig16_family_forest.pdf          T16A (16.2)   main.tex, Section 6.5
+#   fig17_conley_sensitivity.pdf     T17           appendix.tex
+#   fig18_enforcement_controls.pdf   T18C          appendix.tex
+#
+# Nothing is estimated and `outpatient` is not needed. The block does not use
+# theme_paper() or save_fig() from the Figures 1-9 block. Section 18 writes
+# T18C only when `main` (stage 7) is in memory; if the file does not exist,
+# fread() stops the block. These fig16 to fig18 files are distinct from
+# fig16_cbsa.pdf, fig17_ses_gradient.pdf, and fig18_ses_terciles.pdf, which
+# the Figures 10-20 block writes to the same folder.
+#
+# Runs when HPT_RUN$figures is TRUE (the default; FALSE after a warm start).
 
 if (isTRUE(HPT_RUN$figures)) {
 
-# FIGURES FOR SECTIONS 16, 17, AND 18
-#
-#   fig16_family_forest.pdf        main.tex, Section 6.5
-#   fig17_conley_sensitivity.pdf   appendix.tex
-#   fig18_enforcement_controls.pdf appendix.tex
-#
-# Reads only the CSVs already written by HPT_sections_16_17_18.R, so this can
-# run in a fresh session after warm_start() without re-estimating anything.
-# It does not need `outpatient` in memory.
-#
-# If TABLE_DIR / FIGURE_DIR are not defined (i.e. the pipeline definitions are
-# not loaded), set them by hand at the top of this file.
-###############################################################################
+# TABLE_DIR and FIGURE_DIR come from PART 1.2. When the block is run outside
+# the pipeline, it stops if TABLE_DIR is undefined and sets FIGURE_DIR to
+# 02_Figures next to TABLE_DIR if that is undefined.
 
 suppressPackageStartupMessages({
   library(data.table)
@@ -9507,8 +9962,8 @@ if (!exists("FIGURE_DIR")) {
 }
 dir.create(FIGURE_DIR, showWarnings = FALSE, recursive = TRUE)
 
-# The paper's figures use a plain serif-free look; swap in your house theme
-# here if you have one so these match fig01-fig15.
+# .fig_theme (based on theme_bw()) is used for these three figures only; the
+# Figures 1-9 and 10-20 blocks use theme_paper(), so the styles differ.
 .fig_theme <- theme_bw(base_size = 10) +
   theme(panel.grid.minor   = element_blank(),
         panel.grid.major.y = element_blank(),
@@ -9521,7 +9976,8 @@ dir.create(FIGURE_DIR, showWarnings = FALSE, recursive = TRUE)
 
 SHOP_COLOURS <- c("Shoppable" = "#1b4965", "Non-shoppable" = "#bc4749")
 
-# Display names, matching the LaTeX tables.
+# Display names, matching the LaTeX tables. MAIN_THREE repeats
+# names(MAIN_INSTRUMENTS) from PART 1.5.
 FAMILY_LABELS <- c(
   MAMMOGRAPHY                 = "Mammography",
   VASCULAR_ULTRASOUND         = "Vascular ultrasound",
@@ -9553,20 +10009,21 @@ MAIN_THREE <- c("Competitor_only_hospitals_9m",
                 "Competitor_outside_CBSA_hospitals_9m")
 
 
-# ===========================================================================
-# FIGURE 16 -- Family-level forest plot
-#
-# Sixteen families under the primary instrument, ordered by point estimate,
-# coloured by the a-priori shoppability label. Dashed vertical lines mark the
-# precision-weighted group means, which are the quantities the permutation
-# test in Table 8 differences.
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Family-level forest plot (fig16_family_forest.pdf)
+# -----------------------------------------------------------------------------
+# Reduced-form coefficients of the 16 clinical families under the primary
+# instrument (Competitor_only_hospitals_9m), from separate family-level
+# regressions (T16A), ordered by estimate and colored by the Scheme 1 label
+# (shoppable if the family is in DIAGNOSTIC_FAMILIES). Bars are
+# RF_COEF +/- 1.96 * RF_SE. Dashed lines mark the precision-weighted mean of
+# each group.
 
 fam <- fread(file.path(TABLE_DIR, "T16A_family_level_RF_FS_IV.csv"))
 fam <- fam[INSTRUMENT_LABEL == "Competitor_only_hospitals_9m"]
 
 if (!exists("DIAGNOSTIC_FAMILIES")) {
-  # Fallback if pipeline constants are not loaded.
+  # Used only if PART 1 is not loaded; the same ten families as PART 1.5.
   DIAGNOSTIC_FAMILIES <- c("XRAY_FLUOROSCOPY", "MRI_MRA", "DIAGNOSTIC_ULTRASOUND",
                            "CT_CTA", "LABORATORY_PATHOLOGY", "VASCULAR_ULTRASOUND",
                            "EVALUATION_MANAGEMENT", "ECHOCARDIOGRAPHY",
@@ -9580,7 +10037,8 @@ fam[, `:=`(CI_LOW  = RF_COEF - 1.96 * RF_SE,
 setorder(fam, -RF_COEF)
 fam[, LABEL := factor(LABEL, levels = LABEL)]
 
-# Precision-weighted group means: the estimand of the permutation test.
+# Precision-weighted (1 / RF_SE^2) group means. Their difference is the
+# statistic of the family permutation test (Section 16.7) reported in Table 8.
 gm <- fam[, .(MEAN = sum(RF_COEF / RF_SE^2) / sum(1 / RF_SE^2)), by = CLASS]
 cat("\nPrecision-weighted group means (should match Table 8, row 1):\n")
 print(as.data.frame(gm), row.names = FALSE)
@@ -9605,21 +10063,24 @@ ggsave(file.path(FIGURE_DIR, "fig16_family_forest.pdf"), p16,
 cat("Wrote fig16_family_forest.pdf\n")
 
 
-# ===========================================================================
-# FIGURE 17 -- Conley sensitivity curves
-#
-# Causal gradient against an assumed direct effect psi, with its 95% band.
-# The band has constant width by the Frisch-Waugh-Lovell identity, which is
-# the point worth seeing: only the point estimate slides.
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Conley sensitivity curves (fig17_conley_sensitivity.pdf)
+# -----------------------------------------------------------------------------
+# For each main instrument, the causal shoppability gradient (GAP_CAUSAL)
+# against an assumed direct effect on shoppable prices (psi on the axis,
+# GAMMA in T17), with its 95% band. The band has constant width: subtracting
+# an assumed direct effect from the outcome leaves every residual unchanged
+# (Frisch-Waugh-Lovell), so only the estimate shifts. The dashed line marks
+# the breakeven value BREAKEVEN_GAMMA_SIG.
 
 cg <- fread(file.path(TABLE_DIR, "T17_conley_sensitivity_grid.csv"))
 cg <- cg[INSTRUMENT_LABEL %chin% MAIN_THREE]
 cg[, PANEL_LABEL := factor(INSTRUMENT_LABELS[INSTRUMENT_LABEL],
                            levels = INSTRUMENT_LABELS[MAIN_THREE])]
 
-# Breakeven, recomputed from the grid rather than read, as a check on the
-# stored column. These should agree to numerical precision.
+# Check on the stored breakeven: GAP_OBSERVED + 1.96 * SE_GAP must equal
+# BREAKEVEN_GAMMA_SIG, or stopifnot() stops the block. The formula matches
+# run_conley_sensitivity() (Section 17) only when the gap is negative.
 be <- unique(cg[, .(PANEL_LABEL,
                     STORED    = BREAKEVEN_GAMMA_SIG,
                     RECOMPUTED = GAP_OBSERVED + 1.96 * SE_GAP,
@@ -9646,14 +10107,15 @@ ggsave(file.path(FIGURE_DIR, "fig17_conley_sensitivity.pdf"), p17,
 cat("Wrote fig17_conley_sensitivity.pdf\n")
 
 
-
-# ===========================================================================
-# FIGURE 18 -- Enforcement control stability
-#
-# Shoppable coefficient across the eight enforcement controls and the
-# no-control baseline, for the three main instruments. The visual claim is
-# that nothing moves.
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Enforcement control stability (fig18_enforcement_controls.pdf)
+# -----------------------------------------------------------------------------
+# Shoppable reduced-form coefficient (percent per SD of the instrument) with
+# each of the eight enforcement controls added in turn (T18C, Section 18),
+# for the three main instruments. The dashed line is the coefficient without
+# an enforcement control (RF_PERCENT_PER_SD_NO_CONTROL, which Section 18 takes
+# from `main`). The block also prints the largest absolute change (DELTA) per
+# instrument.
 
 enf <- fread(file.path(TABLE_DIR, "T18C_enforcement_vs_no_control.csv"))
 enf <- enf[TERM == "Shoppable" & INSTRUMENT_LABEL %chin% MAIN_THREE]
@@ -9703,15 +10165,15 @@ cat("Wrote fig18_enforcement_controls.pdf\n")
 cat("\nAll three figures written to:\n  ", FIGURE_DIR, "\n")
 
 
-
-
-# The block below is Section 19 diagnostic code that references
-# comparability_within_family, decomposition_results, and ses_gradient_table
-# -- three names never defined anywhere in this file. It ran in the original
-# author's console against objects that existed there at the time, not
-# against anything this file produces, and would error on a fresh source()
-# regardless of this reorganization. Left as a record; rebuild comp_wf and
-# dec from the current session's objects before using it.
+# Not run: Section 19 diagnostic calls, kept for reference. The
+# run_section_19() call uses comparability_within_family,
+# decomposition_results, and ses_gradient_table, which are not defined in this
+# file, so it errors in a fresh session. The lines after it rebuild comp_wf
+# (as stage 9 does) and dec (the stage 8 decomposition) from objects this
+# file creates and pass them to run_s19c(). Neither run_section_19() nor
+# run_s19c() is defined in this file; Section 19 is in
+# HPT_Section19_TierI_Diagnostics.R, which PART 6 sources when
+# HPT_RUN$diagnostics is TRUE.
 #
 # s19 <- run_section_19(outpatient,
 #                       within_family = comparability_within_family,  # T09D
@@ -9733,86 +10195,91 @@ cat("\nAll three figures written to:\n  ", FIGURE_DIR, "\n")
 #
 # s19c <- run_s19c(comp_wf, dec)
 
-
-
-
-###############################################################################
-
 }  # end HPT_RUN$figures
 
+
+
 ###############################################################################
-#                                                                             #
-#   PART 6 -- REFEREE-RESPONSE DIAGNOSTICS                                    #
-#                                                                             #
-#   Sections 19 through 25. None produces a number that appears in the paper; #
-#   each answers a specific referee item. Off by default.                     #
-#                                                                             #
+#
+#   PART 6: DIAGNOSTICS
+#
+#   Sections 19-25: diagnostics and robustness checks, table builders
+#   (Section 24), and figure rebuilds (Section 25). Sections 19 and 21-25 run
+#   when HPT_RUN$diagnostics is TRUE (FALSE by default). Section 20 runs when
+#   HPT_RUN$diagnostics or HPT_RUN$tier2_diag (from HPT_TIER2) is TRUE.
+#
 ###############################################################################
+
+
+# =============================================================================
+# Section 19: Tier I diagnostics
+# =============================================================================
+#
+# The Section 19 code is in two companion files, sourced here from CODE_DIR
+# and not part of this file: HPT_diagnostic_for_family_levels.R and
+# HPT_Section19_TierI_Diagnostics.R. source() stops if either is missing.
+# Runs when HPT_RUN$diagnostics is TRUE.
 
 if (isTRUE(HPT_RUN$diagnostics)) {
   
   source(file.path(CODE_DIR, "HPT_diagnostic_for_family_levels.R"))
   source(file.path(CODE_DIR, "HPT_Section19_TierI_Diagnostics.R"))
   
-}  # end HPT_RUN$diagnostics -- Section 19 only
+}  # end HPT_RUN$diagnostics (Section 19)
 
-# Section 20 is gated separately. Its definitions and its execution are
-# independent of Sections 19 and 21-25.
+
+# =============================================================================
+# Section 20: Tier II diagnostics (A5, A6, A8)
+# =============================================================================
+#
+# Three diagnostics:
+#
+#   20A  (A6) Whether the within-family contracting-depth result
+#        (N_PAYERS_V2, Section 9) reflects concept size.
+#   20B  (A5) Payer-mix composition, from the row-level payer-cell export
+#        (HPT_PAYER_DISPERSION*.csv.gz): a balance test of whether the
+#        instrument predicts reported payer counts and payer price
+#        dispersion, differently by shoppability, and the headline
+#        interacted price regression with the reported payer count as a
+#        row-level control.
+#   20C  (A8) A fixed-effects ladder: the baseline, then system fixed
+#        effects, then system x month fixed effects (Section 13A).
+#
+# Not estimated here: the payer-level version of 20B (a fixed set of common
+# payers at the hospital x concept x payer level, with payer fixed effects),
+# because the payer-cell export has one row per hospital, month, and
+# concept; and the distance-based exclusion rings of A8 (0, 50, 100, and 200
+# miles around the focal hospital), because the pipeline reads no hospital
+# coordinates.
+#
+# Needs `outpatient` and, for 20A, `concept_results` (Section 6) and
+# `measures` (Section 9). The cached Section 6 estimates are not modified.
+#
+# Runs when HPT_RUN$diagnostics or HPT_RUN$tier2_diag is TRUE.
+# HPT_RUN$tier2_diag is set from HPT_TIER2 after the warm-start reset (PART
+# 1.3), so Section 20 can run on a warm start. S20_RUN selects the blocks
+# (run block at the end of the section).
+
 if (isTRUE(HPT_RUN$diagnostics) || isTRUE(HPT_RUN$tier2_diag)) {
   
-  # ============================================================================
-  # Section 20: Tier II diagnostics A5, A6, A8
-
-
-# ============================================================================
-# Section 20: Tier II diagnostics A5, A6, A8
-# ============================================================================
-
-# SECTION 20 -- TIER II DIAGNOSTICS: A5, A6, A8
-#
-# Source AFTER HPT_Analysis_Pipeline.R has run through Section 9 (needs
-# `measures` and `concept_results` in memory) and after `outpatient` exists.
-# Nothing here touches Section 6's cached headline estimates.
-#
-#   20A  A6 -- is the contracting-depth result (N_PAYERS_V2) the concept-size
-#              gradient relabeled? Correlations against size, exposure, the
-#              concept's own first stage, and the precision weight used in
-#              run_comparability_within_family(); then re-estimates unweighted,
-#              with a log-size control, and with size-quartile FE layered on
-#              top of family FE.
-#   20B  A5 -- payer-mix composition. Two pieces:
-#              (i)  a balance test: does the instrument predict how many
-#                   payers a hospital reports for a concept, differentially
-#                   by shoppability? Feasible today from the payer-cell
-#                   export (HPT_PAYER_DISPERSION*.csv.gz).
-#              (ii) the headline interacted price regression with reported
-#                   payer count added as a row-level control.
-#              The FULL ask -- restrict to a fixed set of common payers and
-#              estimate at hospital x concept x payer level with payer FE --
-#              is NOT feasible from what's in this file. See the note at the
-#              bottom of this section for exactly what that would require.
-#   20C  A8 -- the fixed-effects ladder: baseline, + system FE (additive),
-#              then system x month (reproducing Section 13's own result as
-#              the third rung, so the ladder is internally consistent with
-#              Table sysmonth). Reuses Section 13's own system-resolution
-#              logic rather than assuming outpatient_r13 already exists.
-#
-# NOT ATTEMPTED HERE: the distance-based exclusion ladder from A8 (0/50/100/
-# 200-mile rings around the focal hospital). There is no latitude/longitude,
-# address, or geocode field anywhere in this pipeline -- I checked. That is a
-# Stage 1/2 data-construction task (hospital coordinates from CMS Care
-# Compare's Hospital General Information file, the AHA annual survey you
-# already cite, or an NPI registry lookup), not a diagnostic on what already
-# exists. See the note at the end of this file for a concrete next step.
-###############################################################################
-
 .s20_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s20_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
 
 
-# ===========================================================================
-# 20A. CONTRACTING DEPTH vs. CONCEPT SIZE                                (A6)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 20A  Contracting depth vs concept size (A6)
+# -----------------------------------------------------------------------------
+# s20_depth_diagnostics() tests whether the within-family contracting-depth
+# result (the moderator, N_PAYERS_V2 by default) reflects concept size. For
+# each main instrument it correlates the moderator with concept size (log
+# N_OBSERVATIONS), mean exposure (MEAN_PRIOR_POSTERS, when present), the
+# concept's first-stage coefficient (FS_COEF), and the precision weight
+# 1/RF_SE^2. It then fits specification (b) of
+# run_comparability_within_family() (Section 9: RF_COEF on the standardized
+# moderator, family fixed effects, weights 1/RF_SE^2, clustered by family)
+# and three variants: unweighted, with a log-size control, and with
+# size-quartile fixed effects. Writes T20A_depth_size_correlations.csv and
+# T20A_depth_reestimation.csv.
 
 s20_depth_diagnostics <- function(concept_results, measures,
                                   moderator   = "N_PAYERS_V2",
@@ -9846,8 +10313,8 @@ s20_depth_diagnostics <- function(concept_results, measures,
          call. = FALSE)
   .tick("column checks")
 
-  # Mirrors run_comparability_within_family()'s own merge and weight exactly,
-  # so this is the same object that function estimates on, not a re-derivation.
+  # Same filter, merge, and weight (W = 1/RF_SE^2) as
+  # run_comparability_within_family() in Section 9.
   d <- merge(cr[is.finite(RF_COEF) & is.finite(RF_SE) & RF_SE > 0], ms,
              by = "FINAL_CONCEPT_ID")
   cat("[20A] merge complete, nrow(d)=", nrow(d),
@@ -9866,7 +10333,8 @@ s20_depth_diagnostics <- function(concept_results, measures,
   has_mpp <- "MEAN_PRIOR_POSTERS" %chin% names(d)
   .tick("derived columns")
 
-  # -- correlations, per main instrument -----------------------------------
+  # Correlations of the moderator with size, exposure, first stage, and
+  # weight, by main instrument.
   corr_tab <- rbindlist(lapply(names(instruments), function(il) {
     dd <- d[INSTRUMENT_LABEL == il]
     data.table(
@@ -9885,7 +10353,7 @@ s20_depth_diagnostics <- function(concept_results, measures,
       "in run_comparability_within_family():\n", sep = "")
   print(corr_tab[, lapply(.SD, function(x) if (is.numeric(x)) round(x, 3) else x)])
 
-  # -- re-estimation ladder --------------------------------------------------
+  # Re-estimation ladder: the four specifications below, by instrument.
   d[, MODC   := (MOD - mean(MOD, na.rm = TRUE)) / sd(MOD, na.rm = TRUE)]
   d[, SIZE_Q := cut(N_OBSERVATIONS,
                     quantile(N_OBSERVATIONS, c(0, .25, .5, .75, 1), na.rm = TRUE),
@@ -9937,20 +10405,26 @@ s20_depth_diagnostics <- function(concept_results, measures,
 }
 
 
-# ===========================================================================
-# 20B. PAYER-MIX COMPOSITION                                             (A5)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 20B  Payer-mix composition (A5)
+# -----------------------------------------------------------------------------
 #
-# load_payer_dispersion() itself collapses to FINAL_CONCEPT_ID before it
-# returns (its last two lines are `loo_mean(raw, "CV_PAYER_WINSOR")` and
-# `raw[, .(N_PAYERS_V2 = mean(N_DISTINCT_PAYERS, ...)), by = FINAL_CONCEPT_ID]`),
-# so its return value has no HOSPITAL_ID or POST_MONTH, and N_DISTINCT_PAYERS
-# no longer exists under that name. That is fine for build_comparability_
-# measures(), which only needs concept-level output, but this section needs
-# the row-level file. This reimplements the read-and-filter steps up to the
-# point just before that collapse -- same files, same dedup key, same county
-# merge, same finiteness filter, same P99 winsorization -- and returns the
-# row-level table instead of aggregating it away.
+# load_payer_dispersion() (Section 9) collapses the payer-cell export to one
+# row per concept (PD_PAYER_V2 through loo_mean(), N_PAYERS_V2 as a concept
+# mean), so its result has no HOSPITAL_ID, POST_MONTH, or N_DISTINCT_PAYERS.
+# 20B needs the hospital x month x concept rows.
+# s20_load_payer_dispersion_rowlevel() repeats the steps before that
+# collapse (same files, deduplication key, county merge with `outpatient`,
+# finiteness filter, and P99 winsorization of CV_PAYER_NEGOTIATED) and
+# returns the rows. Both functions stop without R.utils. When no file or no
+# usable row is found, this one stops, while load_payer_dispersion() warns
+# and returns an empty table.
+#
+# s20_build_payer_panel() merges those rows with the panel columns the
+# interacted model needs. s20_payer_balance() is the balance test: for each
+# main instrument, the interacted model (SCHEME_1_CERTAINTY, MARKET_ID and
+# POST_MONTH fixed effects) with N_DISTINCT_PAYERS, N_PAYER_CELLS, or
+# CV_PAYER_WINSOR as the outcome. Writes T20B_payer_file_balance.csv.
 
 s20_load_payer_dispersion_rowlevel <- function() {
   if (!requireNamespace("R.utils", quietly = TRUE)) {
@@ -10003,11 +10477,10 @@ s20_build_payer_panel <- function(panel = outpatient, scheme_col = "SCHEME_1_CER
                                   instruments = MAIN_INSTRUMENTS) {
   payer <- s20_load_payer_dispersion_rowlevel()
   
-  # estimate_interacted() needs the endogenous variable (to build TREAT_k) and
-  # the baseline controls, not just the scheme and instrument columns -- both
-  # default to the pipeline's own globals, so if BASELINE_CONTROLS changes
-  # upstream this stays in sync automatically rather than silently dropping
-  # a control via available_columns()'s graceful-missing behavior.
+  # `need` includes the treatment (estimate_interacted() builds TREAT_k from
+  # it) and the baseline controls, not only the scheme and instrument
+  # columns. A missing column stops here; inside estimate_interacted(),
+  # available_columns() would drop a missing control without an error.
   need <- c("HOSPITAL_ID", "POST_MONTH", "FINAL_CONCEPT_ID", "MARKET_ID",
             scheme_col, ENDOGENOUS_VARIABLE, BASELINE_CONTROLS, unname(instruments))
   missing <- setdiff(need, names(panel))
@@ -10064,16 +10537,16 @@ s20_payer_balance <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAIN
   invisible(results)
 }
 
-# ---------------------------------------------------------------------------
-# 20B-ii. FORMAL EQUALITY TEST                                           (A5)
-#
-# s20_payer_balance() keeps only r$rows -- the two arm-specific coefficients
-# -- and discards r$tests, which is the same Wald equality test Table 5
-# reports for the price outcome. This reruns the identical nine (outcome x
-# instrument) specifications and keeps the equality test instead, so the
-# balance check reports the statistic the point-estimate pattern above is
-# actually asking about.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 20B-ii  Formal equality test (A5)
+# -----------------------------------------------------------------------------
+# s20_payer_balance() keeps the two arm-specific coefficients (r$rows).
+# s20_payer_balance_equality() re-estimates the same nine specifications
+# (three outcomes x three instruments) and keeps the reduced-form Wald test
+# that the shoppable and non-shoppable coefficients are equal (r$tests), the
+# test Table 5 reports for prices. Writes the result to
+# T20B_payer_file_balance_equality.csv. Not called by run_section_20() or
+# the run block.
 s20_payer_balance_equality <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
                                        instruments = MAIN_INSTRUMENTS,
                                        outcomes = c("N_DISTINCT_PAYERS", "N_PAYER_CELLS",
@@ -10102,6 +10575,14 @@ s20_payer_balance_equality <- function(panel = outpatient, scheme_col = "SCHEME_
   invisible(out)
 }
 
+# Payer-count control ---------------------------------------------------------
+#
+# s20_price_with_payer_control() is the second part of 20B. It merges the
+# reported payer count (N_DISTINCT_PAYERS by default) onto the panel as
+# PAYER_CTRL and estimates the headline interacted price regression with
+# PAYER_CTRL as an added control, on the rows with a matched payer count. It
+# warns when fewer than half the rows match. Writes
+# T20B_price_with_payer_control.csv.
 s20_price_with_payer_control <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
                                          instruments = MAIN_INSTRUMENTS,
                                          control_var = "N_DISTINCT_PAYERS") {
@@ -10154,15 +10635,31 @@ s20_price_with_payer_control <- function(panel = outpatient, scheme_col = "SCHEM
   invisible(out)
 }
 
+# Redefines `%||%` for the rest of the session (it is also defined in
+# Sections 1 and 12). This version falls back only on NULL; the Section 1
+# version also falls back on zero-length, all-NA, and empty-string values.
+# No code in Section 20 calls `%||%` directly; functions defined earlier that
+# use it, such as estimate_interacted(), get this version when called after
+# this line, including from the Section 20 run block.
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
 
-# ===========================================================================
-# 20C. FIXED-EFFECTS LADDER                                              (A8)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 20C  Fixed-effects ladder (A8)
+# -----------------------------------------------------------------------------
 #
-# Reuses Section 13's own system-resolution logic verbatim rather than
-# assuming outpatient_r13 already exists in memory, so this runs standalone.
+# Re-estimates the interacted model as fixed effects are added.
+# run_section_20() and the run block call s20_fe_ladder() (three rungs, at
+# the end of 20C). Subsections 20C.0 to 20C.2 define an extended nine-rung
+# ladder and a census of the instrument variation each rung leaves; neither
+# the driver nor the run block calls them. The s20_ladder_* caches are not
+# in CACHE_REGISTRY, so invalidate_cache() does not remove them, even when
+# the panel is rebuilt.
+#
+# s20_resolve_system() repeats Section 13's system resolution (the first
+# non-missing SYSTEM_KEY, or HEALTH_SYSTEM_ID, across a hospital's rows) and
+# builds SYSTEM_MONTH, with NOSYS for unaffiliated hospitals. It works on a
+# copy of the panel, so 20C does not need outpatient_r13 from Section 13.
 
 s20_resolve_system <- function(panel = outpatient) {
   sys_col <- if ("SYSTEM_KEY" %chin% names(panel)) "SYSTEM_KEY" else "HEALTH_SYSTEM_ID"
@@ -10184,30 +10681,33 @@ s20_resolve_system <- function(panel = outpatient) {
   d
 }
 
-# ---------------------------------------------------------------------------
-# 20C.0  Fixed-effects cell construction and the rung registry
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 20C.0  Fixed-effect cells and the rung registry
+# -----------------------------------------------------------------------------
 #
-# Builds every interacted cell the ladder needs, on top of s20_resolve_system().
-# MARKET_ID (county x concept) and POST_MONTH already exist in the panel.
+# s20_build_fe_cols() adds the cells of the extended ladder to the output of
+# s20_resolve_system(). MARKET_ID (county x concept) and POST_MONTH are
+# already in the panel.
 #
-#   MARKET_FAMILY   county x family    coarsened market cell, ~16 not ~738
+#   MARKET_FAMILY   county x family    coarser market cell (~16 families
+#                                      rather than ~738 concepts)
 #   FAMILY_MONTH    family x month     family-specific national time path
 #   CONCEPT_MONTH   concept x month    concept-specific national time path
-#   CBSA_CONCEPT    CBSA x concept     market-definition check
+#   CBSA_CONCEPT    CBSA x concept     market-definition check; built only
+#                                      when CBSA_CODE is on the panel
 #   SYSTEM_MONTH    system x month     from s20_resolve_system()
-#   SHOP_NUM        numeric shoppable  for the hospital-FE gradient spec
+#   SHOP_NUM        1 if Shoppable     moderator for the hospital-FE rung
 #
-# SHOP_NUM exists because under hospital FE the categorical spec loses a
-# category to collinearity. N_PRIOR_POSTERS is constant within hospital, since
-# 3,721 of 3,723 hospitals appear at exactly one month, so sum_k TREAT_k is
-# absorbed by the hospital effect and only K-1 interactions are identified.
-# The continuous spec sidesteps this: TREAT_MAIN drops, TREAT_INTER survives,
-# and its coefficient IS the shoppable-minus-non-shoppable gradient.
+# Rung L7 (hospital fixed effects) uses SHOP_NUM as a continuous moderator.
+# Almost every hospital appears at a single posting month (design decision
+# 4 in the file header), so the treatment is constant within hospital and,
+# with hospital fixed effects, the categorical specification loses one
+# category: the sum of the TREAT_k terms is absorbed. In the continuous
+# specification TREAT_MAIN is absorbed instead, and the coefficient on
+# TREAT_INTER is the shoppable minus non-shoppable gradient.
 #
-# Hospitals outside a CBSA fall back to their county rather than pooling into
-# one giant NOCBSA cell, which would otherwise compare rural Montana to rural
-# Georgia inside a single fixed effect.
+# Hospitals outside a CBSA keep their county (NOCBSA_<county>) in
+# CBSA_CONCEPT rather than sharing one non-CBSA cell.
 
 s20_build_fe_cols <- function(panel = outpatient,
                               scheme_col = "SCHEME_1_CERTAINTY") {
@@ -10231,10 +10731,12 @@ s20_build_fe_cols <- function(panel = outpatient,
   d
 }
 
-# The rung registry. Names are what appears in every table, so they are the
-# one place to edit a label. RUNG_ID drives the cache key -- the three ids
-# inherited from the original three-rung ladder are kept verbatim so the
-# existing cache is reused rather than re-estimated.
+# S20_RUNGS: the nine rungs used by s20_fe_census() and s20_fe_ladder_full().
+# Each entry has a label (the list name, printed in the output), an id (part
+# of the cache key), the fixed effects, and gradient_only (TRUE for L7, which
+# uses the continuous SHOP_NUM moderator). L2, L6a, and L6b have the ids and
+# fixed effects of the three rungs of s20_fe_ladder(), so the two functions
+# share those cache files.
 
 S20_RUNGS <- list(
   `L0 county + concept + month`           = list(
@@ -10276,31 +10778,36 @@ S20_RUNGS <- list(
 )
 
 
-# ---------------------------------------------------------------------------
-# 20C.1  Fixed-effects census -- the QA gate, no estimation
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 20C.1  Fixed-effects census
+# -----------------------------------------------------------------------------
 #
-# Run this BEFORE the ladder. For each rung it reports how much identifying
-# variation survives the fixed effects, using one no-covariate demeaning pass
-# per rung rather than a full IV fit. Minutes, not hours.
+# s20_fe_census() reports, for each rung, how much identifying variation the
+# fixed effects leave. It demeans Z, Z x 1[shoppable], and
+# Z x 1[non-shoppable] on the rung's fixed effects in one feols() call with
+# no covariates instead of fitting the IV, so it takes minutes rather than
+# hours. It caches nothing and is a screen for s20_fe_ladder_full(). Writes
+# QA20C_fe_census.csv to QA_DIR.
 #
 # Columns:
 #   FE_LEVELS      total fixed-effect levels across all dimensions
 #   N_KEPT         rows surviving cascading singleton removal
 #   PCT_KEPT       N_KEPT as a share of the complete-case sample
 #   Z_RESID_SHARE  residual SD of the instrument / raw SD, on kept rows
-#   ZSHOP_RESID    same for Z x 1[shoppable], which is what identifies the
-#                  shoppable arm of the interacted spec
+#   ZSHOP_RESID    same for Z x 1[shoppable], which identifies the shoppable
+#                  arm of the interacted model
 #   ZNON_RESID     same for Z x 1[non-shoppable]
-#   HOSP_KEPT      hospitals surviving
-#   INDEP_LOST     share of unaffiliated hospitals dropped, the composition
-#                  damage that makes a system-FE collapse ambiguous
+#   HOSP_KEPT      hospitals kept
+#   INDEP_LOST     share of unaffiliated hospitals (no resolved system)
+#                  dropped
 #
-# READING IT. Z_RESID_SHARE below roughly 0.20 means the rung has eaten most
-# of the instrument and its coefficient is uninformative no matter what the
-# first-stage F says. A rung with PCT_KEPT under about 0.40 is estimating on
-# a different population, so a coefficient change there is composition and
-# confounding mixed together and cannot be attributed to either.
+# VERDICT, with ZMIN the smaller of ZSHOP_RESID and ZNON_RESID: STARVED if
+# ZMIN < 0.20 or missing, SYSTEMS ONLY if INDEP_LOST >= 0.99, COMPOSITION if
+# PCT_KEPT < 0.40, THIN if ZMIN < 0.40, otherwise OK. A rung that leaves
+# little variation in the instrument gives an uninformative coefficient
+# whatever its first-stage F. A rung that keeps under about 40% of the
+# sample estimates on a different population, so a change in its
+# coefficient mixes composition and confounding.
 
 s20_fe_census <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
                           instrument = PRIMARY_INSTRUMENT,
@@ -10393,10 +10900,10 @@ s20_fe_census <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
                 HOSP_KEPT, INDEP_LOST, SECS)])
   
   cat("\nVERDICT (screen only, not a substitute for the first stage):\n")
-  # Judge on the weaker interaction arm, not the raw instrument. The interacted
-  # spec is identified by Z x 1[category], so a rung that absorbs raw Z
-  # entirely (hospital FE necessarily does, since Z is constant within
-  # hospital) is fine as long as both interactions survive.
+  # The verdict is based on the weaker interaction arm (ZMIN). The
+  # interacted model is identified by Z x 1[category]; hospital fixed
+  # effects absorb raw Z, which is constant within hospital, but can leave
+  # variation in both interactions.
   out[, ZMIN := pmin(ZSHOP_RESID, ZNON_RESID, na.rm = TRUE)]
   out[, VERDICT := fifelse(
     is.na(ZMIN) | ZMIN < 0.20, "STARVED -- do not estimate",
@@ -10410,30 +10917,27 @@ s20_fe_census <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
 }
 
 
-# ---------------------------------------------------------------------------
-# 20C.2  The extended ladder
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 20C.2  Extended ladder
+# -----------------------------------------------------------------------------
 #
-# Deliberately a NEW function rather than an edit to s20_fe_ladder(). The old
-# three-rung version stays exactly as it is, so run_section_20() keeps working
-# and its cached results stay valid. Extending the rung list inside the old
-# function would have silently turned the driver's 18-scheme call into
-# 18 x 9 x 3 = 486 estimations on the next run.
+# s20_fe_ladder_full() estimates the interacted model on every rung of
+# S20_RUNGS. It is separate from s20_fe_ladder() (three rungs, below), which
+# run_section_20() and the run block call. The defaults are one scheme
+# (SCHEME_1_CERTAINTY) and one instrument (MAIN_INSTRUMENTS[1]): 9 calls to
+# estimate_interacted() and 18 feols fits. With unname(SCHEME_COLUMNS) and
+# MAIN_INSTRUMENTS it is 162 calls.
 #
-# DEFAULTS ARE ONE SCHEME AND ONE INSTRUMENT ON PURPOSE. That is 9 rungs, so 9
-# calls and 18 feols fits. Widen only for rungs the census cleared and this
-# pass found interesting. Going straight to unname(SCHEME_COLUMNS) x
-# MAIN_INSTRUMENTS is a 486-call job and there is no reason to buy that before
-# knowing which rungs survive.
+# Each call is cached as s20_ladder_<scheme>_<rung id>_<instrument>. L2, L6a,
+# and L6b share these keys with s20_fe_ladder(), so they load from its cache
+# when it has run for the same scheme.
 #
-# Three rung ids are inherited from the old ladder, so L2, L6a and L6b load
-# from cache instead of re-estimating if that ladder has already run under the
-# same scheme.
+# L7 uses the continuous SHOP_NUM moderator (20C.0); the categorical
+# specification would lose one category to collinearity with the hospital
+# fixed effects and return NA for it.
 #
-# L7 uses the continuous moderator. Under hospital FE the categorical spec
-# would silently lose one category to collinearity and return NA for it. The
-# continuous spec drops TREAT_MAIN instead, which is the term that is genuinely
-# unidentified here, and reports the gradient directly.
+# Writes T20C2_fe_ladder_full.csv (every term) and
+# T20C2_fe_ladder_gradient.csv (gradient by rung).
 
 s20_fe_ladder_full <- function(panel = outpatient,
                                scheme_cols = "SCHEME_1_CERTAINTY",
@@ -10494,11 +10998,11 @@ s20_fe_ladder_full <- function(panel = outpatient,
     return(invisible(out))
   }
   
-  # ------------------------------------------------------------------
-  # The cross-rung comparable object is the GRADIENT, not the level.
-  # Categorical rungs give it as Shoppable minus Non_shoppable; L7 reports
-  # it directly as the interaction term. Both are percent per SD of Z.
-  # ------------------------------------------------------------------
+  # Gradient by rung, in percent per SD of Z: Shoppable minus Non_shoppable
+  # for the categorical rungs, the x Moderator term for L7. The gradient is
+  # compared across rungs; the levels change with what each rung's fixed
+  # effects absorb. For L7 the percent transform is applied to the
+  # coefficient difference, so the two forms agree only approximately.
   cat_grad <- dcast(out[GRADIENT_SPEC == "categorical" &
                           TERM %chin% c("Shoppable", "Non_shoppable")],
                     SCHEME + RUNG + INSTRUMENT_LABEL ~ TERM,
@@ -10554,6 +11058,14 @@ s20_fe_ladder_full <- function(panel = outpatient,
 
 
 
+# Three-rung ladder -----------------------------------------------------------
+#
+# s20_fe_ladder() is the 20C estimate that run_section_20() and the run block
+# call, with all six SCHEME_COLUMNS and the three MAIN_INSTRUMENTS. Rungs:
+# (1) the baseline, MARKET_ID + POST_MONTH (Table 5); (2) the baseline plus
+# system fixed effects (SYS_RESOLVED); (3) MARKET_ID + SYSTEM_MONTH, the
+# Section 13A specification (Table sysmonth). Each call is cached as
+# s20_ladder_<scheme>_<rung id>_<instrument>. Writes T20C_fe_ladder.csv.
 s20_fe_ladder <- function(panel = outpatient, scheme_cols = "SCHEME_1_CERTAINTY",
                           instruments = MAIN_INSTRUMENTS, outcome = PRIMARY_OUTCOME,
                           use_cache = TRUE) {
@@ -10579,10 +11091,9 @@ s20_fe_ladder <- function(panel = outpatient, scheme_cols = "SCHEME_1_CERTAINTY"
     rbindlist(lapply(names(rungs), function(rn) {
       fe <- rungs[[rn]]
       rbindlist(lapply(names(instruments), function(il) {
-        # scheme_col is part of the key -- without this, running a second
-        # scheme after the first would silently return the first scheme's
-        # cached result for every (rung, instrument) cell rather than
-        # actually re-estimating, since rung/instrument alone repeat exactly.
+        # The key includes scheme_col. Rung and instrument repeat across
+        # schemes, so without it a second scheme would load the first
+        # scheme's cached results.
         key <- paste0("s20_ladder_", scheme_col, "_", rung_ids[[rn]], "_", il)
         cat(sprintf("  %-22s %-42s %-38s ", scheme_col, substr(rn, 1, 40), substr(il, 1, 36)))
         t0 <- Sys.time()
@@ -10651,9 +11162,11 @@ s20_fe_ladder <- function(panel = outpatient, scheme_cols = "SCHEME_1_CERTAINTY"
 }
 
 
-# ===========================================================================
-# DRIVER
-# ===========================================================================
+# Driver ----------------------------------------------------------------------
+#
+# run_section_20() runs 20A (when concept_results and measures are passed),
+# 20B, and s20_fe_ladder() on all six schemes, and returns the results as a
+# list. The file does not call it; the run block below runs the same steps.
 
 run_section_20 <- function(concept_results = NULL, measures = NULL,
                            panel = outpatient) {
@@ -10685,21 +11198,25 @@ run_section_20 <- function(concept_results = NULL, measures = NULL,
                  payer_control = b_control, fe_ladder = c_ladder))
 }
 
+# Interactive use:
 # s20 <- run_section_20(concept_results = concept_results, measures = measures)
 #
-# If concept_results / measures aren't in memory:
+# Without `measures` in memory:
 #   measures <- cache_or_run("comparability_measures", build_comparability_measures(outpatient))
 #   s20 <- run_section_20(concept_results = concept_results, measures = measures)
 
 
-# ---------------------------------------------------------------------------
-# Section 20 execution
+# Run block -------------------------------------------------------------------
 #
-# 20A and 20B are cheap. 20C is not: with scheme_cols = SCHEME_COLUMNS it is
-# 6 schemes x 3 rungs x 3 instruments = 54 interacted IV fits, an overnight
-# job on a cold cache. It is therefore off unless asked for:
+# S20_RUN, if set before sourcing, selects the blocks; the default is
+# c("20A", "20B"). 20A runs only when `concept_results` is in memory, and
+# loads or builds `measures` (cache key comparability_measures) when it is
+# missing. 20B is skipped when no payer-cell file is found. 20A and 20B are
+# fast. 20C runs s20_fe_ladder() on all six schemes: 6 schemes x 3 rungs x 3
+# instruments = 54 interacted IV fits, an overnight job without the cache.
+# To include it:
 #     S20_RUN <- c("20A", "20B", "20C")
-# ---------------------------------------------------------------------------
+# Results are kept in s20_out.
 S20_RUN <- if (exists("S20_RUN")) S20_RUN else c("20A", "20B")
 s20_out <- list()
 
@@ -10736,47 +11253,50 @@ if ("20C" %in% S20_RUN) {
 
 }  # end Section 20 gate
 
+# Sections 21-25 run inside this switch (HPT_RUN$diagnostics); it closes
+# after Section 25.
 if (isTRUE(HPT_RUN$diagnostics)) {
 
 
-###############################################################################
-
-# ============================================================================
-# Section 21: Tier II diagnostics A3, E1
-# ============================================================================
-
-# SECTION 21 -- TIER II DIAGNOSTICS: A3, E1
+# =============================================================================
+# Section 21: Tier II diagnostics (A3, E1)
+# =============================================================================
 #
-# Source AFTER HPT_Analysis_Pipeline.R and, for A3, ideally after Section 19
-# has run once (not required, but confirms the naive comparison below).
+# Two checks on the interacted model (SCHEME_1_CERTAINTY, the three main
+# instruments), estimated on `outpatient`:
 #
-#   21A  A3 -- exact test of pi_S = pi_N (the two OWN first-stage
-#              coefficients in the interacted system), accounting for their
-#              cross-equation covariance rather than assuming independence.
-#              A cheap naive version (independence-assumed) is included
-#              first since it needs no new computation; the exact version
-#              is the expensive fallback if the naive result isn't decisive
-#              enough to rely on.
-#   21B  E1  -- wild cluster bootstrap over POST_MONTH (16 clusters), the
-#              few-clusters check on the time dimension of two-way
-#              clustering. Requires the fwildclusterboot package, which is
-#              purpose-built for exactly this and interfaces directly with
-#              fixest objects.
-###############################################################################
+#   21A  (A3) Whether the first-stage coefficients of the shoppable and
+#        non-shoppable arms are equal (pi_S = pi_N): a naive test that treats
+#        the two estimates as independent, and an exact test from a joint
+#        stacked estimation that accounts for their covariance.
+#   21B  (E1) Inference with only 16 month clusters: a wild cluster
+#        bootstrap over months and a leave-one-month-out check.
+#
+# When the file is sourced, only the leave-one-month-out check runs (last
+# line of the section). run_section_21() runs the naive test, the wild
+# bootstrap, and optionally the exact test. The naive test uses values
+# transcribed from T19A (Section 19), so Section 19 need not run first.
 
 .s21_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s21_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
 
 
-# ===========================================================================
-# 21A. EXACT TEST OF pi_S = pi_N                                         (A3)
-# ===========================================================================
-
-# -- cheap version: needs nothing but numbers already in T19A -------------
-# Treats the two own-coefficient estimates as independent. This is EITHER
-# too conservative OR too liberal depending on the sign of their true
-# cross-equation covariance, which this version cannot see. Use it as a
-# first read, not a final answer.
+# -----------------------------------------------------------------------------
+# 21A  Exact test of pi_S = pi_N (A3)
+# -----------------------------------------------------------------------------
+#
+# pi_S and pi_N are the own coefficients of the shoppable and non-shoppable
+# first-stage equations of the interacted model (the coefficient on
+# Z x 1[k] in the equation for TREAT_k). The test asks whether the
+# instrument moves the treatment equally in both arms.
+#
+# Naive version ---------------------------------------------------------------
+#
+# s21_naive_pi_test() treats the two estimates as independent: each SE is
+# recovered as pi / t, SE_DIFF = sqrt(se_N^2 + se_S^2), and P_NAIVE uses a
+# normal reference. Ignoring the cross-equation covariance can bias the test
+# in either direction. run_s21a_naive() applies it to values transcribed
+# from T19A.
 s21_naive_pi_test <- function(pi_n, t_n, pi_s, t_s, instrument_label = "") {
   se_n <- pi_n / t_n
   se_s <- pi_s / t_s
@@ -10791,8 +11311,8 @@ s21_naive_pi_test <- function(pi_n, t_n, pi_s, t_s, instrument_label = "") {
 
 run_s21a_naive <- function() {
   .s21_hd("21A (cheap) -- NAIVE TEST OF pi_S = pi_N, INDEPENDENCE ASSUMED")
-  # Values transcribed from the T19A run already completed. Re-derive from
-  # the saved CSV if you want to avoid hand transcription:
+  # pi and t for each main instrument, transcribed from T19A. The same values
+  # are in the saved table:
   #   pi <- fread(file.path(TABLE_DIR, "T19A_interacted_first_stage_matrix.csv"))
   rows <- list(
     list(il = "Competitor_only_hospitals_9m",         pi_n = 0.128546, t_n = 7.74, pi_s = 0.099785, t_s = 5.47),
@@ -10812,15 +11332,24 @@ run_s21a_naive <- function() {
 }
 
 
-# -- exact version: joint stacked estimation -------------------------------
+# Exact version ---------------------------------------------------------------
 #
-# Stacks the sample twice, once per category, tagged by EQ. Each equation
-# gets its OWN fixed effects (EQ-prefixed), so the point estimates exactly
-# reproduce running the two first-stage equations separately. Clustering
-# uses the ORIGINAL, non-prefixed county/month identifiers, so that EQ1 and
-# EQ2 rows sharing the same underlying market/month are correctly treated as
-# the same cluster -- this is what lets the joint vcov() capture the
-# cross-equation covariance instead of assuming it away.
+# s21_test_pi_equality() estimates the two first-stage equations jointly.
+# Two copies of the estimation sample are stacked (EQ1 with TREAT for the
+# first category as the outcome, EQ2 with TREAT for the second). The
+# instruments, controls, and fixed effects (at most two) get EQ-specific
+# copies, so the coefficients equal those of the two separate first stages.
+# Standard errors are clustered on the original county and month
+# identifiers, so the EQ1 and EQ2 copies of a row share a cluster and
+# vcov() includes the cross-equation covariance. The p-value comes from
+# .pval() (t reference). The scheme must have exactly two categories; for
+# SCHEME_1_CERTAINTY, CATEGORY_1 is Non_shoppable, so DIFF = pi_N - pi_S,
+# the opposite sign of the naive DIFF.
+#
+# run_s21a_exact() runs it for each main instrument, caches each result as
+# s21a_pi_equality_<scheme>_<instrument>, and writes
+# T21A_pi_equality_exact.csv. The joint model doubles the rows and the fixed
+# effects, so it is slow.
 
 s21_test_pi_equality <- function(
     data, scheme_col = "SCHEME_1_CERTAINTY", instrument, instrument_label = "",
@@ -10856,9 +11385,9 @@ s21_test_pi_equality <- function(
   }
   d_stack <- rbindlist(list(mk_block(k1, "EQ1"), mk_block(k2, "EQ2")))
   
-  # Explicit per-equation columns rather than formula-interaction syntax --
-  # avoids R's baseline+difference contrast coding, which would not give two
-  # directly-testable free coefficients.
+  # Per-equation regressors are explicit columns. Formula interactions would
+  # use baseline-plus-difference coding and would not give the two own
+  # coefficients as separate terms.
   d_stack[, IVk1_EQ1 := get(paste0("IV_", k1)) * as.integer(EQ == "EQ1")]
   d_stack[, IVk2_EQ1 := get(paste0("IV_", k2)) * as.integer(EQ == "EQ1")]
   d_stack[, IVk1_EQ2 := get(paste0("IV_", k1)) * as.integer(EQ == "EQ2")]
@@ -10874,10 +11403,7 @@ s21_test_pi_equality <- function(
            if (length(controls) > 0L) paste0(rep(controls, each = 2), c("_EQ1", "_EQ2")))
   fe_stack <- if (length(fe) > 1L) c("FE_A", "FE_B") else "FE_A"
   
-  # Cluster on the ORIGINAL (non-EQ-prefixed) identifiers -- this is the
-  # whole point: it lets EQ1 and EQ2 rows sharing a market/month be treated
-  # as the same cluster, so the sandwich covariance captures the
-  # cross-equation correlation instead of assuming it away.
+  # Clusters: the original identifiers, not the EQ-specific ones (see above).
   cl_stack <- cl
   
   form <- as.formula(paste("DEP ~", paste(rhs, collapse = " + "), "|",
@@ -10887,7 +11413,7 @@ s21_test_pi_equality <- function(
   fit <- feols(form, data = d_stack, cluster = clf, warn = FALSE, notes = FALSE)
   
   b <- coef(fit); V <- vcov(fit)
-  nm1 <- "IVk1_EQ1"; nm2 <- "IVk2_EQ2"   # pi_{k1} and pi_{k2}, the two OWN coefficients
+  nm1 <- "IVk1_EQ1"; nm2 <- "IVk2_EQ2"   # own coefficients of EQ1 and EQ2
   if (!all(c(nm1, nm2) %chin% names(b)))
     stop("Expected coefficients not found -- got: ", paste(names(b), collapse = ", "),
          call. = FALSE)
@@ -10941,14 +11467,23 @@ run_s21a_exact <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY"
 }
 
 
-
-# ===========================================================================
-# 21B. WILD CLUSTER BOOTSTRAP OVER MONTHS                                (E1)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 21B  Wild cluster bootstrap over months (E1)
+# -----------------------------------------------------------------------------
 #
-# Two-way clustering (county, month) with only 16 month clusters is the
-# concern. fwildclusterboot::boottest() is purpose-built for few-cluster
-# inference and works directly on a fitted feols object.
+# Two-way clustering by county and month has only 16 month clusters, which
+# is few for cluster-robust inference on the month dimension. 21B checks
+# this two ways: a wild cluster bootstrap over months
+# (s21_wild_bootstrap_month(), run_s21b()) and leave-one-month-out refits
+# (s21_loco_month(), run_s21b_loco()).
+#
+# In the author's runs boottest() did not complete on this panel: a call
+# without the fe argument did not finish within an hour, and a run with
+# B = 199 had not returned after a minute. The cost appears to come from the
+# ~660k MARKET_ID levels. The leave-one-month-out check is the part of 21B
+# that runs when the file is sourced.
+#
+# s21_check_boot_package() reports whether fwildclusterboot is installed.
 
 s21_check_boot_package <- function() {
   if (!requireNamespace("fwildclusterboot", quietly = TRUE)) {
@@ -10962,25 +11497,15 @@ s21_check_boot_package <- function() {
   TRUE
 }
 
-# -----------------------------------------------------------------------
-# LEAVE-ONE-MONTH-OUT: the alternative that actually runs.
+# Leave-one-month-out ---------------------------------------------------------
 #
-# fwildclusterboot::boottest() did not complete on this panel across four
-# attempts (a direct call, a hand-rolled Frisch-Waugh-Lovell workaround with
-# three distinct bugs, and a fourth attempt using boottest()'s own fe=
-# argument), including a token B=199 run that still did not return within
-# a minute. The per-iteration cost against MARKET_ID's ~660k levels is the
-# evident wall, fe= notwithstanding. This is not worth a fifth attempt.
-#
-# This check addresses the same underlying concern -- fragility of
-# inference given only 16 month clusters -- through a much cheaper
-# mechanism: refit the headline interacted model 16 times, each time
-# excluding one month, and see how far the coefficient and SE move. It is
-# the same logic as the paper's existing leave-one-system-out check
-# (Section 8.3 / s13_leave_one_system_out), applied to months instead of
-# systems, so it fits the paper's existing robustness vocabulary rather
-# than introducing a new kind of evidence.
-# -----------------------------------------------------------------------
+# s21_loco_month() fits the reduced form of the interacted model (outcome on
+# Z x 1[category k], baseline controls and fixed effects, clustered by county
+# and month) on all months and then once with each month dropped, and
+# reports the range of each coefficient across the refits. It is the month
+# analogue of the leave-one-system-out check in Section 13B (paper Section
+# 8.3). run_s21b_loco() runs it for each main instrument on
+# SCHEME_1_CERTAINTY and writes T21B_leave_one_month_out_<instrument>.csv.
 
 s21_loco_month <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
                            instrument, instrument_label = "",
@@ -11058,6 +11583,18 @@ run_s21b_loco <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
   invisible(out)
 }
 
+# Wild cluster bootstrap ------------------------------------------------------
+#
+# s21_wild_bootstrap_month() fits the reduced form of the interacted model
+# (outcome on Z x 1[category k], baseline controls and fixed effects,
+# standard errors clustered by county) and prints those results. It then
+# calls fwildclusterboot::boottest() on each Z x 1[category k] term,
+# clustering by month only (clustid = POST_MONTH as a factor), with
+# fe = MARKET_ID, B draws (999 by default), boottest()'s default
+# (Rademacher) weights, and set.seed(seed) before each term
+# (seed = 20240101). Returns the boottest() objects and writes nothing.
+# run_s21b() runs it for each main instrument with B = 9999 by default, and
+# returns NULL when fwildclusterboot is not installed.
 s21_wild_bootstrap_month <- function(
     data, scheme_col = "SCHEME_1_CERTAINTY", instrument, instrument_label = "",
     outcome = PRIMARY_OUTCOME, controls = BASELINE_CONTROLS,
@@ -11065,18 +11602,10 @@ s21_wild_bootstrap_month <- function(
   
   if (!s21_check_boot_package()) return(NULL)
   
-  # Third attempt. The first two (direct call with no FE hint; manual FWL
-  # pre-demeaning) both failed for different reasons -- the direct call
-  # apparently never finished in an hour, and hand-rolled FWL hit three
-  # separate bugs (row misalignment, a Date-typed clustering variable, and
-  # joint-vs-single-FE singleton removal giving mismatched sample sizes).
-  # Dropping the manual demeaning entirely. fwildclusterboot::boottest()
-  # has its own fe= argument specifically for telling it a fixed effect is
-  # already absorbed in the fitted model, so it can use its fast algorithm
-  # to account for it during resampling rather than whatever slower path it
-  # falls back to without that hint -- which is very possibly why the
-  # original direct call never returned. B defaults small here (999, not
-  # 9999) as a timing check before committing to the full run.
+  # The first fixed effect (MARKET_ID) is passed to boottest() as fe, so
+  # boottest() projects it out in the bootstrap, its faster path for a
+  # high-dimensional fixed effect. The default B = 999 is a timing check;
+  # run_s21b() and run_section_21() pass B = 9999 by default.
   controls <- available_columns(data, controls)
   fe <- available_columns(data, fixed_effects)
   if (length(fe) < 1L) stop("Need at least one fixed effect.", call. = FALSE)
@@ -11089,9 +11618,9 @@ s21_wild_bootstrap_month <- function(
   for (k in keys) d[, paste0("RF_", k) := get(instrument) * as.integer(MOD == k)]
   rf_names <- paste0("RF_", keys)
   
-  # boottest() fails on Date-typed clustering variables ("| not defined for
-  # Date objects"); POST_MONTH must be a factor wherever it's used, whether
-  # as an FE term or as clustid.
+  # boottest() fails on a Date clustering variable ("| not defined for Date
+  # objects"), so POST_MONTH is converted to a factor, both as a fixed
+  # effect and as the bootstrap cluster.
   d[, POST_MONTH_FCT := factor(POST_MONTH)]
   fe_formula_terms <- ifelse(fe == "POST_MONTH", "POST_MONTH_FCT", fe)
   
@@ -11159,9 +11688,12 @@ run_s21b <- function(panel = outpatient, scheme_col = "SCHEME_1_CERTAINTY",
 }
 
 
-# ===========================================================================
-# DRIVER
-# ===========================================================================
+# Driver ----------------------------------------------------------------------
+#
+# run_section_21() runs the naive pi test, the exact test when
+# run_exact_pi_test = TRUE, and the wild cluster bootstrap for each main
+# instrument (B = 9999 by default). It does not run the leave-one-month-out
+# check, and the file does not call it.
 
 run_section_21 <- function(panel = outpatient, run_exact_pi_test = FALSE, B = 9999) {
   .s21_hd("SECTION 21 -- A3, E1")
@@ -11188,49 +11720,34 @@ run_section_21 <- function(panel = outpatient, run_exact_pi_test = FALSE, B = 99
 #   s21 <- run_section_21(outpatient, run_exact_pi_test = FALSE)   # fast: naive + wild boot
 #   s21 <- run_section_21(outpatient, run_exact_pi_test = TRUE)    # also runs the expensive exact test
 
+# Run block: the leave-one-month-out check (21B) for each main instrument.
 s21_loco <- run_s21b_loco(outpatient)
 
 
-
-
-
-
-###############################################################################
-
-# ============================================================================
-# Section 22: Tier III diagnostics E2, E5
-# ============================================================================
-
-# SECTION 22 -- TIER III DIAGNOSTICS: E2, E5   [CORRECTED]
+# =============================================================================
+# Section 22: Tier III diagnostics (E2, E5)
+# =============================================================================
 #
-# Source AFTER warm_start() / restore_session().
+#   22A  Correlation between the shoppability gradients of the estimable
+#        classification partitions (E2), with the agreement of their labels
+#        for comparison.
+#   22B  Robustness of the family-level regression (E5): weighted and
+#        unweighted, leave-one-family-out under both, and a rank statistic.
 #
-#   22A  E2 -- how correlated are the estimable classification partitions'
-#              shoppability gradients? Reports the correlation BETWEEN THE
-#              ESTIMATORS, not between category labels.
-#   22B  E5 -- family-level regression robustness: weighted vs unweighted,
-#              leave-one-family-out on both, and the rank statistic.
+# Needs concept_results and schemes_long (PART 3 or a warm start). 22A also
+# checks its gradients against meta_rf (stage 8) when that object exists.
+# 22B reads the family-level results from 07_Cache/family_level_6inst.rds
+# (Section 16.2), which is not in CACHE_REGISTRY and is therefore not loaded
+# by restore_session(). Both parts use one instrument, S22_INSTRUMENT
+# (Competitor_only_hospitals_9m), and each runs inside tryCatch(), so a
+# failure is reported and the section continues. Runs when
+# HPT_RUN$diagnostics is TRUE.
 #
-# WHAT CHANGED FROM THE FIRST DRAFT, AND WHY
-#
-#   1. `schemes_long` is LONG, not wide. It carries SCHEME_ID /
-#      ANALYSIS_CONCEPT_ID / SHOPPABILITY_CATEGORY (HIGH/INTERMEDIATE/LOW),
-#      one row per concept-scheme. The old 22A treated its column NAMES as
-#      the 38 partitions, which would have found ~4 "partitions".
-#
-#   2. The old 22A correlated `RF_COEF * sign(category)` across partitions.
-#      RF_COEF is IDENTICAL across partitions -- concept-level coefficients
-#      do not depend on how concepts are later grouped. So that correlation
-#      is a magnitude-weighted distortion of label agreement, not the
-#      correlation of anything the paper estimates. Replaced below.
-#
-#   3. `family_level_6inst` is cached but is NOT in CACHE_REGISTRY, so
-#      restore_session() does not load it. The old 22B would have silently
-#      fallen through to refitting 16 subsample models. It now reads the
-#      cache file directly, then the CSV, and only rebuilds as a last resort.
-#      Its columns are GROUP_ID / RF_COEF / RF_SE, with no SHOPPABLE column;
-#      shoppability comes from DIAGNOSTIC_FAMILIES.
-###############################################################################
+# schemes_long is in long format, one row per concept and scheme, with
+# SCHEME_ID, ANALYSIS_CONCEPT_ID, and SHOPPABILITY_CATEGORY (HIGH,
+# INTERMEDIATE, LOW). The family-level results have GROUP_ID, RF_COEF, and
+# RF_SE but no shoppability column; 22B takes shoppability from
+# DIAGNOSTIC_FAMILIES.
 
 .s22_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s22_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
@@ -11238,36 +11755,45 @@ s21_loco <- run_s21b_loco(outpatient)
 S22_INSTRUMENT <- "Competitor_only_hospitals_9m"
 
 
-# ===========================================================================
-# 22A. CORRELATION ACROSS THE ESTIMABLE PARTITIONS                       (E2)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 22A  Correlation across the estimable partitions (E2)
+# -----------------------------------------------------------------------------
 #
-# The object E2 asks about is the shoppability gradient under partition j:
+# A partition is one scheme under one collapse rule. The concept-level
+# coefficients are the same under every partition; partitions differ only in
+# how they group the concepts. The quantity compared across partitions is the
+# shoppability gradient under partition j:
 #
 #     theta_j = weighted mean of RF_COEF over Shoppable_j
 #             - weighted mean of RF_COEF over Non-shoppable_j
 #
-# which is exactly the CAT coefficient in the pipeline's own
-# feols(RF_COEF ~ CAT, weights = ~W) -- WLS on a binary regressor IS the
-# weighted mean difference. So this reproduces the paper's partition
-# coefficients without refitting anything, and 22A verifies that against
-# `meta_rf` before going further.
+# This equals the Shoppable coefficient of the inverse-variance-weighted
+# feols(RF_COEF ~ CAT, weights = ~W) in run_meta_regressions() (Section 8),
+# because weighted least squares on one binary regressor gives the weighted
+# difference in means. 22A therefore reproduces the paper's partition
+# coefficients without refitting.
 #
 # Writing theta_j = sum_i c_ji * b_i, with
 #     c_ji =  w_i / W_Sj   if concept i is Shoppable under j
 #          = -w_i / W_Nj   if Non-shoppable
 #          =  0            if excluded
-# and w_i = 1 / RF_SE_i^2, treating concept-level estimates as independent:
+# and w_i = 1 / RF_SE_i^2, and treating concept-level estimates as
+# independent:
 #
 #     Cov(theta_j, theta_k) = sum_i c_ji c_ki / w_i
 #     Var(theta_j)          = 1/W_Sj + 1/W_Nj
 #
-# Independence across concepts is FALSE here (concepts share counties and
-# months), and ignoring that correlation makes the resulting correlations
-# TOO SMALL. That is the right direction to err: the reported figure is a
-# lower bound on how correlated these partitions really are, which is the
-# conservative way to make E2's point. 22A-iii adds a family-cluster
-# bootstrap that does not assume independence, as a check.
+# Concepts share counties and months, so the estimates are not independent.
+# The section reports the analytic correlation (i) as a lower bound for that
+# reason; (iii) is a bootstrap over clinical families (2,000 draws) that does
+# not assume independence. (ii) is the share of jointly classified concepts
+# that two partitions place on the same side.
+#
+# s22a_build_partitions() keeps the two-level partitions that have a
+# Shoppable category and at least MIN_CONCEPTS_META classified concepts,
+# drops partitions with identical assignments, and reports whether the count
+# matches the 38 in the paper. Writes T22A_partition_gradient_correlation.csv
+# and T22A_partition_gradients.csv.
 
 s22a_build_partitions <- function(concept_results, schemes_long,
                                   instrument_label = S22_INSTRUMENT,
@@ -11322,8 +11848,8 @@ s22a_build_partitions <- function(concept_results, schemes_long,
   cat("Scheme-collapse variants built: ", n_built,
       " | two-level and estimable: ", length(variants), "\n", sep = "")
   
-  # Deduplicate on the assignment vector. The pipeline fingerprints on the
-  # estimated coefficient vector instead, but the coefficients are a
+  # Deduplicate on the assignment vector. deduplicate_partitions() (Section 8)
+  # fingerprints the estimated coefficients instead; the coefficients are a
   # deterministic function of the assignment, so the grouping is the same.
   fp <- vapply(variants, function(v) paste(c(v$SHOP, v$NONSHOP), collapse = ""), character(1))
   keep_idx <- which(!duplicated(fp))
@@ -11412,7 +11938,7 @@ s22_partition_correlation <- function(concept_results, schemes_long,
   cat(sprintf("\nGradient across partitions: median %.5f | range [%.5f, %.5f] | negative in %d of %d\n",
               median(theta), min(theta), max(theta), sum(theta < 0), length(theta)))
   
-  # ---- verification against the pipeline's own meta-regression ------------
+  # Check against meta_rf (stage 8) -------------------------------------------
   if (!is.null(meta_rf_obj)) {
     mr <- as.data.table(meta_rf_obj)
     mr <- mr[WEIGHTING == "Inverse variance" & grepl("Shoppable", term)]
@@ -11435,7 +11961,7 @@ s22_partition_correlation <- function(concept_results, schemes_long,
     }
   }
   
-  # ---- (i) analytic estimator correlation --------------------------------
+  # (i) Analytic correlation of the gradient estimates ------------------------
   R <- s22a_correlation(cr, variants)
   off <- R[upper.tri(R)]
   .s22_sub("(i) Analytic correlation between partition gradients")
@@ -11444,7 +11970,7 @@ s22_partition_correlation <- function(concept_results, schemes_long,
   cat("  Concept-level estimates treated as independent, so this is a LOWER\n",
       "  bound on the true correlation.\n", sep = "")
   
-  # ---- (ii) label agreement ----------------------------------------------
+  # (ii) Label agreement ------------------------------------------------------
   A <- s22a_label_agreement(variants)
   offA <- A[upper.tri(A)]
   .s22_sub("(ii) Classification agreement between partitions")
@@ -11453,7 +11979,7 @@ s22_partition_correlation <- function(concept_results, schemes_long,
               min(offA, na.rm = TRUE), max(offA, na.rm = TRUE)))
   cat("  Share of jointly classified concepts placed on the same side.\n")
   
-  # ---- (iii) family cluster bootstrap ------------------------------------
+  # (iii) Family-cluster bootstrap --------------------------------------------
   boot <- NULL
   if (isTRUE(bootstrap)) {
     .s22_sub("(iii) Family-cluster bootstrap correlation (no independence assumption)")
@@ -11483,15 +12009,30 @@ s22_partition_correlation <- function(concept_results, schemes_long,
 }
 
 
-# ===========================================================================
-# 22B. FAMILY-LEVEL ROBUSTNESS: UNWEIGHTED + LEAVE-ONE-FAMILY-OUT        (E5)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 22B  Family-level robustness: unweighted and leave-one-family-out (E5)
+# -----------------------------------------------------------------------------
+# s22_get_family_results() takes the family-level estimates from the first
+# source it finds: 07_Cache/family_level_6inst.rds, `family_results` in the
+# global environment, or TABLE_DIR/T16A_family_level_RF_FS_IV.csv (all three
+# from Section 16.2, the estimates behind Appendix Table 19). If none exists
+# and rebuild_ok is TRUE, it refits the family-level models for
+# instrument_label only with run_group_level_sweep() (Section 16.1), which
+# takes a few minutes.
+#
+# s22_family_robustness() regresses family RF_COEF on a shoppable indicator
+# (GROUP_ID in DIAGNOSTIC_FAMILIES), weighted by 1 / RF_SE^2 as in the paper
+# and unweighted. It reports how many of the ten most negative families are
+# shoppable, an exact Wilcoxon rank-sum test, and the probability of exact
+# separation under random assignment, 1 / choose(16, 10); it then repeats
+# both regressions leaving out one family at a time. It warns unless there
+# are 16 families, 10 of them shoppable. Writes T22B_family_level_input.csv
+# and T22B_leave_one_family_out.csv.
 
 s22_get_family_results <- function(instrument_label = S22_INSTRUMENT,
                                    panel = NULL, rebuild_ok = TRUE) {
   
-  # 1. Cache file. family_level_6inst is written by cache_or_run() but is NOT
-  #    in CACHE_REGISTRY, so restore_session() does not load it.
+  # 1. Cache file (Section 16.2).
   cache_path <- file.path(CACHE_DIR, "family_level_6inst.rds")
   if (file.exists(cache_path)) {
     cat("Reading cached family_level_6inst.rds (the object behind Appendix Table 19).\n")
@@ -11546,7 +12087,7 @@ s22_family_robustness <- function(family_results, instrument_label = S22_INSTRUM
     warning("Family or shoppable count is not 16/10; check GROUP_ID against DIAGNOSTIC_FAMILIES.",
             call. = FALSE)
   
-  # ---- weighted (paper's spec) vs unweighted ------------------------------
+  # Weighted (as in the paper) and unweighted ---------------------------------
   fit_w  <- lm(RF_COEF ~ SHOP01, data = fr, weights = fr$W)
   fit_uw <- lm(RF_COEF ~ SHOP01, data = fr)
   sw <- coef(summary(fit_w)); su <- coef(summary(fit_uw))
@@ -11562,7 +12103,7 @@ s22_family_robustness <- function(family_results, instrument_label = S22_INSTRUM
   cat(sprintf("               unweighted: shop %+.5f / non-shop %+.5f\n",
               mean(fr[SHOP01 == 1]$RF_COEF), mean(fr[SHOP01 == 0]$RF_COEF)))
   
-  # ---- rank statistic -----------------------------------------------------
+  # Rank statistic ------------------------------------------------------------
   .s22_sub("Rank separation")
   rk <- rank(fr$RF_COEF)
   top10_shop <- sum(fr[order(RF_COEF)][1:10]$SHOP01)
@@ -11572,7 +12113,7 @@ s22_family_robustness <- function(family_results, instrument_label = S22_INSTRUM
   cat(sprintf("  Probability of exact separation under random assignment: 1/%d = %.5f\n",
               choose(16, 10), 1 / choose(16, 10)))
   
-  # ---- leave-one-family-out ----------------------------------------------
+  # Leave-one-family-out ------------------------------------------------------
   .s22_sub("Leave-one-family-out")
   loo <- rbindlist(lapply(fr$GROUP_ID, function(fam) {
     dd <- fr[GROUP_ID != fam]
@@ -11613,9 +12154,7 @@ s22_family_robustness <- function(family_results, instrument_label = S22_INSTRUM
 }
 
 
-# ===========================================================================
-# DRIVER
-# ===========================================================================
+# Driver ----------------------------------------------------------------------
 
 run_section_22 <- function(concept_results = get("concept_results", envir = .GlobalEnv),
                            schemes_long    = get("schemes_long", envir = .GlobalEnv),
@@ -11642,55 +12181,41 @@ run_section_22 <- function(concept_results = get("concept_results", envir = .Glo
 s22 <- run_section_22()
 
 
-
-
-
-###############################################################################
-
-# ============================================================================
-# Section 23: p-value recomputation check
-# ============================================================================
-
-# SECTION 23 -- P-VALUE RECOMPUTATION CHECK
+# =============================================================================
+# Section 23: P-value recomputation check
+# =============================================================================
 #
-# estimate_interacted() computes RF_P and IV_P via 2 * pnorm(-abs(b/s)) --
-# a normal-distribution p-value -- rather than fixest's own p-value, which
-# would apply a cluster-adjusted t-distribution. With month clustering at
-# only 16 levels, that distinction is not cosmetic: t(15) has meaningfully
-# fatter tails than normal, so borderline cells can flip significance.
+# Compares the reduced-form p-values stored in main$rows (stage 7) with
+# p-values from a t reference. estimate_interacted() (Section 4) computes
+# RF_P and IV_P with .pval(), which takes the degrees of freedom from the
+# fit. The cached stage 7 results were computed by an earlier version of the
+# code that used a normal reference, 2 * pnorm(-abs(b / s)) (file header,
+# INFERENCE). With 16 month clusters the t reference has fatter tails, so
+# cells near a threshold can change significance.
 #
-# Three parts, in increasing order of rigor and cost:
+#   23A  Recomputes the p-values from the coefficients and standard errors
+#        in main$rows with a t(15) reference (16 month clusters minus one).
+#        No regressions; seconds.
+#   23B  Refits the 18 scheme x instrument reduced-form models behind the
+#        36 rows of main$rows (Table 5) and takes fixest's own p-value from
+#        tidy_fixest(), so no df is assumed. A couple of minutes.
+#   23C  Merges 23B with main$rows, checks that the coefficients and
+#        standard errors agree, and counts the cells whose 5% significance
+#        changes.
 #
-#   23A  Instant. Recomputes p under t(df) directly from the RF_COEF/RF_SE
-#        already sitting in main$rows -- no new regressions, seconds to run.
-#        Relies on an ASSUMED df (15, i.e. month clusters - 1), which is the
-#        standard convention but not verified against what fixest itself
-#        would compute for this exact two-way-clustered, FE-nested setup.
-#
-#   23B  Rigorous. Refits every one of the 18 scheme x instrument
-#        specifications underlying Table 5's 36 rows, and extracts
-#        fixest's OWN p-value via tidy_fixest() -- the same call already
-#        used correctly throughout today's other diagnostics. No df
-#        assumption; this is whatever cluster-adjusted reference
-#        distribution fixest actually applies given the real FE and
-#        cluster structure. ~18 regressions, comparable cost to Section
-#        20C's ladder, so a couple of minutes.
-#
-#   23C  Merges 23B against main$rows directly, with a coefficient/SE
-#        match check before trusting any p-value comparison, and reports
-#        the definitive count of significance flips.
-#
-# Run 23A first for an immediate read; run 23B/23C for the number that
-# actually settles this.
-###############################################################################
+# Needs `main` and `outpatient`. Runs when HPT_RUN$diagnostics is TRUE. The
+# driver calls are not wrapped in tryCatch(); if `main` is missing, the run
+# stops here. The printed labels "original (pnorm)" assume that main$rows
+# holds the cached normal-reference p-values; if stage 7 has been
+# re-estimated with the current code, RF_P already uses the fit's t
+# reference.
 
 .s23_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s23_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
 
-# Confirmed against main$rows' actual SPEC strings, printed earlier this
-# session -- not a guess. Order matches SCHEME_COLUMNS as verified in
-# Section 20C, where all six schemes' numbers reproduced the paper's
-# existing Table sysmonth_full exactly under this same mapping.
+# Scheme labels as they appear in main$rows$SPEC, mapped to the panel's
+# scheme columns. Same names, values, and order as SCHEME_COLUMNS (PART 1.5).
+# 23C merges on these labels, so they must match SPEC exactly.
 S23_SCHEME_MAP <- c(
   "1. Procedural certainty"    = "SCHEME_1_CERTAINTY",
   "2. Theory-Based V2"         = "SCHEME_2_THEORYV2",
@@ -11701,9 +12226,12 @@ S23_SCHEME_MAP <- c(
 )
 
 
-# ===========================================================================
-# 23A. INSTANT CHECK -- t(df) applied directly to main$rows               
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 23A  t(15) p-values from main$rows
+# -----------------------------------------------------------------------------
+# Adds t statistics and t(df) p-values (df = 15 by default) for the reduced
+# form and the IV, flags the rows whose reduced-form significance at 5% or
+# 10% changes, prints them, and writes T23A_p_value_recompute_t_approx.csv.
 
 s23_recompute_p_t15 <- function(main_rows, df = 15) {
   d <- as.data.table(copy(main_rows))
@@ -11746,9 +12274,18 @@ s23_recompute_p_t15 <- function(main_rows, df = 15) {
 }
 
 
-# ===========================================================================
-# 23B. RIGOROUS CHECK -- refit and extract fixest's own p-value
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 23B  Refit and take fixest's own p-value
+# -----------------------------------------------------------------------------
+# For each scheme in scheme_map and each main instrument, fits the reduced
+# form of estimate_interacted(): the outcome on the instrument interacted
+# with each scheme category, with the baseline controls, fixed effects, and
+# two-way clustering. Each result is cached as
+# s23_exact_p_<scheme column>_<instrument> when use_cache is TRUE; a fit that
+# fails is reported and skipped. The complete-case screen here leaves out
+# N_PRIOR_POSTERS, which estimate_interacted() includes; the 23C match check
+# shows whether the two samples differ. Writes
+# T23B_p_value_recompute_exact.csv.
 
 s23_recompute_p_exact <- function(panel = outpatient, scheme_map = S23_SCHEME_MAP,
                                   instruments = MAIN_INSTRUMENTS,
@@ -11807,9 +12344,14 @@ s23_recompute_p_exact <- function(panel = outpatient, scheme_map = S23_SCHEME_MA
 }
 
 
-# ===========================================================================
-# 23C. FINAL COMPARISON -- merge against main$rows, report the real count
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 23C  Comparison with main$rows
+# -----------------------------------------------------------------------------
+# Merges on SPEC, INSTRUMENT_LABEL, and TERM, and stops if no rows match.
+# Checks that coefficients and standard errors agree within 1e-6 and prints
+# a message if any differ, since the p-value comparison assumes the same
+# estimates. Then counts the rows whose 5% significance differs between the
+# stored RF_P and fixest's p-value. Writes T23C_p_value_comparison_final.csv.
 
 s23_compare_exact <- function(main_rows, exact_results) {
   m <- as.data.table(copy(main_rows))
@@ -11857,9 +12399,8 @@ s23_compare_exact <- function(main_rows, exact_results) {
 }
 
 
-# ===========================================================================
-# DRIVER
-# ===========================================================================
+# Driver ----------------------------------------------------------------------
+# run_exact = FALSE runs 23A only; TRUE also runs 23B and 23C.
 
 run_section_23 <- function(main_rows, panel = outpatient, run_exact = FALSE) {
   .s23_hd("SECTION 23 -- P-VALUE RECOMPUTATION")
@@ -11882,36 +12423,32 @@ run_section_23 <- function(main_rows, panel = outpatient, run_exact = FALSE) {
   invisible(list(approx = a, exact = b, comparison = c_out))
 }
 
-# Example:
-s23 <- run_section_23(main$rows, outpatient, run_exact = FALSE)  # instant only
-s23 <- run_section_23(main$rows, outpatient, run_exact = TRUE)   # + rigorous check
+# Both calls run. The first runs 23A; the second runs 23A again, then 23B
+# and 23C, and its result replaces the first in s23.
+s23 <- run_section_23(main$rows, outpatient, run_exact = FALSE)  # 23A only
+s23 <- run_section_23(main$rows, outpatient, run_exact = TRUE)   # 23A to 23C
 
 
-
-
-
-
-###############################################################################
-
-# ============================================================================
+# =============================================================================
 # Section 24: Tier IV table builders
-# ============================================================================
-
-# SECTION 24 -- TIER IV TABLE BUILDERS
+# =============================================================================
 #
-# Source AFTER warm_start() / restore_session(). Produces the five Tier IV
-# items that need numbers the paper does not currently contain. Each writes
-# a CSV and, where the table is new, a LaTeX fragment you can \input{}.
+# Six table builders, run in order by run_section_24():
 #
-#   24A  F7  -- post-absorption first-stage variation, all six instruments
-#   24B  F2  -- Table 8 rebuilt with coefficients, not just p-values
-#   24C  C8  -- scheme crosswalk + counts on the 738-concept universe
-#   24D  C12 -- standardized difference column for tab:family_permutation
-#   24E  C13 -- the 16 x 18 family-by-scheme grid
-#   24F  F8  -- consolidated sample audit across specification families
+#   24A  Instrument variation absorbed by the fixed effects (F7)
+#   24B  Table 8 (tab:schemes_main) with coefficients and p-values (F2)
+#   24C  Scheme crosswalk and counts on the 738-concept universe (C8)
+#   24D  Standardized differences for tab:family_permutation (C12)
+#   24E  16 x 18 family-by-scheme grid (C13)
+#   24F  Sample audit across specification families (F8)
 #
-# Writes .tex fragments to TABLE_DIR/tex/. Point \input{} at them or paste.
-###############################################################################
+# Each writes CSVs to TABLE_DIR; 24A also writes the LaTeX fragment
+# tab_fs_variation.tex to TEX_DIR, which is set here to TABLE_DIR/tex (a
+# different folder from OUT_TEX). Needs outpatient, schemes_long, and main
+# (stage 7); 24D needs 07_Cache/family_level_6inst.rds (Section 16.2), and
+# 24F uses cbsa_panel (Section 15A) if it exists. Each builder runs inside
+# tryCatch(), so one failure does not stop the others. Runs when
+# HPT_RUN$diagnostics is TRUE.
 
 .s24_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 TEX_DIR <- file.path(TABLE_DIR, "tex")
@@ -11922,15 +12459,17 @@ dir.create(TEX_DIR, showWarnings = FALSE, recursive = TRUE)
 .esc <- function(x) gsub("_", "\\\\_", x)
 
 
-# ===========================================================================
-# 24A. F7 -- HOW MUCH INSTRUMENT VARIATION THE FIXED EFFECTS ABSORB
-# ===========================================================================
-#
-# For each instrument: raw SD of Z on the estimation sample, SD of Z after
-# absorbing county x concept and month fixed effects, the share of variance
-# absorbed, and the implied movement in N per SD of residualized Z (the
-# first-stage coefficient times the residualized SD). The last column is the
-# number Section 5.6 currently asserts as "well under one poster".
+# -----------------------------------------------------------------------------
+# 24A  Instrument variation absorbed by the fixed effects (F7)
+# -----------------------------------------------------------------------------
+# For each of the six instruments in CONCEPT_INSTRUMENTS, on the complete
+# cases of the baseline specification: the SD of Z, the SD of Z after
+# absorbing the county x concept (MARKET_ID) and month fixed effects, the
+# share of its variance absorbed, the first-stage coefficient, and the
+# implied change in N_PRIOR_POSTERS per SD of residualized Z (first-stage
+# coefficient times the residualized SD). Section 5.6 of the paper describes
+# this last quantity as "well under one poster". Writes
+# T24A_first_stage_variation.csv and tab_fs_variation.tex.
 
 s24_first_stage_variation <- function(panel = outpatient,
                                       instruments = CONCEPT_INSTRUMENTS) {
@@ -12003,13 +12542,16 @@ s24_first_stage_variation <- function(panel = outpatient,
 }
 
 
-# ===========================================================================
-# 24B. F2 -- TABLE 8 WITH COEFFICIENTS
-# ===========================================================================
-#
-# Rebuilds tab:schemes_main as two panels (reduced form, IV), each carrying
-# the shoppable coefficient, the non-shoppable coefficient, and the
-# heterogeneity p, for six schemes x three main instruments.
+# -----------------------------------------------------------------------------
+# 24B  Table 8 with coefficients (F2)
+# -----------------------------------------------------------------------------
+# Rebuilds tab:schemes_main from main$rows and main$tests for six schemes x
+# three main instruments: the shoppable and non-shoppable reduced-form
+# (percent per SD) and IV (percent) estimates, and the heterogeneity-test
+# p-value for each estimator. The p-values are main$tests P_VALUE as stored;
+# with the cached stage 7 results they use the normal reference (file
+# header, INFERENCE) and are not converted here. Writes
+# T24B_schemes_with_coefficients.csv; no LaTeX.
 
 s24_schemes_with_coefs <- function(main_obj = main) {
   mr <- as.data.table(main_obj$rows); mt <- as.data.table(main_obj$tests)
@@ -12036,14 +12578,15 @@ s24_schemes_with_coefs <- function(main_obj = main) {
 }
 
 
-# ===========================================================================
-# 24C. C8 -- SCHEME CROSSWALK AND 738-UNIVERSE COUNTS
-# ===========================================================================
-#
-# Two things the appendix scheme table cannot currently support: which
-# main-text label maps to which appendix scheme, and how many of the 738
-# estimated concepts each scheme puts on each side. The 441 figure quoted in
-# Section 6.3 should appear in the procedural-certainty row.
+# -----------------------------------------------------------------------------
+# 24C  Scheme crosswalk and counts on the 738-concept universe (C8)
+# -----------------------------------------------------------------------------
+# Maps each main-text scheme label to its panel column and appendix scheme
+# (PRIMARY_SCHEMES), and counts how many of the concepts in the panel (738
+# expected) each scheme puts on each side. The procedural-certainty row
+# should reproduce the 441 quoted in Section 6.3 of the paper. Writes
+# T24C_primary_scheme_crosswalk.csv (six primary schemes) and
+# T24C_all18_counts_738.csv (all eighteen schemes).
 
 s24_scheme_crosswalk <- function(panel = outpatient, schemes_long,
                                  scheme_spec = PRIMARY_SCHEMES) {
@@ -12064,7 +12607,9 @@ s24_scheme_crosswalk <- function(panel = outpatient, schemes_long,
   }), fill = TRUE)
   cat("\nSix primary schemes, counts on the estimation universe:\n"); print(prim)
   
-  # (b) all eighteen appendix schemes, raw three-way counts on the 738
+  # (b) all eighteen appendix schemes, three-way counts on the 738. .N counts
+  # rows of schemes_long rather than distinct concepts, so these counts sum
+  # to 781 rather than 738 (file header, KNOWN ISSUES).
   sl <- as.data.table(schemes_long)[ANALYSIS_CONCEPT_ID %chin% universe]
   all18 <- dcast(sl[, .N, by = .(SCHEME_ID, SCHEME_NAME,
                                  CAT = toupper(trimws(SHOPPABILITY_CATEGORY)))],
@@ -12081,14 +12626,17 @@ s24_scheme_crosswalk <- function(panel = outpatient, schemes_long,
 }
 
 
-# ===========================================================================
-# 24D. C12 -- STANDARDIZED DIFFERENCE FOR THE FAMILY PERMUTATION TABLE
-# ===========================================================================
-#
-# The weighted differences in tab:family_permutation are in log points per
-# unit of each instrument, and the instruments differ in units, so the six
-# rows are not comparable as printed. Multiplying by each instrument's SD on
-# its own estimation sample puts them all in log points per SD.
+# -----------------------------------------------------------------------------
+# 24D  Standardized differences for the family permutation table (C12)
+# -----------------------------------------------------------------------------
+# The weighted shoppable minus non-shoppable differences in
+# tab:family_permutation are in log points per unit of each instrument, and
+# the instruments are in different units, so the six rows are not comparable
+# as printed. Multiplying each difference by the SD of its instrument on its
+# own estimation sample gives log points per SD (DIFF_PER_SD; in percent,
+# DIFF_PCT_PER_SD). Reads 07_Cache/family_level_6inst.rds (Section 16.2)
+# unless family_results is passed, and stops if that file is missing. Writes
+# T24D_family_diff_standardized.csv.
 
 s24_standardize_family_diffs <- function(panel = outpatient,
                                          instruments = CONCEPT_INSTRUMENTS,
@@ -12132,13 +12680,14 @@ s24_standardize_family_diffs <- function(panel = outpatient,
 }
 
 
-# ===========================================================================
-# 24E. C13 -- THE FAMILY-BY-SCHEME GRID
-# ===========================================================================
-#
-# Sixteen families by eighteen schemes. A cell is the set of categories that
-# scheme assigns to that family's concepts. Cells with more than one category
-# are the 49 "split" cells the paper's caveat rests on.
+# -----------------------------------------------------------------------------
+# 24E  Family-by-scheme grid (C13)
+# -----------------------------------------------------------------------------
+# Sixteen families by eighteen schemes. A cell lists the categories (H, I, L)
+# that the scheme assigns to the family's concepts. A cell with more than one
+# category is a split cell; the paper's caveat rests on 49 such cells.
+# Writes T24E_family_scheme_grid_wide.csv and
+# T24E_family_scheme_grid_long.csv.
 
 s24_family_scheme_grid <- function(panel = outpatient, schemes_long) {
   fam <- unique(as.data.table(panel)[, .(FINAL_CONCEPT_ID, FINAL_FAMILY_ID)])
@@ -12172,12 +12721,16 @@ s24_family_scheme_grid <- function(panel = outpatient, schemes_long) {
 }
 
 
-# ===========================================================================
-# 24F. F8 -- CONSOLIDATED SAMPLE AUDIT
-# ===========================================================================
-#
-# One row per specification family. Panel rows and complete cases come from
-# the relevant panel object; estimated rows from a representative fit.
+# -----------------------------------------------------------------------------
+# 24F  Consolidated sample audit (F8)
+# -----------------------------------------------------------------------------
+# One row per specification: county markets with the first main instrument,
+# county markets with the third (ex-CBSA) main instrument, and CBSA markets
+# (cbsa_panel, Section 15A) with the third. Panel rows and complete cases
+# come from the panel object; estimated rows come from a reduced-form fit
+# with the baseline controls and fixed effects, and DROP_SHARE is the share
+# of complete cases the fit does not use. A row is skipped if its panel
+# object is not in memory. Writes T24F_sample_audit_consolidated.csv.
 
 s24_sample_audit <- function() {
   spec <- list(
@@ -12213,9 +12766,7 @@ s24_sample_audit <- function() {
 }
 
 
-# ===========================================================================
-# DRIVER
-# ===========================================================================
+# Driver ----------------------------------------------------------------------
 
 run_section_24 <- function() {
   .s24_hd("SECTION 24 -- TIER IV TABLE BUILDERS")
@@ -12238,63 +12789,44 @@ run_section_24 <- function() {
 s24 <- run_section_24()
 
 
-###############################################################################
-
-# ============================================================================
-# Section 25: figure repairs
-# ============================================================================
-
-# SECTION 25 -- FIGURE REPAIRS
+# =============================================================================
+# Section 25: Figures rebuilt with t(15) p-values
+# =============================================================================
 #
-# Source AFTER warm_start() / restore_session(). Four figures need attention.
+# Rebuilds four figures from main (stage 7), the cache, or values published
+# in the paper, converting stored normal-reference p-values to the t(15)
+# reference with .to_t15() (defined below). The figures are written to
+# FIG_DIR under the names the PART 5 figure blocks use, so they replace
+# those files:
 #
-#   fig10_window_ladder.pdf   MISSING. Referenced by Section 8.3.4.
-#   fig03_transform_ladder    STALE. Prints the reduced-form p as 0.0051; the
-#                             corrected value is 0.0135.
-#   fig02_scheme_robustness   STALE (same source as fig03).
-#   fig05_instrument_tiers    STALE (its y-axis counts p < 0.05).
+#   fig10_window_ladder.pdf      window ladder (Section 8.3.4 of the paper)
+#   fig02_scheme_robustness.pdf  heterogeneity p-value by scheme, main$tests
+#   fig03_transform_ladder.pdf   transform ladder; the reduced-form p-value
+#                                is 0.0051 under the normal reference and
+#                                0.0135 under t(15)
+#   fig05_instrument_tiers.pdf   share of schemes significant against
+#                                first-stage F; also writes
+#                                T25_instrument_tier_recount.csv
 #
-# The staleness is the same normal-vs-t issue already fixed in the tables.
-# `main$tests` stores p computed against a normal reference; with sixteen
-# month clusters the correct reference is t(15). The transformation is exact:
+# main$tests and the other cached stage 7 results hold normal-reference
+# p-values (file header, INFERENCE). With 16 month clusters the reference is
+# t(15), and the conversion is
 #
 #     p_t = 2 * pt(-qnorm(1 - p_normal/2), df = 15)
 #
-# .to_t15() below applies it, so these figures can be rebuilt from the existing
-# cache without re-estimating anything. Re-running the estimation with the
-# corrected .pval() would give identical numbers.
+# so the figures can be rebuilt without re-estimating. If the stage 7 caches
+# are rebuilt with the current code, their p-values already use the t
+# reference and must not be converted.
 #
-# Revision note (post first run): three bugs fixed after a live run surfaced
-# them.
-#   1. facet_wrap(~PANEL) collided with ggplot2's internal reserved column
-#      name PANEL, thrown at build time inside ggsave(). Renamed to
-#      FACET_LAB in both figures that facet.
-#   2. .save() used device = cairo_pdf, which needs an X11/cairo install this
-#      machine doesn't have. Switched to plain grDevices::pdf.
-#   3. s25_transform_ladder() assumed a specific cache schema and errored
-#      with "object 'RF_P_NORMAL' not found" against a differently-shaped
-#      transform_ladder.rds. It now probes several plausible column names and
-#      only trusts the cache if all three needed fields resolve, else falls
-#      back to the published values.
-#   4. s25_instrument_tiers() looked for an object called `screen` that does
-#      not exist in this session, and `main$tests` turned out to hold only
-#      the three main-tier instruments (by construction of
-#      run_main_results()), so the recount silently dropped the confirming
-#      and discrepant rows. It now accepts confirming/discrepant result
-#      objects as optional arguments and falls back to Table 6's pooled F
-#      when no within-interacted Wald object is available, labelling which
-#      source it used.
-###############################################################################
+# The end of the section converts two saved CSVs in place, so the section is
+# not safe to run twice (see the note there). Each figure is built inside
+# tryCatch(). Runs when HPT_RUN$diagnostics is TRUE.
 
 suppressPackageStartupMessages({library(ggplot2); library(data.table)})
 
 FIG_DIR <- if (exists("FIG_DIR", envir = .GlobalEnv)) get("FIG_DIR", envir = .GlobalEnv) else {
-  # Your pipeline defines FIG_DIR directly (see HPT_Analysis_Pipeline.R,
-  # around line 6677) as .../06_R_Analysis_Results/02_Figures. There is no
-  # OUTPUT_DIR object anywhere in that pipeline; I invented it by mistake.
-  # This branch only fires if FIG_DIR somehow isn't in scope when this file
-  # is sourced, and falls back to reconstructing the same path from
-  # RESULT_ROOT, which the pipeline does define.
+  # FIG_DIR is set in PART 1.2. This branch runs only if it is missing from
+  # the global environment, and rebuilds the same path from RESULT_ROOT.
   warning("FIG_DIR not found in the global environment; reconstructing it from ",
           "RESULT_ROOT. If this path is wrong, source HPT_Analysis_Pipeline.R ",
           "first so FIG_DIR is already defined.", call. = FALSE)
@@ -12302,6 +12834,11 @@ FIG_DIR <- if (exists("FIG_DIR", envir = .GlobalEnv)) get("FIG_DIR", envir = .Gl
 }
 dir.create(FIG_DIR, showWarnings = FALSE, recursive = TRUE)
 
+# .to_t15() takes a two-sided p-value computed with a normal reference,
+# recovers |z| = qnorm(1 - p / 2), and returns the two-sided p-value of that
+# statistic under t(df), with df = N_MONTH_CLUSTERS - 1 = 15 by default. p is
+# first clamped to [.Machine$double.xmin, 1 - 1e-15]. It must not be applied
+# to p-values that already use a t reference.
 N_MONTH_CLUSTERS <- 16L
 .to_t15 <- function(p, df = N_MONTH_CLUSTERS - 1L) {
   p <- pmin(pmax(as.numeric(p), .Machine$double.xmin), 1 - 1e-15)
@@ -12326,27 +12863,27 @@ INSTR_LABEL <- c(
           panel.grid.minor = element_blank())
 }
 .save <- function(p, file, w = 7.5, h = 5) {
-  # Plain grDevices::pdf, not cairo_pdf. cairo_pdf requires an X11/cairo
-  # installation this machine does not have (missing libSM/libXrender under
-  # /opt/X11), which threw non-fatal warnings and, for the two figures that
-  # errored before reaching ggsave, made the trace noisier than it needed to
-  # be. Nothing in these plots needs cairo's font handling.
+  # Uses the pdf device rather than cairo_pdf, which needs an X11/cairo
+  # installation; nothing in these plots needs cairo's font handling.
   ggsave(file.path(FIG_DIR, file), p, width = w, height = h, device = "pdf")
   cat("Wrote:", file.path(FIG_DIR, file), "\n")
 }
 
 
-# ===========================================================================
-# fig10_window_ladder.pdf -- MISSING FIGURE
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Window ladder (fig10_window_ladder.pdf)
+# -----------------------------------------------------------------------------
+# Panel A is the shoppable reduced-form coefficient (% per SD) at each
+# trailing window (3, 6, 9, 12 months) and Panel B the minimum first-stage
+# Wald, for three main instruments. Section 8.3.4 of the paper argues from
+# the non-monotone Panel A and the monotone Panel B that the window length
+# was not chosen on the outcome.
 #
-# Two panels. Panel A is the shoppable coefficient at each window length,
-# Panel B the minimum first-stage Wald. The point of the figure is the
-# non-monotonicity in Panel A against the monotonicity in Panel B, which is
-# what Section 8.3.4 argues shows the horizon was not selected on outcome.
-#
-# Reads the window-ladder cache if present. The fallback is the published
-# content of Appendix Table 31, so the figure matches the table either way.
+# Uses 07_Cache/<cache_name>.rds if it exists, converting its TEST_P with
+# .to_t15(); otherwise it plots the values published in Appendix Table 31,
+# unconverted. No block in this file writes window_ladder.rds (Section 15B
+# caches its ladder as s15b_window_ladder_v11), so with the default
+# cache_name the published values are plotted.
 
 s25_window_ladder <- function(cache_name = "window_ladder") {
   p <- file.path(CACHE_DIR, paste0(cache_name, ".rds"))
@@ -12384,11 +12921,9 @@ s25_window_ladder <- function(cache_name = "window_ladder") {
     d[, .(INSTRUMENT, WINDOW, SIG05, VALUE = MIN_WALD,
           FACET_LAB = "B. Minimum first-stage Wald")])
   
-  # NOTE: ggplot2 reserves the column name "PANEL" internally for its own
-  # facet layout bookkeeping (created inside ggplot_build()), so a data
-  # column literally called PANEL collides with it and facet_wrap() errors
-  # at build/print time with "PANEL is not an allowed name for faceting
-  # variables." FACET_LAB avoids the collision.
+  # The facet column is FACET_LAB because ggplot2 reserves the name PANEL for
+  # its facet layout; a data column named PANEL makes facet_wrap() fail when
+  # the plot is built.
   g <- ggplot(long, aes(WINDOW, VALUE, group = INSTRUMENT, colour = INSTRUMENT)) +
     geom_hline(data = data.frame(FACET_LAB = "A. Shoppable coefficient (% per SD)", y = 0),
                aes(yintercept = y), linetype = "dashed", colour = "grey60") +
@@ -12410,9 +12945,12 @@ s25_window_ladder <- function(cache_name = "window_ladder") {
 }
 
 
-# ===========================================================================
-# fig02_scheme_robustness.pdf -- REGENERATE WITH t(15)
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Scheme robustness (fig02_scheme_robustness.pdf)
+# -----------------------------------------------------------------------------
+# Reduced-form heterogeneity p-values from main$tests for the six schemes and
+# three main instruments, converted to t(15). Prints the normal and t(15)
+# values side by side and the number significant at 5% under each.
 
 s25_scheme_robustness <- function(main_obj = main) {
   mt <- as.data.table(main_obj$tests)
@@ -12448,13 +12986,16 @@ s25_scheme_robustness <- function(main_obj = main) {
 }
 
 
-# ===========================================================================
-# fig03_transform_ladder.pdf -- REGENERATE WITH t(15)
-# ===========================================================================
-#
-# The printed reduced-form p should read 0.0135, not 0.0051. The point of the
-# figure is that it is identical across all six forms while the IV magnitude
-# moves by a factor of five, and that survives the correction unchanged.
+# -----------------------------------------------------------------------------
+# Transform ladder (fig03_transform_ladder.pdf)
+# -----------------------------------------------------------------------------
+# Shoppable IV magnitude and reduced-form heterogeneity p-value under each of
+# the six treatment transforms (design decision 1 in the file header). The
+# reduced form contains no treatment variable, so its p-value is the same
+# for every form while the IV magnitude changes by a factor of five. Uses
+# transform_obj if given; otherwise the transform_ladder cache if its columns
+# can be identified, or else the published values in FALLBACK. The p-values
+# are converted with .to_t15() in every case.
 
 s25_transform_ladder <- function(transform_obj = NULL) {
   FALLBACK <- data.table(
@@ -12467,12 +13008,10 @@ s25_transform_ladder <- function(transform_obj = NULL) {
     p <- file.path(CACHE_DIR, "transform_ladder.rds")
     if (file.exists(p)) {
       cand <- as.data.table(readRDS(p))
-      # A cache with an unexpected schema previously produced "object
-      # 'RF_P_NORMAL' not found" a few lines below, because setnames()
-      # only fires when the exact source name is present and otherwise
-      # leaves RF_P_NORMAL undefined. Try several plausible column names
-      # instead of assuming one, and only trust the cache if a form label,
-      # an IV magnitude, and a reduced-form p-value can all be located.
+      # transform_ladder.rds is the stage 7 cache, the list (rows, tests)
+      # returned by run_transform_ladder(). It is used only if a form label,
+      # an IV magnitude, and a reduced-form p-value column can each be found
+      # under one of the names below; otherwise FALLBACK is used.
       form_col <- intersect(c("FORM", "TRANSFORM", "FUNCTIONAL_FORM"), names(cand))[1]
       iv_col   <- intersect(c("IV_PCT", "IV_PERCENT", "IV_MAGNITUDE"), names(cand))[1]
       p_col    <- intersect(c("RF_P_NORMAL", "RF_P", "P_VALUE", "RF_PVAL"), names(cand))[1]
@@ -12523,23 +13062,23 @@ s25_transform_ladder <- function(transform_obj = NULL) {
 }
 
 
-# ===========================================================================
-# fig05_instrument_tiers.pdf -- REGENERATE WITH t(15)
-# ===========================================================================
-#
-# The y-axis is a count of p < 0.05, so it moves with the correction. Also
-# emits the recount Appendix Table 22 needs: that table currently carries two
-# rows both labelled "Competitor hospitals (ex-CBSA)".
+# -----------------------------------------------------------------------------
+# Instrument tiers (fig05_instrument_tiers.pdf)
+# -----------------------------------------------------------------------------
+# For each instrument, the share of schemes in which the reduced-form
+# heterogeneity test rejects at 5% under t(15), plotted against first-stage
+# F and colored by tier. Writes the recount for Appendix Table 22
+# (tab:tier_rerank) to T25_instrument_tier_recount.csv before plotting. The
+# plot needs ggrepel and scales.
 
 s25_instrument_tiers <- function(main_obj = main, confirming_obj = NULL,
                                  discrepant_obj = NULL) {
-  # `main$tests` (from run_main_results()) covers only the three main-tier
-  # instruments by construction, which is why the recount below only ever
-  # returned three rows. If a "confirming" or "discrepant" results object
-  # exists in this session with the same $tests structure, pass it in to
-  # get all six instruments; otherwise this falls back to the appendix's own
-  # already-published confirming/discrepant figures so the plot isn't
-  # silently missing half the instrument set.
+  # The recount uses the reduced-form rows of the $tests tables passed in.
+  # main$tests covers only the three MAIN instruments (run_main_results(),
+  # stage 7). The stage 7 objects `confirming` and `discrepant` have the same
+  # structure and add the other three, but run_section_25() passes neither,
+  # so as called there the recount and the figure cover the MAIN instruments
+  # only. The fallback below supplies first-stage F values, not test rows.
   grab_tests <- function(obj) {
     if (is.null(obj)) return(NULL)
     tt <- tryCatch(as.data.table(obj$tests), error = function(e) NULL)
@@ -12555,13 +13094,12 @@ s25_instrument_tiers <- function(main_obj = main, confirming_obj = NULL,
                 MEDIAN_P_T = median(P_T)), by = INSTRUMENT_LABEL]
   agg[, INSTRUMENT := .pretty(INSTRUMENT_LABEL)]
   
-  # First-stage F. Appendix Table 6 (tab:instrument_strength) already
-  # reports the pooled cluster-robust F for all six instruments on a common
-  # sample; that is not the same statistic as the within-interacted-model
-  # Wald this figure plots on its x-axis (see the table's own note on that
-  # distinction), but it is the only per-instrument F on hand when no
-  # `screen`-like object exists in the session, so it is used as a labelled
-  # fallback rather than dropping the plot.
+  # First-stage F. Taken from `screen` if it has INSTRUMENT_LABEL and F_STAT
+  # columns. The stage 5 `screen` table (T02) names its F FIRST_STAGE_F, so
+  # with that object, or with none, the lookup returns NULL and the pooled F
+  # values published in Appendix Table 6 (tab:instrument_strength) are used.
+  # Those are pooled first-stage F statistics on a common sample, not the
+  # within-interacted Wald; F_SOURCE records which source was used.
   fs_fallback <- data.table(
     INSTRUMENT = c("Competitor systems", "Competitor systems (ex-CBSA)",
                    "Competitor counties (ex-CBSA)", "Local system",
@@ -12631,37 +13169,50 @@ run_section_25 <- function() {
   invisible(res)
 }
 
-# Example:
+# Builds the four figures.
 s25 <- run_section_25()
 
 
 
+# -----------------------------------------------------------------------------
+# In-place t(15) conversion of two saved CSVs
+# -----------------------------------------------------------------------------
+# Reads T06_mainB_heterogeneity_tests.csv (input to Figure 2 in PART 5) and
+# T07B_transform_ladder_heterogeneity.csv (input to Figure 3), converts
+# P_VALUE from the normal to the t(15) reference, and overwrites both files.
+# A second run converts the already converted values again, which is why
+# Sections 19 and 21-25 are not safe to run twice. Stage 7 writes both files
+# only when it computes its results rather than reading them from the cache;
+# files written by the current code already hold t-reference p-values and
+# should not be converted. fread() stops the run if either file is missing.
 library(data.table)
 
-# --- T06_mainB (feeds fig02) ---
+# T06_mainB (fig02) -----------------------------------------------------------
 t06 <- fread(file.path(TABLE_DIR, "T06_mainB_heterogeneity_tests.csv"))
 stopifnot("P_VALUE" %in% names(t06))          # sanity check before touching it
 t06[, P_VALUE := 2 * pt(-qnorm(1 - P_VALUE / 2), df = 15)]
 fwrite(t06, file.path(TABLE_DIR, "T06_mainB_heterogeneity_tests.csv"))
 
-# --- T07B (feeds fig03) ---
+# T07B (fig03) ----------------------------------------------------------------
 t07b <- fread(file.path(TABLE_DIR, "T07B_transform_ladder_heterogeneity.csv"))
 stopifnot("P_VALUE" %in% names(t07b))
 t07b[, P_VALUE := 2 * pt(-qnorm(1 - P_VALUE / 2), df = 15)]
 fwrite(t07b, file.path(TABLE_DIR, "T07B_transform_ladder_heterogeneity.csv"))
 
-}  # end HPT_RUN$diagnostics
+}  # end HPT_RUN$diagnostics (Sections 21-25)
+
+
 
 ###############################################################################
-#                                                                             #
-#   PART 7 -- SCRATCH                                                         #
-#                                                                             #
-#   Interactive code that previously executed on every source(). Kept as a    #
-#   record of what was run by hand; commented out so it does not execute.     #
-#                                                                             #
+#
+#   PART 7: END OF THE PIPELINE
+#
+#   Writes sessionInfo.txt to RESULT_ROOT and prints a completion message.
+#   Sections 26-34 follow and are mostly function definitions. Their run
+#   blocks need HPT_SCRATCH <- TRUE; Section 33's main block runs under
+#   HPT_CONCEPT_CHARS, and the Section 34F blocks run without a switch.
+#
 ###############################################################################
-
-# (none)
 
 
 writeLines(capture.output(sessionInfo()),
@@ -12669,12 +13220,7 @@ writeLines(capture.output(sessionInfo()),
 cat("\nPipeline complete. sessionInfo written to ", RESULT_ROOT, "\n", sep = "")
 
 
-
-
-
-
-
-
+# Interactive session setup on the author's machine (not run):
 # Sys.setenv(HPT_ROOT = "/Users/danielsierra/Library/CloudStorage/OneDrive-FloridaStateUniversity/Hospital Price Transparency Paper")
 # HPT_WARM_START <- TRUE
 # source(file.path(Sys.getenv("HPT_ROOT"), "Code", "HPT_Analysis_Pipeline.R"))
@@ -12683,59 +13229,43 @@ cat("\nPipeline complete. sessionInfo written to ", RESULT_ROOT, "\n", sep = "")
 # superfamily_results <- readRDS(file.path(CACHE_DIR, "superfamily_level_6inst.rds"))
 
 
-
-
-
-
-
-
-
-
-
-
-###############################################################################
+# =============================================================================
+# Section 26: Concept-level estimate browser
+# =============================================================================
 #
-#   SECTION 26 -- CONCEPT-LEVEL ESTIMATE BROWSER
+# Sorts the concept-level estimates of Section 6 three ways: by coefficient,
+# by p-value, and by both under one of three rules (26.3). Nothing is
+# estimated. cb_load() takes concept_results from memory if it exists, then
+# 07_Cache/concept_level_6inst.rds, then T05_concept_level_RF_FS_IV.csv in
+# TABLE_DIR. Sourcing the file defines the functions only. When HPT_SCRATCH
+# is TRUE, the block at the end of 26.7 runs cb_run(), which writes the
+# T26A-T26D CSVs, and prints several views.
 #
-#   Sorts the concept-level sweep from Section 6 (concept_results) three ways:
+# Two conventions apply to the output.
 #
-#     (1) by coefficient, least to greatest
-#     (2) by p-value, least to greatest
-#     (3) by both, under three explicit rules (see cb_by_both)
+# 1. Percent conversion. estimate_concept_level() (Section 6) stores
+#    IV_ESTIMATE_PERCENT = 100 * b, the linear approximation, and
+#    estimate_interacted() (Section 4) stores IV_PERCENT = 100 * (exp(b) - 1).
+#    The two differ in the tails of the concept sweep (b = -0.126 gives -12.6
+#    under the first and -11.8 under the second), so cb_view() reports both,
+#    as PCT_LINEAR and PCT_EXP. Section 6.2.1 of the paper quotes the linear
+#    version; Table 5 Panel B quotes the exponential one.
 #
-#   Source AFTER HPT_Analysis_Pipeline.R Section 1 has run (needs CACHE_DIR,
-#   TABLE_DIR, DIAGNOSTIC_FAMILIES, FAMILY_LABELS, INSTRUMENT_LABEL_MAP,
-#   save_csv). It reads concept_results from memory, then the cache, then the
-#   CSV -- whichever it finds first. Nothing here re-estimates anything.
-#
-#   TWO CONVENTIONS WORTH KNOWING BEFORE READING THE OUTPUT
-#
-#   1. Percent conversion. estimate_concept_level() stores
-#      IV_ESTIMATE_PERCENT = 100 * b, the linear approximation.
-#      estimate_interacted() stores IV_PERCENT = 100 * (exp(b) - 1).
-#      The two diverge at the tails of the concept sweep (b = -0.126 gives
-#      -12.6 under the first and -11.8 under the second). This script reports
-#      both, as PCT_LINEAR and PCT_EXP, so the gap is visible rather than
-#      silently inherited. Section 6.2.1 of the paper quotes the linear
-#      version; Table 5 Panel B quotes the exponential one.
-#
-#   2. Reference distribution. Concept-level p-values come straight from
-#      coeftable(feols(...)) with two-way clustering, and fixest's default
-#      t.df = "min" already references t with df = min(#clusters) - 1. Within
-#      a concept subsample that is usually the month count, so the df is
-#      already at or below 15 and varies by concept. Do NOT apply the
-#      pipeline's .to_t15() to these -- it would double-count the correction.
-#      DF_MIN below reports min(N_MARKETS, N_MONTHS) - 1, the reference each
-#      concept was actually evaluated against.
-#
-###############################################################################
+# 2. Reference distribution. The concept-level p-values are those of
+#    coeftable() for the two-way clustered feols() fits. fixest's default
+#    t.df = "min" already uses a t reference with df equal to the smaller
+#    cluster count minus one. Within a concept subsample the smaller count is
+#    usually the number of months, so df is at most 15 and varies by concept.
+#    The t(15) conversion in .to_t15() (Section 25) therefore does not apply
+#    to these p-values; applying it would correct them twice. DF_MIN,
+#    min(N_MARKETS, N_MONTHS) - 1, is the df used for each concept.
 
 suppressPackageStartupMessages(library(data.table))
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.0  Configuration
-# ===========================================================================
+# -----------------------------------------------------------------------------
 
 CB_METRICS <- list(
   RF = list(coef = "RF_COEF", se = "RF_SE", p = "RF_P",  fdr = "RF_P_FDR",
@@ -12746,10 +13276,10 @@ CB_METRICS <- list(
             unit = "prior posters per unit of Z")
 )
 
-# Used only for the percent-per-SD column when `outpatient` is not in memory.
-# These are the estimation-sample standard deviations reported in Appendix
-# Table (tab:instrument_strength). If the panel IS in memory the SD is
-# computed from it directly and this is ignored.
+# Instrument SDs for PCT_PER_SD when `outpatient` is not in memory: the
+# estimation-sample standard deviations reported in Appendix Table
+# tab:instrument_strength. When `outpatient` is in memory, cb_z_sd() uses the
+# SD of the instrument over all its finite values in the panel instead.
 CB_Z_SD_FALLBACK <- c(
   Competitor_only_hospitals_9m         = 15.94,
   Primary_strict_system_IV             = 17.16,
@@ -12769,9 +13299,9 @@ CB_Z_SD_FALLBACK <- c(
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.1  Load
-# ===========================================================================
+# -----------------------------------------------------------------------------
 
 cb_load <- function(verbose = TRUE) {
   if (exists("concept_results") && is.data.frame(concept_results)) {
@@ -12806,13 +13336,15 @@ cb_z_sd <- function(instrument_label, instrument_var = NULL, panel_name = "outpa
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.2  Build the browsable view
-# ===========================================================================
-#
-# One row per concept, for ONE instrument and ONE metric. Everything the
-# sorting rules need is computed here so the three orderings below are pure
-# reorderings of the same object and cannot disagree about the numbers.
+# -----------------------------------------------------------------------------
+# cb_view() returns one row per concept for one metric (RF, IV, or FS; see
+# CB_METRICS) and one instrument, with every column the sorting rules use, so
+# the orderings in 26.3 only reorder the same rows. SHOP is "Shoppable" for
+# concepts in DIAGNOSTIC_FAMILIES. FAMILY uses FAMILY_LABELS when it exists
+# (PART 5 defines it when HPT_RUN$figures is TRUE) and the family ID
+# otherwise.
 
 cb_view <- function(cr = cb_load(),
                     metric = "RF",
@@ -12824,9 +13356,8 @@ cb_view <- function(cr = cb_load(),
   m <- CB_METRICS[[metric]]
   d <- as.data.table(copy(cr))
   
-  # The INSTRUMENT column is authoritative; labels have been written both with
-  # spaces and with underscores across the pipeline's history. Normalise before
-  # filtering, exactly as the note at INSTRUMENT_LABEL_MAP instructs.
+  # Sets INSTRUMENT_LABEL from the INSTRUMENT column through
+  # INSTRUMENT_LABEL_MAP (PART 1.5) before filtering by label.
   if ("INSTRUMENT" %chin% names(d) && exists("INSTRUMENT_LABEL_MAP")) {
     lab <- unname(INSTRUMENT_LABEL_MAP[as.character(d$INSTRUMENT)])
     if (any(!is.na(lab))) d[!is.na(lab), INSTRUMENT_LABEL := lab[!is.na(lab)]]
@@ -12861,7 +13392,8 @@ cb_view <- function(cr = cb_load(),
     fifelse(is.na(lb), as.character(FINAL_FAMILY_ID), lb)
   } else as.character(FINAL_FAMILY_ID)]
   
-  # Both percent conventions, side by side. See the header note.
+  # Both percent conventions (Section 26 header), and PCT_PER_SD, the same
+  # exponential conversion applied to COEF * SD(Z).
   sd_z <- cb_z_sd(instrument, if ("INSTRUMENT" %chin% names(d)) d$INSTRUMENT[1L] else NULL)
   d[, PCT_LINEAR := 100 * COEF]
   d[, PCT_EXP    := 100 * (exp(COEF) - 1)]
@@ -12891,11 +13423,12 @@ cb_view <- function(cr = cb_load(),
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.3  The three orderings
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# Each function takes a cb_view() result and returns a sorted copy.
 
-# (1) Least to greatest coefficient. Most negative price response first.
+# (1) Least to greatest coefficient: most negative price response first.
 cb_by_coef <- function(v, decreasing = FALSE) {
   out <- copy(v)
   setorderv(out, "COEF", if (decreasing) -1L else 1L)
@@ -12903,8 +13436,8 @@ cb_by_coef <- function(v, decreasing = FALSE) {
   out[]
 }
 
-# (2) Least to greatest p-value. Most precisely estimated first, regardless
-#     of sign -- which is the point of looking at it separately.
+# (2) Least to greatest p-value, regardless of sign; ties are broken by the
+#     coefficient. Stops for FS, which has no p-value.
 cb_by_p <- function(v) {
   if (all(is.na(v$P)))
     stop("This metric carries no p-value (FS). Use metric = 'RF' or 'IV'.", call. = FALSE)
@@ -12914,26 +13447,23 @@ cb_by_p <- function(v) {
   out[]
 }
 
-# (3) By both. Three rules, because "both" is genuinely ambiguous and the
-#     three answer different questions:
+# (3) By both, under one of three rules:
 #
-#   "evidence"  EVIDENCE = sign(COEF) * (-log10(P)). Ascending, this puts the
-#               most negative AND most significant concepts at the top, the
-#               most positive AND most significant at the bottom, and the
-#               unresolved middle in the middle. One signed number, and the
-#               ordering that surfaces the two tails of the distribution the
-#               paper's Figure 4 plots. A display ordering, not a test
-#               statistic.
+#   "evidence"  EVIDENCE = sign(COEF) * (-log10(P)), ascending. The most
+#               negative and most significant concepts come first, the most
+#               positive and most significant last, and the imprecise ones in
+#               the middle, which shows the two tails of the distribution
+#               plotted in the paper's Figure 4. A display ordering, not a
+#               test statistic.
 #
-#   "ranks"     RANK_COEF + RANK_P, ascending. Equal weight to "how negative"
-#               and "how precise". More robust to a single concept with an
-#               absurdly small p, which the log scale in "evidence" rewards
-#               heavily.
+#   "ranks"     RANK_COEF + RANK_P, ascending: equal weight to the rank of the
+#               coefficient and the rank of the p-value. Less sensitive than
+#               "evidence" to a single concept with a very small p-value,
+#               which the log scale rewards heavily.
 #
-#   "lex"       Significance band first (1% / 5% / 10% / ns), then coefficient
-#               ascending within band. This is the ordering that matches how a
-#               referee reads a table: show me the significant ones, sorted by
-#               size, then the rest.
+#   "lex"       significance band (1%, 5%, 10%, not significant), then
+#               coefficient ascending within the band: the significant
+#               concepts sorted by size, then the rest.
 cb_by_both <- function(v, rule = c("evidence", "ranks", "lex")) {
   rule <- match.arg(rule)
   if (all(is.na(v$P)))
@@ -12958,12 +13488,13 @@ cb_by_both <- function(v, rule = c("evidence", "ranks", "lex")) {
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.4  Printing
-# ===========================================================================
-#
-# as.data.frame() before print() on purpose: print(n = Inf) on a tibble or a
-# wide data.table throws `invalid 'na.print' specification` in this setup.
+# -----------------------------------------------------------------------------
+# cb_show() rounds the numeric columns and prints the result as a data.frame,
+# because print(n = Inf) on a tibble or a wide data.table fails with
+# `invalid 'na.print' specification` in the author's setup. cb_extremes()
+# prints the n most negative and the n most positive concepts.
 
 cb_show <- function(x, n = Inf, cols = NULL, digits = 5) {
   d <- as.data.table(copy(x))
@@ -12992,13 +13523,15 @@ cb_extremes <- function(v, n = 25) {
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.5  One row per concept, all instruments side by side
-# ===========================================================================
-#
-# The single-instrument views answer "which concepts respond". This answers
-# "which concepts respond under every instrument", which is the more useful
-# question for the sweep and is not currently anywhere in the pipeline.
+# -----------------------------------------------------------------------------
+# cb_wide() puts each concept's coefficient and p-value under every instrument
+# in ALL_SIX_INSTRUMENTS in one row and counts, per concept, the instruments
+# with an estimate (N_INSTRUMENTS), a negative coefficient (N_NEGATIVE), and
+# p < 0.05 (N_SIG_05). ALL_AGREE is TRUE when the available coefficients are
+# all negative or none is negative. Rows are sorted by the coefficient under
+# order_by.
 
 cb_wide <- function(cr = cb_load(), metric = "RF",
                     instruments = if (exists("ALL_SIX_INSTRUMENTS"))
@@ -13029,15 +13562,19 @@ cb_wide <- function(cr = cb_load(), metric = "RF",
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.6  Verification against the published numbers
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# cb_summary() reports, by shoppability, the number of concepts, the median
+# and mean coefficient, and the shares negative, with p < 0.05, with
+# p < 0.10, and with an FDR-adjusted p < 0.05; then the median coefficient
+# and the share with p < 0.05 by clinical family.
 #
-# Section 6.2 of the paper reports, under the primary instrument, a 5%
-# significance rate of 31.3% for shoppable concepts against 3.4% for
-# non-shoppable, and median reduced-form coefficients of -0.0034 and +0.0004.
-# If this does not reproduce, the browser and the paper are reading different
-# vintages and nothing below should be trusted.
+# Section 6.2 of the paper reports, under the primary instrument (the default
+# view), a 5% significance rate of 31.3% for shoppable concepts against 3.4%
+# for non-shoppable ones, and median reduced-form coefficients of -0.0034 and
+# +0.0004. A view that does not reproduce these is reading different
+# concept-level results from those in the paper.
 
 cb_summary <- function(v) {
   s <- v[, .(N          = .N,
@@ -13062,9 +13599,16 @@ cb_summary <- function(v) {
 }
 
 
-# ===========================================================================
+# -----------------------------------------------------------------------------
 # 26.7  Driver
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# cb_run() prints the 26.6 summary and the three orderings for one metric and
+# instrument and, with write = TRUE, writes to TABLE_DIR:
+#   T26A_concept_sorted_by_coef_<metric>_<instrument>.csv
+#   T26B_concept_sorted_by_p_<metric>_<instrument>.csv
+#   T26C_concept_sorted_by_both_<rule>_<metric>_<instrument>.csv
+#   T26D_concept_wide_all_instruments_<metric>.csv
+# The HPT_SCRATCH block below calls it with the defaults.
 
 cb_run <- function(metric = "RF",
                    instrument = "Competitor_only_hospitals_9m",
@@ -13110,8 +13654,8 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   
   v <- cb_view()                              # RF, competitor hospitals
   cb_show(cb_by_coef(v), n = 40)              # 40 most negative
-  cb_show(cb_by_p(v), n = 40)                 # 40 most precise
-  cb_show(cb_by_both(v, "evidence"), n = 40)  # most negative AND most precise
+  cb_show(cb_by_p(v), n = 40)                 # 40 smallest p-values
+  cb_show(cb_by_both(v, "evidence"), n = 40)  # most negative and most significant first
   cb_extremes(v, 25)                          # both tails at once
   
   cb_show(cb_by_coef(v[SHOP == "Shoppable"])) # shoppable only
@@ -13119,13 +13663,31 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   w <- cb_wide()                              # all six instruments, one row per concept
   cb_show(w[ALL_AGREE & N_SIG_05 >= 3], cols = names(w))
   
-  View(cb_by_both(v, "evidence"))             # 738 rows are easier to scroll than to print
+  View(cb_by_both(v, "evidence"))             # opens the data viewer (GUI sessions only)
 }   # end interactive scratch
-###############################################################################
 
 
-
-
+# =============================================================================
+# Interactive follow-up checks
+# =============================================================================
+#
+# Checks run by hand, in this order: the Section 20 diagnostics A6 (20A) and
+# A5 (20B); the minimum detectable effect for the SES index tests; Scheme 1
+# heterogeneity tests with county-only clustering; a count of MARKET_ID cells
+# with rows after their first month; and Scheme 1 with category x month fixed
+# effects. The block runs only when HPT_SCRATCH is TRUE.
+#
+# Needs concept_results, measures, and outpatient in memory; the Section 20
+# functions, which are defined only when HPT_TIER2 or HPT_RUN$diagnostics is
+# TRUE; the payer-cell export (HPT_PAYER_DISPERSION*.csv.gz) for A5; and
+# read_table() from the Figures 1-9 block in PART 5, which is defined only
+# when HPT_RUN$figures is TRUE. Writes the T20A and T20B CSVs (through the
+# Section 20 functions), T12T_ses_index_mde.csv, and
+# T13F_county_only_clustering.csv to TABLE_DIR, and the cache file
+# 07_Cache/category_month_fe_check.rds. Adds the column CATEGORY_MONTH to
+# outpatient. The exists() and list.files() calls and the MARKET_ID cell
+# count are bare expressions, whose values print only when the lines are run
+# at the console.
 
 if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off by default
   rm(list = intersect(c("cr", "ms"), ls(envir = .GlobalEnv)), envir = .GlobalEnv)  # clear the stray globals first
@@ -13141,7 +13703,11 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   
   beq <- s20_payer_balance_equality(outpatient)
   
-  # 2. §7 MDE bound -- instant, reads a saved CSV
+  # Minimum detectable effect for the SES index tests (Section 7 of the
+  # paper); reads T12T_triple_interaction_ses_tests.csv (Section 12) and runs
+  # instantly. 2.802 (about 1.96 + 0.84) is the normal multiplier for 80%
+  # power in a two-sided 5% test. MDE_SHARE is the MDE as a share of the
+  # shoppability gap at the mean.
   ses_tests <- read_table("T12T_triple_interaction_ses_tests.csv")
   mde <- copy(ses_tests[ESTIMATOR == "Reduced form"])
   mde[, SCALE     := DGAP_PCT_PER_SD_MOD / DIFF]
@@ -13153,7 +13719,8 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
                                 SHARE = round(MDE_SHARE, 2))])
   save_csv(mde, "T12T_ses_index_mde.csv")
   
-  # 3. County-only clustering -- a few minutes
+  # Scheme 1 reduced-form heterogeneity tests with standard errors clustered
+  # by county (ANALYSIS_MARKET) only; a few minutes.
   s13_cty <- rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
     r <- estimate_interacted(outpatient, "SCHEME_1_CERTAINTY", PRIMARY_OUTCOME,
                              MAIN_INSTRUMENTS[[il]], moderator_type = "categorical",
@@ -13167,11 +13734,13 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   
   
   
+  # MARKET_ID cells with at least two rows after the cell's first month.
   g <- outpatient[, .(N = .N, N_AFTER = sum(POST_MONTH > min(POST_MONTH))), by = MARKET_ID]
   g[, .(cells = .N, contributing_cells = sum(N_AFTER >= 2),
         contributing_rows = sum(N_AFTER[N_AFTER >= 2]))]
   
   
+  # Category x month fixed effects: MARKET_ID + CATEGORY_MONTH.
   outpatient[, CATEGORY_MONTH := paste0(SCHEME_1_CERTAINTY, "::", POST_MONTH)]
   
   cat_month <- cache_or_run("category_month_fe_check", {
@@ -13192,47 +13761,50 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 }   # end interactive scratch
 
 
-###############################################################################
+# =============================================================================
 # Section 28: Alternative price series
-#             Gross charge, discounted cash rate, Medicare reference rate
+# =============================================================================
 #
-# # Source AFTER warm_start() / restore_session(). Requires `outpatient` in scope
-# and HPT_ALT_CONCEPT.csv.gz (or its Snowflake shards, HPT_ALT_CONCEPT.csv.gz
-# _0_0_0.csv.gz through _0_7_0.csv.gz) in PANEL_DIR.
+# Estimates the headline interacted specification (Scheme 1 categories,
+# MAIN_INSTRUMENTS, baseline controls, fixed effects, and clustering) with
+# three other price series as the outcome, from the export
+# HPT_ALT_CONCEPT*.csv.gz:
 #
-#   28A  Load and key harmonisation   the merge, and why it is not trivial
-#   28B  Reporting-completeness check does Z predict HAVING a price at all?
-#   28C  Estimation                   headline spec on three new outcomes
-#   28D  Comparison                   against the negotiated-rate headline
+#   GROSS_CHARGE   the chargemaster price, set by the hospital alone. It is
+#                  not bargained, but percent-of-charges contracts (which
+#                  Phase 2 removes from the negotiated panel), out-of-network
+#                  billing, and Medicare outlier payments are all based on it.
+#   CASH_RATE      the discounted self-pay price that consumers face: a direct
+#                  measure of the patient channel, for which the ACS
+#                  demographic interactions in Section 7 of the paper are a
+#                  proxy.
+#   MEDICARE_RATE  set administratively; no hospital controls it. A response
+#                  would point to a coding or instrument problem rather than
+#                  an economic effect, so this series is the falsification
+#                  check.
 #
-# WHAT THIS IS FOR
+#   28A  Load, harmonize keys, merge   s28_load_alt(), s28_merge_alt()
+#   28B  Reporting completeness        s28_completeness_check()
+#   28C  Estimation                    s28_estimate()
+#   28D  Comparison                    s28_compare()
 #
-#   GROSS_CHARGE   unilaterally set chargemaster price. Not bargained, but not
-#                  inert: percent-of-charges contracts (which Phase 2 filters
-#                  OUT of the negotiated panel), out-of-network billing, and
-#                  Medicare outlier payments all key off it.
+# Needs `outpatient` in memory and the export in PANEL_DIR, as one file or as
+# Snowflake shards (HPT_ALT_CONCEPT.csv.gz_0_0_0.csv.gz through
+# _0_7_0.csv.gz). Sourcing the file defines the functions only. When
+# HPT_SCRATCH is TRUE, the block after 28D builds the merged panel d28, which
+# the Section 29 and 30 blocks use, and runs 28B-28D. Writes QA28A-QA28D CSVs
+# to QA_DIR.
 #
-#   CASH_RATE      the consumer-facing self-pay price. This is the DIRECT
-#                  measure of the patient channel that Section 7's ACS
-#                  demographic interactions can only proxy for.
-#
-#   MEDICARE_RATE  administratively set; no hospital controls it. A response
-#                  here indicates a coding or instrument problem, not an
-#                  economic finding. This is the falsification check.
-#
-# WHY THE JOIN IS NOT TRIVIAL
-#
-#   The SQL export is keyed on ANALYSIS_CONCEPT_ID. The R panel is keyed on
-#   FINAL_CONCEPT_ID. These differ for the six MERGE_GROUPS, where several
-#   ANALYSIS_CONCEPT_IDs collapse to one canonical FINAL_CONCEPT_ID (MRI
-#   abdomen variants, CT abdomen, CT abd/pelvis, fMRI brain, ARHFCMRIGTBS,
-#   and mammography tomosynthesis). Merging on the raw ID would silently drop
-#   those concepts -- including mammography, which is the most influential
-#   single family in the paper's permutation test. 28A applies the same
-#   canonical mapping and re-aggregates with the same equal-weighted-median
-#   convention apply_concept_merges() uses upstream, so the alt series enter
-#   on exactly the units the rest of the paper is estimated on.
-###############################################################################
+# Concept keys. The export is keyed on ANALYSIS_CONCEPT_ID and the panel on
+# FINAL_CONCEPT_ID. The two differ for the six MERGE_GROUPS (Section 3), where
+# several ANALYSIS_CONCEPT_IDs collapse to one canonical FINAL_CONCEPT_ID: MRI
+# abdomen variants, CT abdomen, CT abdomen and pelvis, fMRI brain,
+# ARHFCMRIGTBS, and mammography with tomosynthesis. A merge on the raw ID
+# would drop these concepts, including mammography, the most influential
+# single family in the paper's permutation test. 28A applies the canonical
+# mapping and the equal-weighted median of apply_concept_merges() (Section
+# 3), so the alternative series are measured on the same concepts as the
+# rest of the paper.
 
 .s28_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s28_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
@@ -13248,17 +13820,25 @@ S28_OUTCOMES <- c(
 )
 
 
-# ===========================================================================
-# 28A. LOAD, HARMONISE KEYS, MERGE
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 28A  Load, harmonize keys, merge
+# -----------------------------------------------------------------------------
+# s28_load_alt() reads every file in S28_ALT_DIR (PANEL_DIR) that matches
+# S28_ALT_PATTERN and stacks them. The Snowflake export was written without
+# SINGLE = TRUE and so arrives in shards, like the payer-cell export
+# (PAYER_DISPERSION_PATTERN in PART 1.5, load_payer_dispersion() in Section
+# 9); a single unsharded file also matches. The function stops if no file
+# matches or a required column is missing. It maps MERGE_GROUPS constituents
+# to their canonical concept and returns one row per hospital, month, and
+# FINAL_CONCEPT_ID. s33_chars_from_alt_prices() (Section 33) also calls it.
 #
-# The SQL export for this file did not set SINGLE = TRUE, so Snowflake split
-# it across parallel threads on write -- the same failure mode already
-# documented for the payer-dispersion export (PAYER_DISPERSION_PATTERN,
-# load_payer_dispersion() in Section 9). This reads every matching shard and
-# row-binds them, the same way that loader does, rather than assuming one
-# file. If the SQL is rerun with SINGLE = TRUE added, this still works
-# unchanged -- list.files() with one match is a one-file read.
+# s28_merge_alt() left-joins the three series onto a copy of the panel by
+# HOSPITAL_ID, POST_MONTH, and FINAL_CONCEPT_ID, keeping every panel row. It
+# adds LN_GROSS_CHARGE, LN_CASH_RATE, and LN_MEDICARE_RATE (NA unless the
+# price is positive) and the indicators HAS_GROSS, HAS_CASH, and
+# HAS_MEDICARE, writes QA28A_alt_merge_coverage.csv, and prints coverage by
+# shoppability category and the median ratio of each series to the
+# negotiated price on the same rows.
 
 s28_load_alt <- function(dir = S28_ALT_DIR, pattern = S28_ALT_PATTERN,
                          merge_groups = MERGE_GROUPS) {
@@ -13283,12 +13863,12 @@ s28_load_alt <- function(dir = S28_ALT_DIR, pattern = S28_ALT_PATTERN,
   if (length(miss)) stop("Missing columns in alt file: ",
                          paste(miss, collapse = ", "), call. = FALSE)
   
-  # Type harmonisation to match prepare_panel()'s conventions exactly.
+  # Key types as in prepare_panel() (Section 2).
   a[, HOSPITAL_ID := as.character(HOSPITAL_ID)]
   a[, POST_MONTH  := as.Date(POST_MONTH)]
   a[, ANALYSIS_CONCEPT_ID := as.character(ANALYSIS_CONCEPT_ID)]
   
-  # Apply the canonical concept mapping (see header note).
+  # Canonical concept mapping (see the Section 28 header).
   map <- rbindlist(lapply(merge_groups, function(g)
     data.table(ANALYSIS_CONCEPT_ID = g$constituents, CANON_ID = g$canonical_id)))
   a <- merge(a, map, by = "ANALYSIS_CONCEPT_ID", all.x = TRUE, sort = FALSE)
@@ -13303,10 +13883,10 @@ s28_load_alt <- function(dir = S28_ALT_DIR, pattern = S28_ALT_PATTERN,
         "    convention as MERGE_GROUPS before trusting the merge.\n", sep = "")
   }
   
-  # Collapse constituents to the canonical concept, equal-weighted median of
-  # the constituent medians, the same convention apply_concept_merges() uses.
-  # MEDIAN_NEGOTIATED_CHECK is carried through so Section 33 can build
-  # NEG_TO_MEDICARE from it.
+  # Collapses constituents to the canonical concept with the equal-weighted
+  # median of their medians, as apply_concept_merges() does.
+  # MEDIAN_NEGOTIATED_CHECK is kept because Section 33 builds NEG_TO_MEDICARE
+  # from it; it is NA when the export lacks the column.
   if (!("MEDIAN_NEGOTIATED_CHECK" %in% names(a)))
     a[, MEDIAN_NEGOTIATED_CHECK := NA_real_]
   
@@ -13381,20 +13961,22 @@ s28_merge_alt <- function(panel = outpatient, alt = NULL) {
 }
 
 
-# ===========================================================================
-# 28B. REPORTING COMPLETENESS
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 28B  Reporting completeness
+# -----------------------------------------------------------------------------
+# Gross and cash prices are reported for roughly 44% of hospital x code cells,
+# unevenly across clinical families (40% in endoscopy, 99% in mammography).
+# Whether a hospital reports one is a matter of file completeness, not of
+# price-setting. If the instrument predicts reporting, and differentially by
+# shoppability, a gradient estimated on these outcomes is partly a selection
+# artifact.
 #
-# Gross and cash coverage is roughly 44% of hospital x code cells and is
-# uneven across clinical families (40% in endoscopy, 99% in mammography).
-# Whether a hospital reports a gross or cash price is a feature of file
-# completeness, not of price-setting. If the instrument predicts reporting,
-# and differentially by shoppability, then any gradient estimated on these
-# outcomes is partly a selection artifact.
-#
-# Same logic as Appendix Table tab:payermix Panel A, which tests whether the
-# instrument predicts reported payer composition: same specification, binary
-# outcome. This check precedes 28C.
+# s28_completeness_check() estimates the same specification with the
+# indicators HAS_GROSS, HAS_CASH, and HAS_MEDICARE as outcomes, for each main
+# instrument, and writes QA28B_reporting_completeness.csv (reduced-form
+# coefficients by category and the reduced-form equality p-value). The test
+# parallels Appendix Table tab:payermix Panel A, which asks whether the
+# instrument predicts reported payer composition.
 
 s28_completeness_check <- function(d, instruments = MAIN_INSTRUMENTS) {
   .s28_hd("28B. DOES THE INSTRUMENT PREDICT REPORTING COMPLETENESS?")
@@ -13425,12 +14007,12 @@ s28_completeness_check <- function(d, instruments = MAIN_INSTRUMENTS) {
 }
 
 
-# ===========================================================================
-# 28C. ESTIMATION -- HEADLINE SPEC, THREE NEW OUTCOMES
-# ===========================================================================
-#
-# The design is unchanged: same interacted specification, same instruments,
-# same fixed effects, same clustering. Only the outcome varies.
+# -----------------------------------------------------------------------------
+# 28C  Estimation
+# -----------------------------------------------------------------------------
+# The three alternative outcomes (S28_OUTCOMES) under the same interacted
+# specification, instruments, fixed effects, and clustering as the headline.
+# Writes QA28C_alt_price_coefficients.csv and QA28C_alt_price_tests.csv.
 
 s28_estimate <- function(d, instruments = MAIN_INSTRUMENTS,
                          outcomes = S28_OUTCOMES) {
@@ -13470,9 +14052,13 @@ s28_estimate <- function(d, instruments = MAIN_INSTRUMENTS,
 }
 
 
-# ===========================================================================
-# 28D. SIDE BY SIDE WITH THE NEGOTIATED-RATE HEADLINE
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 28D  Comparison
+# -----------------------------------------------------------------------------
+# Re-estimates the negotiated rate (PRIMARY_OUTCOME) on the merged panel,
+# stacks it with the 28C rows, prints the shoppable and non-shoppable
+# estimates side by side, and writes QA28D_alt_vs_negotiated.csv, which fig21
+# reads.
 
 s28_compare <- function(d, res, instruments = MAIN_INSTRUMENTS) {
   .s28_hd("28D. COMPARISON WITH THE NEGOTIATED-RATE RESULT")
@@ -13521,9 +14107,10 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 }   # end interactive scratch
 
 
-# ===========================================================================
-# RUNNER
-# ===========================================================================
+# Runner ----------------------------------------------------------------------
+# run_section28() is not called when the file is sourced. It loads the merged
+# panel from the cache key s28_alt_price_panel, building it with
+# s28_merge_alt() if the cache file is absent, and runs 28B-28D.
 
 run_section28 <- function(panel = outpatient) {
   d   <- cache_or_run("s28_alt_price_panel", s28_merge_alt(panel))
@@ -13536,46 +14123,37 @@ run_section28 <- function(panel = outpatient) {
 cat("Section 28 loaded. Call s28_merge_alt(outpatient) first, then run_section28().\n")
 
 
-
-
-###############################################################################
-# Section 29: Margin recovery -- common sample, discount narrowing, arithmetic
+# =============================================================================
+# Section 29: Margin recovery
+# =============================================================================
 #
-# Source AFTER Section 28. Requires the merged alt-price panel (d28) in scope,
-# or rebuilds it from cache.
+# Asks whether higher cash prices could offset the revenue hospitals lose
+# when negotiated rates fall, using the merged panel from Section 28:
 #
-#   29A  Common sample      does the negotiated decline exist where cash is
-#                           reported? A precondition, not a test.
-#   29B  Discount narrowing ln(cash) - ln(gross) as the outcome. The sharpest
-#                           single piece of evidence available here.
-#   29C  Recovery arithmetic breakeven self-pay share, computed from the
-#                           MATCHED-SAMPLE coefficients rather than hardcoded.
+#   29A  Common-sample check           s29_common_sample()
+#   29B  Self-pay discount narrowing   s29_discount_narrowing()
+#   29C  Recovery arithmetic           s29_recovery_arithmetic()
 #
-# WHY 29A COMES FIRST
+# The functions take the merged panel as their first argument. Sourcing the
+# file defines them only. When HPT_SCRATCH is TRUE, the block after 29C runs
+# 29A-29C on d28 from the Section 28 block. Section 29 has no runner
+# (run_section29() is commented out). Writes QA29A-QA29C CSVs to QA_DIR.
 #
-#   The Section 28 comparison puts -4.81% (negotiated, 951k obs) next to
-#   +9.83% (cash, 537k obs). Those are different rows. If negotiated rates do
-#   not fall on the subsample where cash prices are reported, there is no
-#   revenue loss for the cash increase to recover and the mechanism has no
-#   foundation, and the two results are unrelated facts about non-overlapping
-#   samples. 29A settles that, and produces the matched coefficients 29C
-#   needs.
+# 29A is a precondition rather than a test. The Section 28 comparison sets
+# -4.81% (negotiated, 951k obs) beside +9.83% (cash, 537k obs), estimated on
+# different rows. If negotiated rates do not fall on the rows that report a
+# cash price, there is no revenue loss there for a cash increase to recover.
+# 29A checks this and produces the matched-sample coefficients that 29C uses.
 #
-# WHY 29B IS THE SHARPEST TEST
-#
-#   Cash prices are typically set as a percentage discount off the
-#   chargemaster: P_cash = (1-d) * P_gross, so ln(cash) - ln(gross) = ln(1-d).
-#   Using the ratio as the outcome holds the list price fixed BY
-#   CONSTRUCTION, so any "this hospital raised all its prices" story --
-#   chargemaster drift, a billing-system migration, an inflation adjustment --
-#   differences out, since it moves numerator and denominator together. What
-#   survives is the discretionary decision about how much to discount self-pay
-#   patients, which is the decision the margin-recovery mechanism concerns.
-#
-#   Units: the estimand is a change in the log cash-to-gross ratio, not a
-#   price response, and is not comparable to the "% per SD" price
-#   coefficients.
-###############################################################################
+# 29B uses the cash-to-gross ratio. Cash prices are typically set as a
+# percentage discount d off the chargemaster price, P_cash = (1 - d) *
+# P_gross, so ln(cash) - ln(gross) = ln(1 - d). Holding the list price fixed
+# removes any change that moves all of a hospital's prices together
+# (chargemaster drift, a billing-system migration, an inflation adjustment)
+# and leaves the discount given to self-pay patients, the decision the
+# margin-recovery mechanism concerns. The estimand is a change in the log
+# cash-to-gross ratio, not a price response, and is not comparable to the
+# percent-per-SD price coefficients.
 
 .s29_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s29_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
@@ -13583,9 +14161,13 @@ cat("Section 28 loaded. Call s28_merge_alt(outpatient) first, then run_section28
 S29_SCHEME <- "SCHEME_1_CERTAINTY"
 
 
-# ===========================================================================
-# 29A. COMMON-SAMPLE CHECK
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 29A  Common-sample check
+# -----------------------------------------------------------------------------
+# For each main instrument, estimates the negotiated rate on the full panel,
+# the negotiated rate on the rows with a cash price (HAS_CASH == 1), and the
+# cash price on those same rows. Writes QA29A_sample_overlap.csv and
+# QA29A_common_sample.csv.
 
 s29_common_sample <- function(d, instruments = MAIN_INSTRUMENTS) {
   .s29_hd("29A. DOES THE NEGOTIATED DECLINE EXIST WHERE CASH IS REPORTED?")
@@ -13643,9 +14225,16 @@ s29_common_sample <- function(d, instruments = MAIN_INSTRUMENTS) {
 }
 
 
-# ===========================================================================
-# 29B. SELF-PAY DISCOUNT NARROWING
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 29B  Self-pay discount narrowing
+# -----------------------------------------------------------------------------
+# Adds LN_CASH_GROSS_RATIO = LN_CASH_RATE - LN_GROSS_CHARGE to `d` by
+# reference, describes the level of the discount, and estimates the
+# interacted specification on the ratio for each main instrument. A positive
+# shoppable coefficient means the cash price rises relative to the list
+# price, that is, the discount narrows. The printed RATIO_CHANGE_PER_SD
+# multiplies the coefficient by the SD of the instrument over all rows of
+# `d`. Writes QA29B_discount_level.csv and QA29B_discount_narrowing.csv.
 
 s29_discount_narrowing <- function(d, instruments = MAIN_INSTRUMENTS) {
   .s29_hd("29B. IS THE SELF-PAY DISCOUNT NARROWING?")
@@ -13697,24 +14286,30 @@ s29_discount_narrowing <- function(d, instruments = MAIN_INSTRUMENTS) {
 }
 
 
-# ===========================================================================
-# 29C. RECOVERY ARITHMETIC
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 29C  Recovery arithmetic
+# -----------------------------------------------------------------------------
+# Recovery ratio:
 #
-#   rho = (gamma_C / |gamma_N|) * r * c * s/(1-s)
+#   rho = (gamma_C / |gamma_N|) * r * c * s / (1 - s)
 #
-# where gamma are proportional price responses per SD, r = P_cash/P_neg,
-# c is the collection rate on billed self-pay charges, and s is the self-pay
-# share of volume. Breakeven (rho = 1) solves to
+# where gamma_N and gamma_C are the proportional negotiated and cash price
+# responses per SD of the instrument, r = P_cash / P_neg, c is the collection
+# rate on billed self-pay charges, and s is the self-pay share of volume.
+# Full offset (rho = 1) requires
 #
-#   s* = 1 / (1 + K*c),    K = (gamma_C / |gamma_N|) * r
+#   s* = 1 / (1 + K * c),    K = (gamma_C / |gamma_N|) * r
 #
-# Since c <= 1 by construction, s* is bounded below by 1/(1+K). Every unknown
-# pushes the required share higher, so no precise external estimate of s is
-# needed to sign the conclusion.
+# Since c <= 1, s* is at least 1 / (1 + K), and a lower collection rate
+# raises s*, so signing the conclusion does not need a precise external
+# estimate of s.
 #
-# Coefficients come from the matched sample in 29A rather than the Section 28
-# output, which was estimated on non-overlapping samples.
+# gamma_N and gamma_C are the shoppable coefficients from the 29A matched
+# sample (Negotiated_cashsample and Cash_cashsample), not the Section 28
+# estimates, which come from different samples. r is the median ratio of the
+# cash to the negotiated price on rows with both. One instrument per call
+# (default Competitor_only_hospitals_9m); with common = NULL, 29A runs first.
+# Writes QA29C_breakeven_share.csv and QA29C_recovery_grid.csv.
 
 s29_recovery_arithmetic <- function(d, common = NULL,
                                     instrument_label = "Competitor_only_hospitals_9m",
@@ -13787,10 +14382,9 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   arith <- s29_recovery_arithmetic(d28, common = common)
 }   # end interactive scratch
 
-# ===========================================================================
-# RUNNER
-# ===========================================================================
 
+# Runner ----------------------------------------------------------------------
+# Not run: run_section29() is commented out, so Section 29 has no runner.
 # run_section29 <- function(d = NULL) {
 #   if (is.null(d)) d <- cache_or_run("s28_alt_price_panel", s28_merge_alt(outpatient))
 #   common <- s29_common_sample(d)
@@ -13802,46 +14396,37 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 cat("Section 29 loaded. Call s29_common_sample(d28) first.\n")
 
 
-
-
-###############################################################################
-# Section 30: Robustness for the margin-recovery finding
-#             System x month fixed effects, leave-one-system-out
+# =============================================================================
+# Section 30: Robustness of the margin-recovery finding
+# =============================================================================
 #
-# Source AFTER Section 29. Requires d28 (or a panel with LN_CASH_RATE,
-# LN_GROSS_CHARGE, HAS_CASH already attached) in scope.
+# Applies the two system-level checks of Section 13 (13A and 13B) to the cash
+# outcomes:
 #
-#   30A  Resolve SYS_RESOLVED on d28   mirrors Section 13's construction
-#   30B  System x month FE             does discount-narrowing survive the
-#                                       same demanding FE structure Section
-#                                       13 already put the headline result
-#                                       through?
-#   30C  Leave-one-system-out          top 15 systems by hospital count,
-#                                       dropped one at a time
+#   30A  System per hospital            s30_attach_system()
+#   30B  System x month fixed effects   s30_system_month()
+#   30C  Leave-one-system-out           s30_leave_one_out()
 #
-# WHY THIS PRECEDES ANY USE OF SECTIONS 28-29 IN THE PAPER
+# Outcomes (S30_OUTCOMES): LN_CASH_GROSS_RATIO, the discount-narrowing outcome
+# of 29B, which the paper leads with, and LN_CASH_RATE, the cash-price outcome
+# of 28C, which is reported alongside it.
 #
-#   The cash-price result clears the heterogeneity test on 2 of 3 instruments
-#   (28C); the discount-narrowing ratio clears it on 0 of 3, directionally
-#   consistent only (29B); the matched-sample negotiated decline attenuates
-#   by a third and loses individual significance (29A). At this level of
-#   statistical marginality, a single large health system doing something
-#   idiosyncratic to its own cash pricing -- a policy change, a billing
-#   vendor migration, a self-pay program redesign -- could plausibly be
-#   generating a meaningful share of the pooled result. This is exactly the
-#   threat Section 13 tests for the negotiated-rate headline. Cash pricing has
-#   at least as much reason to be set at the system level, so it gets the
-#   identical two-part test: absorb system-level shocks directly (13A's
-#   logic), then check whether the result depends on any one organisation's
-#   hospitals (13B's logic).
+# Needs the merged panel from s28_merge_alt() and `outpatient` in memory.
+# Section 29 need not have run: s30_attach_system() adds LN_CASH_GROSS_RATIO
+# when it is missing. Sourcing the file defines the functions only. When
+# HPT_SCRATCH is TRUE, the block after 30C runs 30A-30C on d28 from the
+# Section 28 block. Writes QA30B_system_month.csv and
+# QA30C_leave_one_system_out.csv to QA_DIR.
 #
-# OUTCOMES TESTED
-#
-#   LN_CASH_GROSS_RATIO   the discount-narrowing outcome from 29B, which the
-#                         paper leads with, so the check is built around it.
-#   LN_CASH_RATE          the raw cash-price outcome from 28C, included for
-#                         completeness since it is reported alongside.
-###############################################################################
+# The Section 28-29 results are marginal: the cash price passes the
+# heterogeneity test for 2 of 3 instruments (28C), the discount-narrowing
+# ratio for 0 of 3, with signs as predicted (29B), and the matched-sample
+# negotiated decline attenuates by a third and loses individual significance
+# (29A). A single large system changing its own cash pricing (a policy
+# change, a billing-vendor migration, a self-pay program redesign) could
+# produce a meaningful share of such a pooled result. Section 13 tests the
+# same threat for the negotiated-rate headline, and cash prices have at least
+# as much reason to be set at the system level.
 
 .s30_hd  <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 .s30_sub <- function(x) cat("\n--- ", x, " ", strrep("-", max(0, 70 - nchar(x))), "\n", sep = "")
@@ -13851,15 +14436,14 @@ S30_N_SYSTEMS  <- 15L
 S30_OUTCOMES   <- c(Ratio = "LN_CASH_GROSS_RATIO", Cash = "LN_CASH_RATE")
 
 
-# ===========================================================================
-# 30A. RESOLVE SYS_RESOLVED ON d28
-# ===========================================================================
-#
-# Identical construction to Section 13's block 0: first non-missing system
-# value across a hospital's rows, resolved once on `outpatient` (not on d28,
-# which has fewer rows per hospital after the alt-price merge and could
-# resolve differently by chance if a hospital's early rows happen to be the
-# ones without a match). Merged onto d28 by HOSPITAL_ID.
+# -----------------------------------------------------------------------------
+# 30A  System per hospital
+# -----------------------------------------------------------------------------
+# As at the start of Section 13, SYS_RESOLVED is the first non-missing
+# SYSTEM_KEY (HEALTH_SYSTEM_ID if SYSTEM_KEY is absent) across a hospital's
+# rows. It is resolved on base_panel (`outpatient`) and merged onto `d` by
+# HOSPITAL_ID, so each hospital gets the same system as in Section 13
+# whatever rows `d` holds. Also adds LN_CASH_GROSS_RATIO if `d` lacks it.
 
 s30_attach_system <- function(d, base_panel = outpatient) {
   .s30_hd("30A. RESOLVE SYSTEM PER HOSPITAL")
@@ -13885,15 +14469,16 @@ s30_attach_system <- function(d, base_panel = outpatient) {
 }
 
 
-# ===========================================================================
-# 30B. SYSTEM x MONTH FIXED EFFECTS
-# ===========================================================================
-#
-# Same logic as Section 13A: replace additive MARKET_ID + POST_MONTH with
-# MARKET_ID + SYSTEM_MONTH, restricting identification to within-system,
-# cross-market variation in disclosure timing. If a system-wide shock (a
-# self-pay policy change correlated with when that system's hospitals
-# disclosed) is driving the result, this absorbs it directly.
+# -----------------------------------------------------------------------------
+# 30B  System x month fixed effects
+# -----------------------------------------------------------------------------
+# As in 13A, MARKET_ID + SYSTEM_MONTH replaces MARKET_ID + POST_MONTH. This
+# leaves only within-system, cross-market variation in disclosure timing and
+# absorbs a system-wide shock, such as a self-pay policy change that
+# coincides with when a system's hospitals disclosed. Unaffiliated hospitals
+# share one NOSYS group per month. Adds SYSTEM_MONTH to `d` by reference,
+# estimates each outcome and main instrument under both sets of fixed
+# effects, and writes QA30B_system_month.csv, which fig23 reads.
 
 s30_system_month <- function(d, outcomes = S30_OUTCOMES, instruments = MAIN_INSTRUMENTS) {
   .s30_hd("30B. SYSTEM x MONTH FIXED EFFECTS")
@@ -13944,14 +14529,15 @@ s30_system_month <- function(d, outcomes = S30_OUTCOMES, instruments = MAIN_INST
 }
 
 
-# ===========================================================================
-# 30C. LEAVE-ONE-SYSTEM-OUT
-# ===========================================================================
-#
-# Identical structure to Section 13B. Drops each of the largest 15 systems by
-# hospital count in turn and re-estimates. This tests whether the result
-# depends on any single organisation's hospitals, not whether the instrument
-# does, which would require a Section 15-style reconstruction.
+# -----------------------------------------------------------------------------
+# 30C  Leave-one-system-out
+# -----------------------------------------------------------------------------
+# As in 13B, drops the hospitals of each of the S30_N_SYSTEMS (15) largest
+# systems by hospital count in turn and re-estimates each outcome and main
+# instrument. The instrument is not recomputed without the dropped system, so
+# the check asks whether the result depends on one system's hospitals, not
+# whether the instrument does. STILL_SIG_05 marks drops whose reduced-form
+# equality test has p < 0.05. Writes QA30C_leave_one_system_out.csv.
 
 s30_leave_one_out <- function(d, outcomes = S30_OUTCOMES, instruments = MAIN_INSTRUMENTS,
                               n_systems = S30_N_SYSTEMS) {
@@ -14029,9 +14615,10 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 }   # end interactive scratch
 
 
-# ===========================================================================
-# RUNNER
-# ===========================================================================
+# Runner ----------------------------------------------------------------------
+# run_section30() is not called when the file is sourced. With d = NULL it
+# loads the merged panel from the cache key s28_alt_price_panel, building it
+# with s28_merge_alt() if the cache file is absent, and runs 30A-30C.
 
 run_section30 <- function(d = NULL) {
   if (is.null(d)) d <- cache_or_run("s28_alt_price_panel", s28_merge_alt(outpatient))
@@ -14044,23 +14631,26 @@ run_section30 <- function(d = NULL) {
 cat("Section 30 loaded. Call s30_attach_system(d28) first.\n")
 
 
-
-
-
-###############################################################################
+# =============================================================================
 # Figures 21-23: Alternative price series
+# =============================================================================
 #
-# Source AFTER the Figures 1-20 block, so theme_paper(), save_fig(),
-# SHOP_COLORS, FSU_GARNET / FSU_GOLD / FSU_GREY, INSTR_SHORT and short_instr()
-# are already defined. Reads the QA CSVs written by Sections 28-30.
+#   fig21_alt_price_series     four price series, shoppable and non-shoppable
+#   fig22_recovery_breakeven   breakeven self-pay share against collection rate
+#   fig23_cash_robustness      baseline and system x month, both cash outcomes
 #
-#   fig21_alt_price_series      four price series, shoppable vs non-shoppable
-#   fig22_recovery_breakeven    breakeven self-pay share against collection rate
-#   fig23_cash_robustness       baseline vs system x month, both cash outcomes
+# Sourcing the file loads ggplot2 and scales and defines read_qa(),
+# SERIES_ORDER, and SERIES_LABEL; the figures are drawn only when HPT_SCRATCH
+# is TRUE. fig21 reads QA28D_alt_vs_negotiated.csv and fig23 reads
+# QA30B_system_month.csv from QA_DIR, where Sections 28-30 write with
+# save_qa_csv(); read_qa() skips a missing file with a message. fig22 reads
+# no file. save_fig() writes the PDFs to FIGURE_DIR.
 #
-# These read from the QA directory rather than TABLE_DIR, since Sections 28-30
-# write with save_qa_csv().
-###############################################################################
+# Needs theme_paper(), save_fig(), SHOP_COLORS, and short_instr() from the
+# Figures 1-9 block in PART 5, which defines them only when HPT_RUN$figures
+# is TRUE (a warm start sets it to FALSE), and FSU_GARNET, FSU_GOLD, and
+# FSU_GREY from PART 1.5. QA_DIR is set in PART 1.2; the fallback below uses
+# RESULTS_DIR, which is not defined in this file.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(data.table); library(scales)
@@ -14083,13 +14673,13 @@ SERIES_LABEL <- c(Negotiated = "Negotiated rate",
                   Medicare   = "Medicare reference rate")
 
 
-# ===========================================================================
-# fig21: the four price series side by side
-# ===========================================================================
-#
-# One panel per series, shoppable and non-shoppable coefficients with 95%
-# intervals, across the three main instruments. The negotiated panel sits
-# below zero, gross and Medicare at zero, and cash above it.
+# -----------------------------------------------------------------------------
+# Figure 21: The four price series side by side
+# -----------------------------------------------------------------------------
+# Shoppable and non-shoppable reduced-form coefficients (percent per SD of the
+# instrument) with 95% intervals for the three main instruments, one panel
+# per series. The negotiated estimates sit below zero, gross and Medicare at
+# zero, and cash above zero.
 
 if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off by default
   alt <- read_qa("QA28D_alt_vs_negotiated.csv")
@@ -14104,9 +14694,10 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
                                          "Competitor hospitals (ex-CBSA)")))]
     d21[, CAT := factor(TERM, levels = c("Shoppable", "Non_shoppable"))]
     
-    # 95% interval in percent-per-SD space. RF_SE is in log points, so scale it
-    # the same way the point estimate was scaled: the ratio of the percent
-    # estimate to the log-point estimate is the SD multiplier.
+    # 95% interval in percent per SD. RF_PERCENT_PER_SD is
+    # 100 * (exp(RF_COEF * SD) - 1) (estimate_interacted(), Section 4), so
+    # SCALE recovers the SD of the instrument, and LO and HI are
+    # 100 * (exp((RF_COEF -/+ 1.96 * RF_SE) * SD) - 1).
     d21[, SCALE := fifelse(abs(RF_COEF) > 1e-12,
                            (log1p(RF_PERCENT_PER_SD / 100)) / RF_COEF, NA_real_)]
     d21[, `:=`(LO = 100 * (exp(log1p(RF_PERCENT_PER_SD / 100) - 1.96 * RF_SE * SCALE) - 1),
@@ -14132,22 +14723,22 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   }
   
   
-  # ===========================================================================
-  # fig22: the recovery breakeven
-  # ===========================================================================
-  #
-  # Plots equation (breakeven): s* = 1/(1 + K c) against the collection rate,
-  # one curve per instrument, with a shaded band for plausible self-pay shares.
-  # Every curve sits above any plausible share for every c, and lowering c
-  # pushes the requirement higher.
+  # ---------------------------------------------------------------------------
+  # Figure 22: Recovery breakeven
+  # ---------------------------------------------------------------------------
+  # Breakeven self-pay share s* = 1 / (1 + K c) from 29C (equation (breakeven)
+  # in the paper) against the collection rate c from 0.15 to 1, one curve per
+  # main instrument, over a shaded band of plausible self-pay shares. The K
+  # values are typed into K_VALUES: s29_recovery_arithmetic() computes K for
+  # one instrument per call and does not write it to a file. Every curve lies
+  # above the band at every c, and a lower c raises s*.
   
   K_VALUES <- c(`Competitor hospitals`           = 6.41,
                 `Local system`                   = 5.54,
                 `Competitor hospitals (ex-CBSA)` = 8.65)
   
-  # Shaded reference band only. These bounds are illustrative and carry no
-  # external source. Anchor them to an HCUP or MEPS estimate before the figure
-  # is used in the paper, or drop the band.
+  # PLAUSIBLE_SHARE (2% to 10%) sets the shaded band only. The bounds are
+  # illustrative and are not taken from an external source.
   PLAUSIBLE_SHARE <- c(0.02, 0.10)
   
   grid22 <- CJ(INSTR = names(K_VALUES), C = seq(0.15, 1, by = 0.01))
@@ -14174,14 +14765,12 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   save_fig(p22, "fig22_recovery_breakeven", width = 7, height = 4.5)
   
   
-  # ===========================================================================
-  # fig23: cash robustness ladder
-  # ===========================================================================
-  #
-  # Baseline against system x month for both cash outcomes, with the
-  # leave-one-system-out range overlaid as a band on the baseline. Shows the
-  # collapse under system x month and the stability of sign under LOO in one
-  # picture.
+  # ---------------------------------------------------------------------------
+  # Figure 23: Cash robustness
+  # ---------------------------------------------------------------------------
+  # Shoppable reduced-form coefficient under the baseline and the system x
+  # month fixed effects (30B) for both cash outcomes. The leave-one-system-out
+  # results (30C) are not plotted.
   
   sm <- read_qa("QA30B_system_month.csv")
   
@@ -14222,94 +14811,86 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 }   # end interactive scratch
 
 
-
-
-
-
-###############################################################################
+# =============================================================================
+# Section 31: Binned reduced form
+# =============================================================================
 #
-#   SECTION 31 -- BINNED REDUCED FORM  (revision checklist item B5)
+# Replaces the linear instrument term of the headline interacted reduced form
+# with exposure-bin indicators, so that no functional form in Z is imposed.
+# The headline reduced form is
 #
-#   Placed after the last figure block. Section numbering picks up from 30
-#   (QA30C is the last QA prefix in use).
+#     ln P = sum_g gamma_g (Z x 1[k in g]) + theta ln(Beds) + alpha_mk + tau_t
 #
-#   ---------------------------------------------------------------------------
-#   WHAT THIS ESTIMATES, AND WHY IT IS A STEP FUNCTION RATHER THAN A SPLINE
-#   ---------------------------------------------------------------------------
+# and the binned version, with the zero-exposure bin omitted within each
+# shoppability category g, is
 #
-#   The headline reduced form is
+#     ln P = sum_g sum_{b>=2} gamma_gb (1[k in g] x 1[Z in bin_b])
+#            + theta ln(Beds) + alpha_mk + tau_t
 #
-#       ln P = sum_g gamma_g (Z x 1[k in g]) + theta ln(Beds) + alpha_mk + tau_t
+# gamma_gb is the log-price difference between category-g services at a
+# hospital in exposure bin b and category-g services at a hospital with zero
+# peer exposure, within the same county x concept cell and month. The
+# categories are those of Scheme 1 (S31_SCHEME); the controls, fixed effects,
+# and two-way clustering are the baseline ones.
 #
-#   which imposes linearity in Z. This section replaces the linear term with a
-#   set of exposure-bin indicators, one per (category, bin), with the zero-
-#   exposure bin omitted inside each category:
+# Bins. Z is zero for 38 to 55 percent of the panel, depending on the
+# instrument (SHARE_ZERO in QA05). Quartiles of Z are therefore not defined
+# (the bottom two are both zero), and a slope within the zero group is not
+# identified, since Z does not vary there. The zero group is the omitted
+# reference bin; the strictly positive values are cut at quantiles, so the
+# cut points come from the data.
 #
-#       ln P = sum_g sum_{b>=2} gamma_gb (1[k in g] x 1[Z in bin_b])
-#              + theta ln(Beds) + alpha_mk + tau_t
+# Identification. The category indicator 1[k in g] is absorbed by MARKET_ID
+# (county x concept; the concept determines the category). The bin indicator
+# 1[Z in bin_b] is not absorbed: it varies within a cell when hospitals in
+# the same county post the same concept at different times with different
+# accumulated exposure, which is the variation the design uses. The bin
+# dummies of a category sum to its indicator, so one bin per category, the
+# zero bin, is omitted.
 #
-#   gamma_gb is the log-price difference between category-g services at a
-#   hospital facing bin-b exposure and category-g services at a hospital facing
-#   ZERO peer exposure, within the same county x concept cell and month. No
-#   functional form in Z is imposed anywhere.
+# Units. The coefficients are percent price differences relative to the
+# zero-exposure bin, not percent per SD of the instrument, so they are not in
+# the units of Table 5. Concavity in Z is also not the framework's saturation
+# prediction, which concerns f''(N) and g''(N) in N. MEAN_N_PRIOR, the mean
+# prior-poster count in each bin, links the two and is reported with every
+# coefficient as descriptive context.
 #
-#   The checklist item suggests quartiles of Z or a spline. Neither works as
-#   stated, because Z is zero for 38 to 55 percent of the panel depending on
-#   the instrument (QA05 "Zero share" column). Quartiles are undefined, since
-#   the bottom two are both zero, and a within-bin slope in the reference bin
-#   has no variation to identify it. Bin indicators handle a point mass
-#   cleanly: the zero group becomes the omitted reference and every other
-#   coefficient is measured against it. Bins on the positive part are quantile
-#   cuts, so the cut points are data-determined rather than chosen.
+# Running. HPT_RUN$binned_rf is set from HPT_BINNED below, but no block reads
+# it, so HPT_BINNED has no effect. The estimation and the figures run only in
+# the HPT_SCRATCH block at the end of the section, which needs `outpatient`
+# in memory. s31_bin_diagnostic() (31A) and s31_n_distribution() (31B) are
+# not called anywhere in this file.
 #
-#   1[k in g] alone is absorbed by MARKET_ID (county x concept determines the
-#   concept, which determines the category). 1[Z in bin_b] alone is NOT
-#   absorbed: it varies within a cell whenever two hospitals in the same county
-#   posted the same concept at different times facing different accumulated
-#   exposure, which is exactly the variation the whole design runs on. Dropping
-#   bin_1 within each category is therefore necessary and sufficient.
-#
-#   ---------------------------------------------------------------------------
-#   TWO UNITS WARNINGS
-#   ---------------------------------------------------------------------------
-#
-#   1. These coefficients are not "percent per SD of the instrument." They are
-#      percent level differences relative to the zero-exposure bin. Table 5's
-#      units and this table's units are not interchangeable.
-#
-#   2. Concavity in Z is not literally the framework's saturation prediction,
-#      which concerns f''(N) and g''(N) in N. The bridge is MEAN_N_PRIOR, the
-#      average prior-poster count inside each bin, reported alongside every
-#      coefficient as descriptive context.
-#
-#   ---------------------------------------------------------------------------
-#   OUTPUTS
-#   ---------------------------------------------------------------------------
-#     QA31A_bin_diagnostic.csv       bin composition, per instrument
-#     QA31B_bin_cell_variation.csv   within-cell bin variation, per instrument
-#     T31_binned_rf_estimates.csv    coefficients
-#     T31B_binned_rf_tests.csv       gap, saturation, and linearity tests
-#     fig24_binned_rf.pdf
-#
-###############################################################################
+# Outputs (tables to TABLE_DIR, QA files to QA_DIR, PDFs to FIGURE_DIR):
+#   QA31A_bin_diagnostic.csv           bin composition by instrument (31A)
+#   QA31B_bin_cell_variation.csv       within-cell bin variation (31A)
+#   QA31C_n_marginal_distribution.csv  quantiles of N (31B)
+#   QA31D_tail_curve.csv               N above candidate top-Z cuts (31B)
+#   T31_binned_rf_estimates.csv        coefficients (31D)
+#   T31B_binned_rf_tests.csv           tests (1)-(4) of 31C (31D)
+#   fig24_binned_rf.pdf                binned estimates (31E)
+#   fig24b_binned_rf_gap.pdf           shoppable minus non-shoppable gap (31E)
 
 HPT_RUN$binned_rf <- if (exists("HPT_BINNED")) isTRUE(HPT_BINNED) else FALSE
 
 S31_SCHEME          <- "SCHEME_1_CERTAINTY"
 S31_SCHEME_LABEL    <- "1. Procedural certainty"
-S31_N_POSITIVE_BINS <- 3L    # zero bin + 3 positive bins = 4 categories.
-# Drop to 2 if VCOV_FULL_RANK comes back 0 on the
-# joint tests: two-way clustering with 16 month
-# clusters is the same constraint that already
-# defeated the sixteen-category joint test.
+S31_N_POSITIVE_BINS <- 3L    # Z0 plus 3 positive bins
+# S31_N_POSITIVE_BINS = 2 is the fallback (set by hand) if the joint tests
+# are rank deficient (VCOV_FULL_RANK = 0), which two-way clustering with 16
+# month clusters can produce.
 
 .s31_hd <- function(x)
   cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 
 
-# ---------------------------------------------------------------------------
-# Bin construction: {Z = 0} plus quantile cuts on the strictly positive part.
-# ---------------------------------------------------------------------------
+# Helpers ---------------------------------------------------------------------
+
+# s31_make_bins() returns exposure bins for instrument values z as a factor:
+# Z0 holds z <= 0 (negative values, which trigger a warning), and Z1, Z2, ...
+# split the strictly positive values at quantiles, by default into k bins of
+# equal probability. Quantiles that coincide are merged, which leaves fewer
+# positive bins. Returns NULL if there are fewer than 1,000 positive values.
 s31_make_bins <- function(z, k = S31_N_POSITIVE_BINS, probs = NULL) {
   z <- safe_numeric(z)
   if (any(z < 0, na.rm = TRUE)) {
@@ -14318,12 +14899,11 @@ s31_make_bins <- function(z, k = S31_N_POSITIVE_BINS, probs = NULL) {
   }
   pos <- z[is.finite(z) & z > 0]
   if (length(pos) < 1000L) return(NULL)
-  # probs, if supplied, overrides k entirely and can be uneven -- e.g.
-  # c(0.55, 0.85) puts more of the sample in the bottom bin and carves a
-  # narrower, higher-exposure top bin than an equal k-way split would. This
-  # is how to push further into the tail without shrinking every bin: move
-  # resolution OUT of a region already shown to be flat and INTO the top,
-  # rather than adding bins and thinning all of them at once.
+  # `probs`, if given, overrides k and can be uneven: c(0.55, 0.85) puts more
+  # of the positive values in Z1 and gives a narrower, higher-exposure top
+  # bin than three equal bins. Uneven cuts move resolution from a region
+  # already found to be flat into the upper tail; adding bins instead would
+  # thin every bin.
   cut_probs <- if (is.null(probs)) seq_len(k - 1L) / k else sort(unique(probs))
   qs <- unique(quantile(pos, probs = cut_probs, na.rm = TRUE, names = FALSE))
   cuts <- c(-Inf, 0, qs, Inf)
@@ -14333,15 +14913,14 @@ s31_make_bins <- function(z, k = S31_N_POSITIVE_BINS, probs = NULL) {
 }
 
 
-# ---------------------------------------------------------------------------
-# Wald test on an arbitrary contrast matrix.
-#
-# wald_equality() only tests "all coefficients equal to the first," which
-# cannot express "the shoppable-minus-non-shoppable gap is the same in every
-# exposure bin." Same generalised-inverse fallback, same rank flag, and the
-# same F reference through .cluster_df(), so a test from here is directly
-# comparable to every other p-value in the pipeline.
-# ---------------------------------------------------------------------------
+# s31_wald_contrast() tests R b = 0 for a contrast matrix R whose column names
+# are coefficient names. wald_equality() (Section 1) tests only that
+# coefficients equal the first one, which cannot express a hypothesis such as
+# "the shoppable minus non-shoppable gap is the same in every bin". The
+# computation follows wald_equality(): a generalized-inverse fallback, the
+# rank in DF and VCOV_FULL_RANK, and an F(DF, df) reference with df from
+# .cluster_df(), so its p-values are comparable with the rest of the file.
+# Returns an empty data.table if a coefficient is missing or the test fails.
 s31_wald_contrast <- function(fit, R) {
   if (is.null(fit) || is.null(R) || nrow(R) == 0L) return(data.table())
   tryCatch({
@@ -14363,23 +14942,28 @@ s31_wald_contrast <- function(fit, R) {
 }
 
 
-# ===========================================================================
-# 31A. BIN DIAGNOSTIC. Precedes estimation.
+# -----------------------------------------------------------------------------
+# 31A  Bin diagnostic
+# -----------------------------------------------------------------------------
+# s31_bin_diagnostic() is meant to run before estimation; nothing in this
+# file calls it. It checks two conditions for each instrument, on the sample
+# estimate_binned_rf() uses:
 #
-# Two questions decide whether B5 is feasible at all:
+#   (a) Enough rows in the positive bins (QA31A_bin_diagnostic.csv: rows,
+#       share, range and mean of Z, mean N_PRIOR_POSTERS, and shoppable share
+#       by bin). If the top bin holds only a few thousand rows, its
+#       coefficient is uninformative.
 #
-#   (a) Is there enough mass in the positive bins? If the top bin holds a
-#       few thousand rows the tail coefficient will be uninformative, which
-#       is itself a reportable answer to the tail concern but not a table.
+#   (b) County x concept cells that span bins (QA31B_bin_cell_variation.csv).
+#       A cell whose rows all fall in one bin is absorbed by the fixed effect
+#       and contributes nothing. SHARE_ROWS_SPANNING is the share of rows in
+#       cells spanning two or more bins; SHARE_ROWS_REF_TO_TOP is the share in
+#       cells that contain both Z0 and the top bin.
 #
-#   (b) Do county x concept cells span bins? Cell-invariant bin membership is
-#       absorbed by the fixed effect and contributes nothing, so a low share
-#       of rows in cells spanning two or more bins ends the exercise.
-#
-# There is no hard threshold. Above roughly 0.5 the exercise is comfortable,
-# between 0.3 and 0.5 the interior bins have wide intervals, and below 0.3 the
-# diagnostic itself is the reportable result rather than the table.
-# ===========================================================================
+# There is no hard threshold for SHARE_ROWS_SPANNING. Above about 0.5 there
+# is ample within-cell variation; between 0.3 and 0.5 the interior bins have
+# wide intervals; below 0.3 there is too little variation to support a table
+# of estimates.
 s31_bin_diagnostic <- function(panel, instruments = MAIN_INSTRUMENTS,
                                scheme_col = S31_SCHEME,
                                outcome = PRIMARY_OUTCOME,
@@ -14458,27 +15042,25 @@ s31_bin_diagnostic <- function(panel, instruments = MAIN_INSTRUMENTS,
 }
 
 
-# ===========================================================================
-# 31B. THE DISTRIBUTION OF N, AND HOW FAR Z REACHES INTO IT
+# -----------------------------------------------------------------------------
+# 31B  Distribution of N and how far Z reaches into it
+# -----------------------------------------------------------------------------
+# s31_n_distribution() writes two descriptive tables per instrument, on the
+# same sample as 31A:
 #
-# Two distinct questions, and it matters which one a number here answers.
+#   (a) Quantiles of N_PRIOR_POSTERS over all rows and over rows with Z > 0
+#       (QA31C_n_marginal_distribution.csv): how far the tail of actual
+#       exposure extends. No causal content.
 #
-#   (a) The marginal distribution of N_PRIOR_POSTERS, unconditional on Z.
-#       Descriptive only: what the treatment looks like in the data, with no
-#       causal content. It shows how far the tail of actual exposure extends.
+#   (b) The tail curve (QA31D_tail_curve.csv). The cutoffs are the tail_cuts
+#       quantiles of the positive values of Z; for each, it reports the
+#       number and share of rows above the cutoff, their split by category,
+#       and the mean, median, 90th percentile, and maximum of N among them.
+#       It is used to choose `probs`, trading higher N in the top bin against
+#       fewer rows as the top cut point rises.
 #
-#   (b) The tail curve: for a candidate top-slice cutoff on positive Z, the
-#       sample size and N-distribution that slice carries. This is the table
-#       that selects probs, trading N gained against sample size given up as
-#       the top Z cut point moves higher.
-#
-# Both are computed on the same sample estimate_binned_rf() uses, via
-# model_sample() on the same required columns, so the population here matches
-# the estimator's.
-#
-# Binning is on Z alone, never on N, for the endogeneity reason in the 31A
-# header. N stays descriptive throughout.
-# ===========================================================================
+# Bins are defined on Z only; N is the endogenous treatment and is reported
+# as description.
 s31_n_distribution <- function(panel, instruments = MAIN_INSTRUMENTS,
                                scheme_col = S31_SCHEME,
                                outcome = PRIMARY_OUTCOME,
@@ -14502,7 +15084,7 @@ s31_n_distribution <- function(panel, instruments = MAIN_INSTRUMENTS,
     
     n <- safe_numeric(d[[ENDOGENOUS_VARIABLE]])
     
-    # ---- (a) marginal distribution of N, all rows and Z > 0 rows only ----
+    # (a) Marginal distribution of N, all rows and rows with Z > 0 ------------
     mq_all <- quantile(n, probs = qprobs, na.rm = TRUE, names = FALSE)
     mq_pos <- quantile(n[safe_numeric(d[[z]]) > 0], probs = qprobs,
                        na.rm = TRUE, names = FALSE)
@@ -14514,7 +15096,7 @@ s31_n_distribution <- function(panel, instruments = MAIN_INSTRUMENTS,
     cat("\n--", il, "-- marginal quantiles of N (prior posters)\n")
     print(as.data.frame(marg))
     
-    # ---- (b) tail curve: candidate top-Z cutoffs vs. resulting N ----------
+    # (b) Tail curve: rows and N above candidate top-Z cutoffs ----------------
     pos_z <- safe_numeric(d[[z]])[safe_numeric(d[[z]]) > 0]
     cut_vals <- quantile(pos_z, probs = tail_cuts, na.rm = TRUE, names = FALSE)
     
@@ -14551,14 +15133,26 @@ s31_n_distribution <- function(panel, instruments = MAIN_INSTRUMENTS,
 }
 
 
-# ===========================================================================
-# 31C. THE ESTIMATOR
+# -----------------------------------------------------------------------------
+# 31C  Estimator
+# -----------------------------------------------------------------------------
+# estimate_binned_rf() fits the binned reduced form for one instrument with
+# feols: a dummy B_<category>_<bin> for each category and non-reference bin,
+# the baseline controls and fixed effects, and two-way clustering. The sample
+# is the one estimate_interacted() (Section 4) uses: model_sample() on the
+# same columns, among rows with a value of scheme_col. Returns NULL if the
+# sample has fewer than MIN_MODEL_OBS rows, the bins cannot be built, there
+# are fewer than two categories or three bins, or feols fails.
 #
-# add_linear = TRUE additionally includes the category-specific LINEAR Z terms
-# alongside the bin dummies. The joint test that the bin dummies are zero in
-# that model is the formal test of whether linearity in Z is adequate, which is
-# the specification test a referee asks for after seeing a binned figure.
-# ===========================================================================
+# add_linear = TRUE also includes the category-specific linear Z terms
+# (Zlin_<category>). The joint test that the bin dummies are zero in that
+# model is the test of whether linearity in Z is adequate.
+#
+# Returns a list: `rows`, one row per category and bin (RF_COEF, RF_SE, RF_P
+# from .pval() with the fit's df, RF_PERCENT = 100 (exp(b) - 1), a 95%
+# interval in percent using 1.96, and the size, mean Z, and mean N of the
+# bin), including the zero bin as a reference row with coefficient 0;
+# `tests`, tests (1)-(4) below; and `fit`, which is NULL.
 estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
                                scheme_col = S31_SCHEME,
                                outcome = PRIMARY_OUTCOME,
@@ -14611,7 +15205,7 @@ estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
                   error = function(e) NULL)
   if (is.null(fit)) return(NULL)
   
-  # Bin means on the same rows the model uses.
+  # Bin sizes and means, on the rows passed to feols.
   bin_stats <- d[, .(N_BIN        = .N,
                      MEAN_Z       = mean(safe_numeric(get(instrument))),
                      MEAN_N_PRIOR = mean(safe_numeric(get(ENDOGENOUS_VARIABLE)))),
@@ -14627,9 +15221,10 @@ estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
     list(b = unname(coef(fit)[nm]), s = unname(sqrt(vcov(fit)[nm, nm])))
   }
   
-  # Records exactly which cut points produced this fit, so a saved CSV mixing
-  # runs at different resolutions can still be told apart. "even_k=3" is the
-  # original equal-tertile split; a custom probs vector prints its own cuts.
+  # BIN_SCHEME records the cut points behind the fit, so results from
+  # different bin choices can be told apart in a saved CSV: "even_k3" for
+  # three equal bins (k = 3), or "probs_" and the cut quantiles, such as
+  # "probs_0.5_0.85".
   bin_scheme <- if (is.null(probs)) paste0("even_k", k)
   else paste0("probs_", paste(round(sort(unique(probs)), 3), collapse = "_"))
   
@@ -14646,16 +15241,16 @@ estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
       RF_CI_HIGH_PERCENT = 100 * (exp(e$b + 1.96 * e$s) - 1),
       N_BIN = bs$N_BIN, MEAN_Z = bs$MEAN_Z, DELTA_Z = bs$DELTA_Z,
       MEAN_N_PRIOR = bs$MEAN_N_PRIOR, DELTA_N_PRIOR = bs$DELTA_N_PRIOR,
-      # RF_PCT_PER_PRIOR_POSTER is deliberately absent. Dividing a
-      # coefficient identified off within-cell variation by a raw between-bin
-      # difference in N does not yield a first-stage-scaled quantity, despite
-      # resembling one. MEAN_N_PRIOR and DELTA_N_PRIOR are descriptive
-      # context for the bin.
+      # No per-prior-poster effect (RF_PCT_PER_PRIOR_POSTER) is computed.
+      # Dividing a coefficient identified from within-cell variation by a
+      # between-bin difference in N does not give a first-stage-scaled
+      # quantity. MEAN_N_PRIOR and DELTA_N_PRIOR describe the bin only.
       N_OBSERVATIONS = nobs(fit), ADD_LINEAR = as.integer(add_linear))
   }), fill = TRUE)
   
-  # Reference rows, coefficient zero by construction, carried so the figure
-  # and the table both show where the comparison starts.
+  # Reference rows for the zero bin (coefficient 0 by construction), so the
+  # table and the figure both include the bin that the estimates are measured
+  # against.
   ref_rows <- rbindlist(lapply(cats, function(g) {
     bs <- bin_stats[CAT == g & ZBIN == ref]
     data.table(SPEC = label, INSTRUMENT_LABEL = instrument_label,
@@ -14672,14 +15267,15 @@ estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
   }), fill = TRUE)
   rows <- rbind(ref_rows, rows, fill = TRUE)
   
-  # ---- tests -------------------------------------------------------------
+  # Tests ---------------------------------------------------------------------
   nm  <- names(coef(fit))
   shop <- paste0("B_Shoppable_",     bins[-1L])
   nons <- paste0("B_Non_shoppable_", bins[-1L])
   ok   <- shop %in% nm & nons %in% nm
   tests <- list()
   
-  # (1) the shoppability gap inside each exposure bin
+  # (1) "Gap in bin": shoppable minus non-shoppable coefficient in each
+  #     non-reference bin.
   for (j in which(ok)) {
     R <- matrix(0, nrow = 1, ncol = 2,
                 dimnames = list(NULL, c(shop[j], nons[j])))
@@ -14689,7 +15285,8 @@ estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
       cbind(TEST = "Gap in bin", ZBIN = bins[-1L][j], t1)
   }
   
-  # (2) does the gap itself vary across exposure bins?
+  # (2) "Gap equal across bins": the gap is the same in every non-reference
+  #     bin (joint test).
   if (sum(ok) >= 2L) {
     use <- which(ok); keep <- c(shop[use], nons[use])
     R <- matrix(0, nrow = length(use) - 1L, ncol = length(keep),
@@ -14703,14 +15300,16 @@ estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
       cbind(TEST = "Gap equal across bins", ZBIN = NA_character_, t2)
   }
   
-  # (3) within each category, does the response differ across bins at all?
+  # (3) "Bins equal within <category>": the category's non-reference bin
+  #     coefficients are equal (wald_equality()). Z0 is not part of the test.
   for (g in cats) {
     tg <- wald_equality(fit, paste0("B_", g, "_", bins[-1L]))
     if (nrow(tg)) tests[[length(tests) + 1L]] <-
         cbind(TEST = paste0("Bins equal within ", g), ZBIN = NA_character_, tg)
   }
   
-  # (4) is linearity in Z adequate? Only defined in the add_linear fit.
+  # (4) "Bin dummies jointly zero given linear Z": the linearity test, in the
+  #     add_linear fit only.
   if (add_linear) {
     keep <- grid$TERM[grid$TERM %in% nm]
     if (length(keep)) {
@@ -14735,9 +15334,16 @@ estimate_binned_rf <- function(data, instrument = PRIMARY_INSTRUMENT,
 }
 
 
-# ===========================================================================
-# 31D. DRIVER
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 31D  Driver
+# -----------------------------------------------------------------------------
+# run_binned_rf() calls estimate_binned_rf() twice for each instrument,
+# without and with the linear Z terms (ADD_LINEAR = 0 and 1), and writes
+# <stem>_binned_rf_estimates.csv and <stem>B_binned_rf_tests.csv to TABLE_DIR
+# (T31 and T31B with the default stem). It prints the percent effects, the
+# mean prior-poster count, and the bin sizes from the fits without linear
+# terms, then the tests, and returns list(rows, tests). Stops if no fit
+# succeeds.
 run_binned_rf <- function(panel, instruments = MAIN_INSTRUMENTS,
                           scheme_col = S31_SCHEME, k = S31_N_POSITIVE_BINS,
                           probs = NULL, outcome = PRIMARY_OUTCOME, stem = "T31") {
@@ -14750,14 +15356,15 @@ run_binned_rf <- function(panel, instruments = MAIN_INSTRUMENTS,
     for (al in c(FALSE, TRUE)) {
       t1 <- Sys.time()
       psd_flag <- FALSE
-      # A non-PSD clustered VCOV corrupts SEs and p-values but not
-      # coefficients (those come from the normal equations, not from
-      # vcov()). Deferred R warnings can't be traced back to which loop
-      # iteration produced them, so this captures the warning at the source
-      # and tags every row and test from that fit. A p-value from a fit with
-      # PSD_WARNING == TRUE is unreliable unless the finding also survives a
-      # specification that avoids the instability, such as fewer or coarser
-      # bins or one-way clustering.
+      # fixest warns when the clustered VCOV is not positive semi-definite and
+      # adjusts it. The adjustment affects standard errors and p-values, not
+      # coefficients, which come from the normal equations rather than from
+      # vcov(). R prints deferred warnings after the call returns, without the
+      # iteration that raised them, so the handler records the warning when
+      # it is raised and PSD_WARNING marks every row and test from that fit.
+      # The handler also muffles all other warnings from estimate_binned_rf().
+      # P-values from a flagged fit are unreliable unless the result also
+      # holds with fewer or coarser bins or with one-way clustering.
       r <- withCallingHandlers(
         estimate_binned_rf(panel, instrument = z, scheme_col = scheme_col,
                            outcome = outcome, k = k, probs = probs,
@@ -14798,10 +15405,8 @@ run_binned_rf <- function(panel, instruments = MAIN_INSTRUMENTS,
                    E = round(RF_PERCENT, 2))],
               INSTRUMENT_LABEL + TERM ~ ZBIN, value.var = "E"))
   
-  # Split by TERM (category), not just ZBIN -- MEAN_N_PRIOR differs by
-  # category within the same bin, so collapsing across TERM here previously
-  # produced duplicate INSTRUMENT_LABEL x ZBIN rows and dcast silently fell
-  # back to counting them instead of erroring.
+  # One row per instrument and category: MEAN_N_PRIOR differs by category
+  # within a bin.
   cat("\nMean prior posters inside each bin (exposure range, descriptive only):\n")
   print(dcast(br[ADD_LINEAR == 0,
                  .(INSTRUMENT_LABEL, TERM, ZBIN,
@@ -14831,14 +15436,24 @@ run_binned_rf <- function(panel, instruments = MAIN_INSTRUMENTS,
 }
 
 
-# ===========================================================================
-# 31E. FIGURE
+# -----------------------------------------------------------------------------
+# 31E  Figures
+# -----------------------------------------------------------------------------
+# Both functions plot the fits without linear terms. They take the rows and
+# tests returned by run_binned_rf(); if these are not passed, they read
+# T31_binned_rf_estimates.csv and T31B_binned_rf_tests.csv from TABLE_DIR.
+# They use read_table(), save_fig(), short_instr(), theme_paper(), and
+# SHOP_COLORS, which the PART 5 figure block (Figures 1-9) defines only when
+# HPT_RUN$figures is TRUE.
 #
-# x is the mean prior-poster count inside each bin, so the picture reads as a
-# dose-response on the treatment scale. The dashed line is the LINEAR headline
-# estimate evaluated at each bin's mean Z, which is what the binned points are
-# being tested against.
-# ===========================================================================
+# s31_figure() plots each bin's percent price difference from the zero bin,
+# with its 95% interval, against MEAN_N_PRIOR, the mean prior-poster count in
+# the bin, so the x axis is on the treatment scale. The dotted lines are the
+# linear reduced form, RF_COEF from T06_main_interacted_RF_and_IV.csv
+# (Section 7; rows with SPEC equal to S31_SCHEME_LABEL), evaluated at each
+# bin's DELTA_Z (its mean Z minus the zero bin's), for comparison with the
+# binned estimates; they are omitted if that file is not in TABLE_DIR. The
+# formal comparison is test (4) in 31C. Writes fig24_binned_rf.pdf.
 s31_figure <- function(binned_rows = NULL, binned_tests = NULL,
                        linear_csv = "T06_main_interacted_RF_and_IV.csv",
                        exclude_flagged = TRUE, annotate_gap = TRUE) {
@@ -14852,11 +15467,10 @@ s31_figure <- function(binned_rows = NULL, binned_tests = NULL,
   if (is.null(bt)) bt <- read_table("T31B_binned_rf_tests.csv")
   if (!is.null(bt)) bt <- as.data.table(bt)[ADD_LINEAR == 0 & TEST == "Gap in bin"]
   
-  # An instrument flagged PSD_WARNING has a suspect covariance matrix. Its
-  # coefficients are unaffected (see the note in run_binned_rf) but its error
-  # bars may be mechanically too narrow, overstating precision on the plot.
-  # The default drops it from the figure rather than plotting a false
-  # confidence band; exclude_flagged = FALSE plots it, labelled.
+  # Instruments whose plotted fit carries PSD_WARNING are dropped by default.
+  # Their coefficients are unaffected (see run_binned_rf()), but their error
+  # bars may be too narrow. exclude_flagged = FALSE keeps them and prints a
+  # message; the figure does not mark them.
   if ("PSD_WARNING" %in% names(br)) {
     flagged <- unique(br[PSD_WARNING == TRUE]$INSTRUMENT_LABEL)
     if (length(flagged)) {
@@ -14917,12 +15531,13 @@ s31_figure <- function(binned_rows = NULL, binned_tests = NULL,
                        show.legend = FALSE)
   }
   
-  # Gap-in-bin p-value printed above the higher of the two arms' CIs at that
-  # bin. This is the test carrying the paper's claim: an arm crossing zero on
-  # its own axis does not imply the gap between arms is insignificant, since
-  # the gap's variance uses the covariance between the two arms rather than
-  # their individual variances alone. Requires binned_tests or its saved CSV,
-  # and is skipped rather than failing the figure when unavailable.
+  # Above each bin, the p-value of the "Gap in bin" test (" *" if p < 0.05),
+  # placed over the higher of the two categories' upper CI limits. The paper's
+  # claim concerns the difference between the categories. The variance of
+  # that difference includes the covariance of the two coefficients, so an
+  # interval that crosses zero for one category does not imply an
+  # insignificant gap. Skipped when annotate_gap = FALSE or when no tests are
+  # available.
   if (annotate_gap && !is.null(bt) && nrow(bt)) {
     ann <- merge(
       br[IS_REFERENCE == 0, .(INSTRUMENT_LABEL, ZBIN, INSTR,
@@ -14943,6 +15558,14 @@ s31_figure <- function(binned_rows = NULL, binned_tests = NULL,
   invisible(p)
 }
 
+# s31_figure_gap() plots the shoppable minus non-shoppable gap in each bin, in
+# percentage points (the difference of the two RF_PERCENT values), against
+# the mean prior-poster count of the bin (average of the two categories). The
+# 95% interval is the gap plus or minus 1.96 x 100 x its standard error in
+# log points, recovered from the "Gap in bin" Wald statistic as
+# |gap| / sqrt(WALD). Filled points have p < 0.05. Needs both rows and tests;
+# drops PSD-flagged instruments unless exclude_flagged = FALSE. Writes
+# fig24b_binned_rf_gap.pdf.
 s31_figure_gap <- function(binned_rows = NULL, binned_tests = NULL,
                            exclude_flagged = TRUE) {
   
@@ -15007,6 +15630,11 @@ s31_figure_gap <- function(binned_rows = NULL, binned_tests = NULL,
 
 
 
+# Interactive runs (HPT_SCRATCH only). Each run_binned_rf() call uses the
+# default stem, so it overwrites T31_binned_rf_estimates.csv and
+# T31B_binned_rf_tests.csv; the files on disk, like fig24 and fig24b, come
+# from the last call (probs = 0.85, the two instruments in
+# clean_instruments).
 if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off by default
   s31_binned_v2 <- run_binned_rf(outpatient, probs = c(0.50, 0.85))
   s31_binned_coarse <- run_binned_rf(outpatient, probs = c(0.85))
@@ -15038,62 +15666,66 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 }   # end interactive scratch
 
 
-
-
-
-# =====================================================================
-#  make_scatter_figs.R
-#  Builds the two opening slides of the job talk:
-#     fig00a_concept_scatter_pooled.pdf   all points one grey
-#     fig00b_concept_scatter_split.pdf    identical, colored by shoppability
+# =============================================================================
+# Scatter figures for presentation slides
+# =============================================================================
 #
-#  The two figures share identical axes, point size, and ordering. The
-#  comparison depends on nothing changing between the frames except the
-#  colour, so any movement in the points defeats it.
+# Two figures of the concept-level reduced-form estimates (Section 6) for one
+# instrument, with concepts ranked by point estimate and 95% intervals:
 #
-#  SOURCE: T05_concept_level_RF_FS_IV.csv, written by stage 6 of
-#  HPT_Analysis_Pipeline.R (save_csv(concept_results, ...) at the end of
-#  the stage-6 block). The RDS cache concept_level_6inst.rds holds the
-#  same object and loads faster.
+#   fig00a_concept_scatter_pooled.pdf   all concepts in one color
+#   fig00b_concept_scatter_split.pdf    the same figure, colored by
+#                                       shoppability
 #
-#  estimate_concept_level() writes one row per concept x instrument across
-#  six instruments, so the table holds roughly 4,400 rows rather than 738.
-#  Filtering to a single INSTRUMENT_LABEL is required, or every concept is
-#  plotted six times.
+# The two share axes, point size, and ordering, so that only the color
+# changes between them. Both draw the pooled reduced form as a dashed line,
+# and the first prints the pooled IV estimate; these pooled values are
+# hard-coded in step 0.
 #
-#  Runs standalone. If it is sourced from inside the pipeline session it
-#  reuses cb_load(), DIAGNOSTIC_FAMILIES, and TABLE_DIR instead of the
-#  local fallbacks.
-# =====================================================================
+# Input: concept_results through cb_load() (Section 26), which uses the
+# object in memory, else 07_Cache/concept_level_6inst.rds, else
+# T05_concept_level_RF_FS_IV.csv in TABLE_DIR (written by stage 6). The table
+# has one row per concept and instrument for the six instruments of the
+# sweep (roughly 4,400 rows for 738 concepts), so it is filtered to
+# INSTRUMENT_TO_PLOT; otherwise every concept would be plotted six times.
+#
+# Writes both PDFs to OUTDIR (FIGURE_DIR). Runs only when HPT_SCRATCH is
+# TRUE. Inside the pipeline cb_load(), DIAGNOSTIC_FAMILIES, TABLE_DIR, and
+# FIGURE_DIR exist; the fallbacks in steps 0-2 (a local family list, a
+# "figures" folder, T05_PATH) apply only when the block is run on its own.
 
 if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off by default
   library(data.table)
   library(ggplot2)
   
-  # ---------------------------------------------------------------------
-  # 0. CONFIGURATION
-  # ---------------------------------------------------------------------
-  
-  # Only needed when running standalone. Ignored if TABLE_DIR already exists.
+  # ---------------------------------------------------------------------------
+  # Step 0  Configuration
+  # ---------------------------------------------------------------------------
+
+  # Used only when neither cb_load() nor concept_results exists. The file is
+  # then read from TABLE_DIR if TABLE_DIR exists, else from this path.
   T05_PATH <- "T05_concept_level_RF_FS_IV.csv"
   
-  # Which of the six instruments to plot. This is an INSTRUMENT_LABEL, the
-  # name side of MAIN_INSTRUMENTS, not the Z_ variable name.
-  # "Competitor_only_hospitals_9m" is PRIMARY_INSTRUMENT.
+  # Instrument to plot: an INSTRUMENT_LABEL (a name in MAIN_INSTRUMENTS or
+  # SUPPORTING_INSTRUMENTS, the six instruments of the sweep), not the Z_
+  # variable name. "Competitor_only_hospitals_9m" is the label of
+  # PRIMARY_INSTRUMENT.
   INSTRUMENT_TO_PLOT <- "Competitor_only_hospitals_9m"
   
-  # Pooled panel estimate for the reference line and the annotation. This
-  # is NOT recoverable from the concept betas, so it is carried over from
-  # the pooled models. Update if the pooled specification changes.
+  # Pooled estimates for the dashed reference line (POOLED_RF) and the panel
+  # A annotation (POOLED_IV, POOLED_P). They cannot be recovered from the
+  # concept-level estimates and are hard-coded from the pooled models
+  # (Section 5), so they do not change when the pooled specification or the
+  # data change.
   POOLED_RF <- -0.0021          # reduced form, log points
   POOLED_IV <- -3.07            # percent
   POOLED_P  <-  0.159
   
   OUTDIR <- if (exists("FIGURE_DIR")) FIGURE_DIR else "figures"
   
-  # ---------------------------------------------------------------------
-  # 1. LOAD
-  # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Step 1  Load
+  # ---------------------------------------------------------------------------
   
   cs <- if (exists("cb_load", mode = "function")) {
     cb_load()                                   # memory -> RDS -> CSV
@@ -15120,9 +15752,9 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   cat(sprintf("Loaded %s rows across %d instruments.\n",
               format(nrow(cs), big.mark = ","), uniqueN(cs$INSTRUMENT_LABEL)))
   
-  # ---------------------------------------------------------------------
-  # 2. COLLAPSE TO ONE ROW PER CONCEPT
-  # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Step 2  Collapse to one row per concept
+  # ---------------------------------------------------------------------------
   
   if (!INSTRUMENT_TO_PLOT %chin% unique(cs$INSTRUMENT_LABEL)) {
     stop("INSTRUMENT_TO_PLOT not present. Available:\n  ",
@@ -15133,10 +15765,11 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   cs <- cs[INSTRUMENT_LABEL == INSTRUMENT_TO_PLOT]
   cs <- cs[is.finite(RF_COEF) & is.finite(RF_SE) & RF_SE > 0]
   
-  # The sweep loops over ANALYSIS_SERVICE_ID while the paper counts
-  # FINAL_CONCEPT_ID. apply_concept_merges() normally makes these agree.
-  # If they do not, the merge groups did not collapse and one row per
-  # FINAL_CONCEPT_ID is the unit the deck's "738 concepts" refers to.
+  # The sweep is indexed by ANALYSIS_SERVICE_ID and the paper counts
+  # FINAL_CONCEPT_ID; apply_concept_merges() (Section 3) makes the two agree.
+  # If they differ, the merge groups were not collapsed. The code then warns
+  # and keeps one row per FINAL_CONCEPT_ID (the one with the smallest RF_SE),
+  # the unit of the 738 concepts quoted on the slides.
   if ("ANALYSIS_SERVICE_ID" %chin% names(cs) &&
       uniqueN(cs$ANALYSIS_SERVICE_ID) != uniqueN(cs$FINAL_CONCEPT_ID)) {
     warning(sprintf("service ids (%d) != concept ids (%d); deduping on FINAL_CONCEPT_ID",
@@ -15145,8 +15778,8 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
     cs <- unique(cs, by = "FINAL_CONCEPT_ID")
   }
   
-  # Shoppability is not stored in T05. Derive it the same way
-  # diagnose_size_gradient() does, from the clinical family.
+  # T05 has no shoppability column. As in diagnose_size_gradient() (Section
+  # 6), a concept is shoppable if its family is in DIAGNOSTIC_FAMILIES.
   DIAG_FAM <- if (exists("DIAGNOSTIC_FAMILIES")) DIAGNOSTIC_FAMILIES else c(
     "MRI_MRA", "CT_CTA", "XRAY_FLUOROSCOPY", "DIAGNOSTIC_ULTRASOUND",
     "VASCULAR_ULTRASOUND", "ECHOCARDIOGRAPHY", "MAMMOGRAPHY", "BONE_DENSITY",
@@ -15158,9 +15791,10 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   cat(sprintf("Plotting %d concepts (%d shoppable / %d non-shoppable), instrument %s.\n",
               nrow(cs), sum(cs$shop), sum(!cs$shop), INSTRUMENT_TO_PLOT))
   
-  # Concepts present in the sweep but with no usable row for THIS instrument.
-  # estimate_concept_level() skips an instrument when has_usable_variation()
-  # fails, so a concept can be estimated for five instruments and not the sixth.
+  # Lists concepts in the sweep with no usable row for INSTRUMENT_TO_PLOT.
+  # estimate_concept_level() skips an instrument for a concept when the
+  # instrument fails has_usable_variation(), so a concept can be estimated
+  # for five instruments and not the sixth.
   all_ids <- unique(cb_all$FINAL_CONCEPT_ID)
   dropped <- setdiff(all_ids, cs$FINAL_CONCEPT_ID)
   if (length(dropped)) {
@@ -15172,17 +15806,20 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   if (nrow(cs) < 700)
     warning("Fewer than 700 concepts. Check whether this is the PARTIAL file.")
   
-  # ---------------------------------------------------------------------
-  # 3. SHARED GEOMETRY. Computed once, reused by both figures.
-  # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Step 3  Shared geometry
+  # ---------------------------------------------------------------------------
+  # Ranks, 95% intervals (normal 1.96), y limits, and the layers common to
+  # both figures, computed once.
   
   setorder(cs, beta)
   cs[, rank := .I]
   cs[, `:=`(lo = beta - 1.96 * se, hi = beta + 1.96 * se)]
   
-  # Trim the y-axis to the central mass so the tails do not flatten the
-  # picture. Points outside the range stay in the data and their whiskers
-  # clip rather than being dropped. The count is printed below.
+  # The y limits are the 1st and 99th percentiles of beta times 1.9, so the
+  # tails do not flatten the plot. coord_cartesian() zooms without removing
+  # observations; whiskers that extend past the limits are clipped. The
+  # number of points outside the range is printed.
   YLIM <- as.numeric(quantile(cs$beta, c(0.01, 0.99), na.rm = TRUE)) * 1.9
   cat(sprintf("Points outside the plotted y-range: %d\n",
               cs[beta < YLIM[1] | beta > YLIM[2], .N]))
@@ -15205,9 +15842,9 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
           plot.caption         = element_text(hjust = 0, color = "grey35", size = 9))
   )
   
-  # ---------------------------------------------------------------------
-  # 4. PANEL A. One colour, the null as the literature reports it.
-  # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Step 4  Panel A: all concepts in one color
+  # ---------------------------------------------------------------------------
   
   pA <- ggplot(cs, aes(x = rank, y = beta)) +
     geom_linerange(aes(ymin = lo, ymax = hi),
@@ -15221,9 +15858,9 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
       "Each point is one clinical concept (N = %d), estimated separately. Whiskers are 95%% CIs. Dashed line is the pooled reduced form.",
       nrow(cs)))
   
-  # ---------------------------------------------------------------------
-  # 5. PANEL B. Identical geometry, color mapped to shoppability.
-  # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Step 5  Panel B: the same points, colored by shoppability
+  # ---------------------------------------------------------------------------
   
   cs[, shop_lab := factor(fifelse(shop, "Shoppable", "Non-shoppable"),
                           levels = c("Shoppable", "Non-shoppable"))]
@@ -15241,29 +15878,35 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
       "Identical estimates and axes to the previous figure. Median: %.4f shoppable, %+.4f non-shoppable.",
       median(cs[shop == TRUE, beta]), median(cs[shop == FALSE, beta])))
   
-  # ---------------------------------------------------------------------
-  # 6. WRITE. 16:9 proportions to match the slide.
-  # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Step 6  Write
+  # ---------------------------------------------------------------------------
+  # Both PDFs are 10 x 5.2 inches, sized for the slides.
   
   dir.create(OUTDIR, showWarnings = FALSE, recursive = TRUE)
   
-  # capabilities("cairo") returns TRUE on macOS R builds whose cairo DLL will
-  # not load without XQuartz. Let ggsave infer the base pdf device from the
-  # file extension instead, which needs no X11.
+  # No device is given, so ggsave() chooses the base pdf() device from the
+  # file extension. cairo_pdf is not used: capabilities("cairo") can return
+  # TRUE on macOS builds whose cairo library does not load without XQuartz.
   ggsave(file.path(OUTDIR, "fig00a_concept_scatter_pooled.pdf"), pA,
          width = 10, height = 5.2)
   ggsave(file.path(OUTDIR, "fig00b_concept_scatter_split.pdf"), pB,
          width = 10, height = 5.2)
   cat("Wrote both figures to", normalizePath(OUTDIR), "\n")
   
-  # ---------------------------------------------------------------------
-  # 7. VERIFICATION OF THE NUMBERS QUOTED ON THE SLIDE
-  # ---------------------------------------------------------------------
-  
-  # Three ways to call a concept "moving on its own". The CI rule uses a
-  # normal 1.96 cutoff and is the loosest. RF_P comes from fixest with the
-  # clustered t distribution and is the paper's own inference, so it is the
-  # figure the deck quotes. RF_P_FDR is Benjamini-Hochberg across concepts.
+  # ---------------------------------------------------------------------------
+  # Step 7  Numbers quoted on the slide
+  # ---------------------------------------------------------------------------
+
+  # Three rules for counting a concept as "moving on its own":
+  #   moves_ci   the 95% interval (normal 1.96 cutoff) excludes zero; the
+  #              least strict of the three
+  #   moves_p    RF_P < 0.05, with RF_P from fixest's clustered t reference,
+  #              the inference used in the paper
+  #   moves_fdr  RF_P_FDR < 0.05, Benjamini-Hochberg across concepts within
+  #              the instrument (NA, so FALSE, if the column is absent)
+  # The slides quote the moves_p shares. Prints, by shoppability, the number
+  # of concepts, the share under each rule, and the median estimate.
   cs[, moves_ci := (hi < 0 | lo > 0)]
   cs[, moves_p  := is.finite(RF_P) & RF_P < 0.05]
   if (!"RF_P_FDR" %chin% names(cs)) cs[, RF_P_FDR := NA_real_]
@@ -15276,131 +15919,125 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
                median_beta = round(median(beta),    4)), by = shop_lab])
 }   # end interactive scratch
 
-# slides.tex, frame m-scatter2, asserts 31% vs 3% and medians -0.0034 vs
-# +0.0004. If this table disagrees, edit the deck rather than the table:
-#   \only<2> and \only<3> in the \callout on that frame.
+# slides.tex, frame m-scatter2, quotes the values printed above: share_p of
+# 31% vs 3% and median_beta of -0.0034 vs +0.0004 (shoppable vs
+# non-shoppable).
 
 
-
-
-
-
-
-
-
-
-
-
-###############################################################################
-#                                                                             #
-#   SECTION 33 -- CONCEPT-CHARACTERISTIC META-REGRESSION   (GATE 1)           #
-#                                                                             #
-#   Last section in HPT_Analysis_Pipeline.R, after the slide-figure script.   #
-#   Numbering jumps 31 -> 33 deliberately. Section 32 (a causal-forest         #
-#   heterogeneity screen over market and contracting-depth moderators) was     #
-#   removed: it carried no service characteristics in its covariate set and    #
-#   found no heterogeneity. Any QA32*.csv in the QA directory are its stale    #
-#   outputs.                                                                   #
-#                                                                             #
-#   Requires `concept_results` and `outpatient` in the session. Both exist     #
-#   after RUN_STAGES 6, or after a warm start restores them.                   #
-#                                                                             #
-#   ---------------------------------------------------------------------------
-#   WHAT THIS ANSWERS
-#   ---------------------------------------------------------------------------
+# =============================================================================
+# Section 33: Concept-characteristic meta-regression
+# =============================================================================
 #
-#   Sections 6-8 already produce one causal estimate per concept and regress
-#   those estimates on SHOPPABILITY SCHEMES. A scheme is a hand-built partition
-#   of the concept universe, so it can only find heterogeneity along a
-#   dimension named in advance. This section asks the complementary question:
-#   regress the same concept-level estimates on continuous, objective
-#   characteristics of the service, and test whether anything beats or
-#   survives alongside shoppability.
+# Sections 6 and 8 estimate one effect per clinical concept and regress those
+# estimates on the shoppability schemes. A scheme is a hand-built partition of
+# the concepts, so it can find heterogeneity only along dimensions named in
+# advance. This section regresses the same concept-level estimates on
+# continuous, measured characteristics of each service (the registry in 33.0)
+# and tests whether any of them explains the estimates alongside or instead
+# of shoppability. It follows the second step of Section 8 (concept-level
+# estimates from concept_results as the dependent variable, inverse-variance
+# weights, standard errors clustered by clinical family) and computes
+# p-values with .pval(), which gives the same t reference as fixest. 33B uses
+# RF_COEF and IV_COEF; the run block estimates the 33D meta-regressions for
+# RF_COEF only.
 #
-#   It reuses the existing two-step design rather than replacing it. Same
-#   dependent variables (RF_COEF / IV_COEF from concept_results), same
-#   inverse-variance weighting, same family clustering, same .pval() reference
-#   distribution. The only new thing is the right-hand side.
+# There is no Section 32. It held a causal-forest heterogeneity screen and
+# was removed; any QA32*.csv files in QA_DIR are left over from it.
 #
-#   ---------------------------------------------------------------------------
-#   FOUR BLOCKS, RUN AND CHECK IN ORDER
-#   ---------------------------------------------------------------------------
+# Needs concept_results and outpatient in the session. Both are created by
+# the BUILD block in PART 3 or restored by a warm start. The characteristics
+# are built from files in PANEL_DIR (listed in 33C); a missing file drops
+# only the characteristics built from it.
 #
-#   33A  INVENTORY       what characteristic columns actually exist on disk
-#   33B  HETEROGENEITY   is there anything to explain at all (Q, I-squared,
-#        BUDGET          tau-squared, cross-instrument reliability). A negative
-#                        answer here ends the section: nothing downstream can
-#                        work, and that is itself a reportable finding.
-#   33C  CHARACTERISTICS build the concept-level covariate table
-#   33D  META-REGRESSIONS univariate sweep, joint model, horse race against
-#                        shoppability, in three specifications
+# Runs when HPT_RUN$concept_characteristics is TRUE. The run block sets it
+# from HPT_CONCEPT_CHARS when that flag exists and otherwise to TRUE unless
+# HPT_WARM_START is TRUE, so a full run of the file executes this section
+# and a warm start skips it. restore_section33() (33R) reloads saved results
+# without re-estimating. 33E runs only when HPT_SCRATCH is TRUE.
 #
-#   ---------------------------------------------------------------------------
-#   THE THREE SPECIFICATIONS IN 33D, AND WHY THE THIRD IS THE ONE THAT MATTERS
-#   ---------------------------------------------------------------------------
+#   33.0  constants, input-file patterns, the characteristic registry
+#   33A   inventory of the inputs
+#   33B   heterogeneity budget: how much of the spread in the concept
+#         estimates is between-concept variation rather than sampling noise
+#   33C   concept-level characteristic table
+#   33D   meta-regressions: univariate sweep, joint model, and a horse race
+#         against shoppability
+#   33R   restore saved output
+#   33E   robustness checks for SHARE_SI_PACKAGED
 #
-#   RAW      characteristic alone. Easiest to read, most confounded.
-#   SIZE     plus log(N_OBSERVATIONS) and mean hospitals per county cell.
-#            diagnose_size_gradient() already documents a size gradient in this
-#            panel, so any characteristic correlated with concept support picks
-#            that up unless support is conditioned out.
-#   FAMILY   plus clinical-family fixed effects. The sharp test. Nearly every
-#            characteristic here is correlated with family (log Medicare rate
-#            is close to "MRI versus X-ray"), and every shoppability scheme is
-#            defined on family. A characteristic significant only in RAW is
-#            relabelling the family gradient the paper already reports. One
-#            surviving FAMILY expresses something none of the 18 schemes can,
-#            which is the claim worth making.
+# The meta-regressions in 33D use three specifications:
 #
-#   ---------------------------------------------------------------------------
-#   OUTPUTS
-#   ---------------------------------------------------------------------------
-#     QA33A_characteristic_inventory.csv
-#     QA33B_heterogeneity_budget.csv
-#     QA33B2_cross_instrument_reliability.csv
-#     QA33C_characteristic_coverage.csv
-#     T33A_concept_characteristics.csv
-#     T33B_meta_univariate_sweep.csv
-#     T33C_meta_joint_model.csv
-#     T33D_meta_horserace_vs_shoppability.csv
+#   RAW     the characteristic alone.
+#   SIZE    adds LN_N_OBS (log N_OBSERVATIONS) and MEAN_HOSP_PER_MARKET (mean
+#           hospitals per county cell). diagnose_size_gradient() (Section 6)
+#           documents a size gradient in the concept estimates, which a
+#           characteristic correlated with concept support would otherwise
+#           pick up.
+#   FAMILY  adds clinical-family fixed effects to SIZE. Most characteristics
+#           are correlated with family (log Medicare rate largely separates
+#           MRI from X-ray), and every shoppability scheme is defined on
+#           families. A characteristic significant in RAW but not in FAMILY
+#           restates the family gradient the paper already reports; one
+#           significant in FAMILY varies within families, which none of the
+#           18 schemes can express.
 #
-###############################################################################
+# Outputs of the run block (T33* in TABLE_DIR, QA33* in QA_DIR):
+#   QA33A_characteristic_inventory.csv
+#   QA33B_heterogeneity_budget.csv
+#   QA33B2_cross_instrument_reliability.csv
+#   QA33C_characteristic_coverage.csv
+#   T33A_concept_characteristics.csv
+#   T33B_meta_univariate_sweep.csv
+#   T33C_meta_joint_model.csv
+#   T33D_meta_horserace_vs_shoppability.csv
+# 33E writes QA33_splithalf_concept_correlation.csv (QA_DIR) and two progress
+# files in TABLE_DIR.
 
+# -----------------------------------------------------------------------------
+# 33.0  Constants and the characteristic registry
+# -----------------------------------------------------------------------------
+# S33_MIN_CONCEPTS is the minimum number of concepts for every statistic and
+# model in this section. S33_SPECS lists the 33D specifications.
+# S33_SIZE_CONTROLS, defined after the registry, holds the two controls added
+# in SIZE and FAMILY.
 
-# ============================================================================
-# 33.0  CONSTANTS AND THE CHARACTERISTIC REGISTRY
-# ============================================================================
-
-S33_MIN_CONCEPTS <- MIN_CONCEPTS_META          # reuse the existing floor (15)
+S33_MIN_CONCEPTS <- MIN_CONCEPTS_META          # 15; same minimum as Section 8
 S33_DEPENDENTS   <- c(RF = "RF_COEF", IV = "IV_COEF")
 S33_SE_FOR       <- c(RF_COEF = "RF_SE", IV_COEF = "IV_SE")
 S33_SPECS        <- c("RAW", "SIZE", "FAMILY")
 
-# Same pattern Section 28 uses. The Snowflake export did not set SINGLE = TRUE,
-# so this file arrives as several shards named HPT_ALT_CONCEPT.csv.gz_0_0_0
-# .csv.gz and so on. Reading only the first shard would silently drop most
-# concepts, so every match is read and row-bound, exactly as s28_load_alt()
-# and load_payer_dispersion() already do.
+# The alternative-price export (HPT_ALT_CONCEPT) was unloaded from Snowflake
+# without SINGLE = TRUE, so it arrives as several gzip shards
+# (HPT_ALT_CONCEPT.csv.gz_0_0_0.csv.gz and so on). Every matching file is
+# read and stacked, as in s28_load_alt() (Section 28) and
+# load_payer_dispersion() (Section 9); reading only the first shard would
+# drop most concepts. Unlike S28_ALT_PATTERN, this pattern also matches an
+# uncompressed .csv. S33_CODEBOOK_PATTERN matches the full SQL codebook,
+# HPT_CODEBOOK.csv.
 S33_ALT_PATTERN <- "^HPT_ALT_CONCEPT.*\\.csv(\\.gz)?$"
 S33_CODEBOOK_PATTERN <- "^HPT_CODEBOOK\\.csv$"
 
-# Three code-keyed supplemental sources, none of them concept-keyed. Each is
-# joined onto the codebook's BILLING_CODE -> ANALYSIS_CONCEPT_ID crosswalk,
-# then collapsed through s33_to_canonical() exactly like every other source
-# in this section, so a code that belongs to a merged concept (mammography
-# tomosynthesis, the MRI/CT abdomen variants) still lands correctly.
+# File patterns for three sources keyed on HCPCS code rather than concept:
+# the PFS RVU file, ASC Addendum BB, and the Medicare geography and service
+# file. Each is joined to the codebook's BILLING_CODE to ANALYSIS_CONCEPT_ID
+# crosswalk and mapped with s33_to_canonical(), so a code that belongs to a
+# merged concept (mammography tomosynthesis, the MRI and CT abdomen variants)
+# lands on its canonical concept. s33_find_files() searches PANEL_DIR only,
+# not its subfolders.
 #
-# Addendum A is NOT built here. It has no HCPCS-code column at all -- it is
-# keyed on APC number -- and HPT_CODEBOOK.csv carries no APC column to join
-# it through (checked directly: OPPS_STATUS_INDICATORS is the only OPPS
-# field that made it into the export). Building this needs either a fresh
-# SQL pull that retains APC number per code, or Addendum B's own code-to-APC
-# mapping pulled separately. Deferred, not abandoned.
+# OPPS Addendum A is not used. It is keyed on APC number and has no HCPCS
+# code column, and HPT_CODEBOOK.csv has no APC column to join it through
+# (OPPS_STATUS_INDICATORS is the only OPPS field in that export). Using it
+# would need an SQL export that keeps the APC number for each code, or
+# Addendum B's code-to-APC mapping.
 S33_PFS_RVU_PATTERN <- "^PPRRVU.*\\.xlsx$"
 S33_ASC_BB_PATTERN  <- "Addendum[ _-]?BB.*\\.txt$"
 S33_GEO_PATTERN      <- "^MUP_PHY.*Geo\\.csv$"
 
-# Shared by all three code-keyed loaders below: BILLING_CODE -> concept.
+# BILLING_CODE to concept crosswalk for the three code-keyed loaders. Reads
+# HPT_CODEBOOK.csv, or FILES$codebook if that is missing, and returns NULL
+# unless the file has BILLING_CODE and ANALYSIS_CONCEPT_ID. Codes are
+# upper-cased and trimmed, and each code is kept once.
 s33_code_to_concept_map <- function() {
   cb <- s33_read_all(S33_CODEBOOK_PATTERN)
   if (is.null(cb)) cb <- tryCatch(fread(FILES$codebook), error = function(e) NULL)
@@ -15412,8 +16049,8 @@ s33_code_to_concept_map <- function() {
   unique(cb, by = "HCPCS_CODE")
 }
 
-# OPPS status indicators, grouped by what each implies for whether a posted
-# per-code price is a standalone price. Editable here rather than inline.
+# OPPS status indicators, grouped by whether a posted per-code price is a
+# standalone price. Used by s33_chars_from_codebook() (33C).
 #
 #   S/T/V     separately paid
 #   J1/J2     comprehensive-APC primaries: paid, but the payment absorbs the
@@ -15422,21 +16059,23 @@ s33_code_to_concept_map <- function() {
 #   Q1-Q4     paid separately only when no S/T line appears on the same claim
 #   N         never paid separately
 #
-# Collapsing these into one separately-payable indicator covers 78% of
-# concepts and codes a comprehensive-APC service identically to a separately
-# paid one, which is why they are kept apart.
+# The groups are kept apart. Collapsed into one separately-payable indicator,
+# they would cover 78% of concepts and would not distinguish a
+# comprehensive-APC service from a separately paid one.
 S33_SI_SEPARATELY_PAYABLE <- c("S", "T", "V")
 S33_SI_COMPREHENSIVE      <- c("J1", "J2")
 S33_SI_COND_PACKAGED      <- c("Q1", "Q2", "Q3", "Q4")
 S33_SI_PACKAGED           <- c("N")
 
-# Registry. outcome_derived = TRUE means the characteristic is built from the
-# same negotiated-price data that produced the dependent variable. Those are
-# not excluded, because several of them (price level, cross-hospital
-# dispersion) are exactly the economics worth testing. They are FLAGGED so the
-# output separates them, and none should carry a headline claim on its own.
+# Characteristic registry: name, label, outcome_derived flag, and a note for
+# each characteristic. s33_registry_dt() returns it as a table, which is
+# merged into QA33C and T33B. outcome_derived = TRUE marks a characteristic
+# built from the same negotiated-price data as the dependent variable. These
+# are kept, because some of them (price level, cross-hospital dispersion)
+# are of direct economic interest, but they are flagged in the output
+# (OUTCOME_DERIVED) and left out of the horse race in 33D.
 S33_CHAR_REGISTRY <- list(
-  # ---- clean: administratively set or structural, not built from the outcome
+  # Administratively set or structural; not built from the outcome
   list(name = "LN_MEDICARE_RATE",     label = "Log Medicare reference rate",
        outcome_derived = FALSE,
        note = "CMS administratively-set price. Resource-intensity proxy with no hospital discretion in it, and the cleanest complexity measure available without HCUP or DRG weights."),
@@ -15474,7 +16113,9 @@ S33_CHAR_REGISTRY <- list(
        outcome_derived = FALSE,
        note = "Consumer-facing markup. Direct measure of the patient channel."),
   
-  # ---- support: condition on these, do not interpret them
+  # Support: how widely a concept is posted, how many hospitals share a
+  # county, and how fully its codes are reported. These describe the data
+  # behind an estimate rather than the service.
   list(name = "LN_N_HOSPITALS",       label = "Log hospitals posting the concept",
        outcome_derived = FALSE,
        note = "SUPPORT. Ubiquity of the service, and the main driver of estimate precision."),
@@ -15485,7 +16126,8 @@ S33_CHAR_REGISTRY <- list(
        outcome_derived = FALSE,
        note = "SUPPORT. How completely hospitals report the concept's constituent codes."),
   
-  # ---- outcome-derived: read only in the SIZE and FAMILY specs, never alone
+  # Built from the negotiated-price outcome (outcome_derived = TRUE), except
+  # MEAN_N_PAYERS, which counts payers rather than prices
   list(name = "LN_CONCEPT_PRICE",     label = "Log concept price level",
        outcome_derived = TRUE,
        note = "Dollar magnitude, the deductible-exposure proxy. Built from the outcome."),
@@ -15502,9 +16144,9 @@ S33_CHAR_REGISTRY <- list(
        outcome_derived = FALSE,
        note = "Thickness of contracting. Counts, not prices."),
   
-  # ---- PFS RVU (PPRRVU25_JAN), ASC Addendum BB, and Medicare geography/
-  #      volume file. All three administratively set or externally observed,
-  #      none outcome-derived.
+  # From the PFS RVU file (PPRRVU25_JAN), ASC Addendum BB, and the Medicare
+  # geography and service file; administratively set or externally observed,
+  # none built from the outcome
   list(name = "SHARE_PCTC_SPLIT",     label = "Share of codes with a PC/TC split (PFS PCTC IND = 1)",
        outcome_derived = FALSE,
        note = "The posted price is half the bill: a separate professional-component invoice exists that the patient does not see when comparing hospital prices."),
@@ -15537,7 +16179,10 @@ s33_registry_dt <- function() {
                OUTCOME_DERIVED = as.integer(r$outcome_derived), NOTE = r$note)))
 }
 
-# Every match, not the first. See the note at S33_ALT_PATTERN.
+# s33_find_files() lists every file in PANEL_DIR (not its subfolders) whose
+# name matches the pattern, ignoring case. s33_read_all() reads and stacks
+# all of them (see S33_ALT_PATTERN) and returns NULL if none matches or a
+# read fails.
 s33_find_files <- function(pattern, dir = PANEL_DIR)
   list.files(dir, pattern = pattern, full.names = TRUE, ignore.case = TRUE)
 
@@ -15550,16 +16195,25 @@ s33_read_all <- function(pattern, dir = PANEL_DIR, nrows = Inf) {
 }
 
 
-# ============================================================================
-# 33A  INVENTORY -- what is actually on disk, before building anything
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 33A  Inventory of the inputs
+# -----------------------------------------------------------------------------
+# s33_inventory() records what exists before anything is built and writes
+# QA33A_characteristic_inventory.csv (SOURCE, ITEM, STATUS, DETAIL): the size
+# and estimate columns of concept_results; which of S33_ATTRIBUTE_COLUMNS are
+# in FILES$codebook and in HPT_CODEBOOK.csv; the number of alternative-price
+# and payer-dispersion shards; and whether `outpatient` has the concept,
+# family, price, coverage, payer-count, and market columns.
+# The PFS RVU, Addendum BB, and geography files are not checked here.
 #
-# The SQL codebook (HPT_P1_FINAL_CODEBOOK_SCOPED, exported as HPT_CODEBOOK.csv)
-# carries OPPS_STATUS_INDICATORS, IS_ASC_COVERED_FLAG, IS_NCCI_ADDON_FLAG, MDC,
-# MEDICAL_SURGICAL_TYPE, DRG_ACUITY_KEYWORD_TAG and CONTRAST_VARIANT.
-# build_schemes() reads FILES$codebook and keeps four of them. Whether the file
-# in PANEL_DIR is the full export or a trimmed one is the first thing to check,
-# because every codebook characteristic below depends on it.
+# The SQL codebook (HPT_P1_FINAL_CODEBOOK_SCOPED, exported as
+# HPT_CODEBOOK.csv) carries OPPS_STATUS_INDICATORS, IS_ASC_COVERED_FLAG,
+# IS_NCCI_ADDON_FLAG, MDC, MEDICAL_SURGICAL_TYPE, DRG_ACUITY_KEYWORD_TAG, and
+# CONTRAST_VARIANT. build_schemes() reads FILES$codebook but uses only
+# BILLING_CODE_TYPE, ANALYSIS_FAMILY_ID, ANALYSIS_CONCEPT_ID, and
+# OFFICIAL_DESCRIPTION. The codebook characteristics in 33C come from
+# HPT_CODEBOOK.csv when it is in PANEL_DIR and from FILES$codebook otherwise,
+# so they depend on which attribute columns that file carries.
 
 S33_ATTRIBUTE_COLUMNS <- c(
   "OPPS_STATUS_INDICATORS", "IS_ASC_COVERED_FLAG", "IS_NCCI_ADDON_FLAG",
@@ -15576,7 +16230,7 @@ s33_inventory <- function() {
       DETAIL = as.character(detail))
   }
   
-  # --- concept_results ------------------------------------------------------
+  # concept_results -----------------------------------------------------------
   if (exists("concept_results")) {
     cr <- as.data.table(concept_results)
     add("concept_results", "rows",        "OK", format(nrow(cr), big.mark = ","))
@@ -15593,7 +16247,7 @@ s33_inventory <- function() {
     add("concept_results", "object", "MISSING", "run RUN_STAGES 6 or warm start")
   }
   
-  # --- codebook that build_schemes() reads ---------------------------------
+  # Codebook read by build_schemes() (FILES$codebook) -------------------------
   cb <- tryCatch(fread(FILES$codebook, nrows = 5L), error = function(e) NULL)
   if (is.null(cb)) {
     add("codebook", "path", "MISSING", FILES$codebook)
@@ -15604,7 +16258,7 @@ s33_inventory <- function() {
       add("codebook", v, if (v %in% names(cb)) "OK" else "MISSING", "")
   }
   
-  # --- full SQL codebook, if downloaded separately --------------------------
+  # Full SQL codebook (HPT_CODEBOOK.csv), if present --------------------------
   fcb <- s33_read_all(S33_CODEBOOK_PATTERN, nrows = 5L)
   if (is.null(fcb)) {
     add("full_sql_codebook", "HPT_CODEBOOK.csv", "MISSING",
@@ -15616,7 +16270,7 @@ s33_inventory <- function() {
       add("full_sql_codebook", v, if (v %in% names(fcb)) "OK" else "MISSING", "")
   }
   
-  # --- Phase 5 alternative price series ------------------------------------
+  # Alternative price series (Phase 5 export) ---------------------------------
   altf <- s33_find_files(S33_ALT_PATTERN)
   if (length(altf) == 0L) {
     add("phase5_alt_prices", "HPT_ALT_CONCEPT", "MISSING",
@@ -15628,12 +16282,12 @@ s33_inventory <- function() {
                 if (is.null(a)) "unreadable" else ncol(a)))
   }
   
-  # --- payer dispersion -----------------------------------------------------
+  # Payer dispersion shards ---------------------------------------------------
   pd <- list.files(PAYER_DISPERSION_DIR, pattern = PAYER_DISPERSION_PATTERN)
   add("payer_dispersion", "shards",
       if (length(pd) == 0L) "MISSING" else "OK", length(pd))
   
-  # --- the panel ------------------------------------------------------------
+  # The panel (outpatient) ----------------------------------------------------
   if (exists("outpatient")) {
     op <- as.data.table(outpatient)
     add("outpatient", "rows", "OK", format(nrow(op), big.mark = ","))
@@ -15650,26 +16304,26 @@ s33_inventory <- function() {
 }
 
 
-# ============================================================================
-# 33B  HETEROGENEITY BUDGET -- is there anything to explain?
-# ============================================================================
-#
-# There is one estimate per concept, each with a standard error. Part of the
-# spread across them is real cross-service variation and the rest is sampling
-# noise. If the noise share is close to one, no covariate can explain the
-# spread because there is no spread to explain. Establish that number before
-# spending a day building covariates.
+# -----------------------------------------------------------------------------
+# 33B  Heterogeneity budget
+# -----------------------------------------------------------------------------
+# For each dependent variable (RF_COEF, IV_COEF) and each instrument in
+# concept_results, s33_heterogeneity_budget() divides the spread of the
+# concept estimates into between-concept variation and sampling noise and
+# writes QA33B_heterogeneity_budget.csv. If the noise share is close to one,
+# there is no between-concept variation for a characteristic to explain.
 #
 #   Q        Cochran's Q, the inverse-variance-weighted dispersion statistic
-#   I2       share of total variation attributable to real heterogeneity
+#            (Q_P is its chi-squared p-value)
+#   I2       share of the total variation due to between-concept
+#            heterogeneity
 #   TAU2     DerSimonian-Laird estimate of the between-concept variance
-#   TAU_PCT  sqrt(TAU2) on the paper's percent-per-unit scale
+#   TAU_PCT  100 * sqrt(TAU2), on the percent scale of POOLED_ESTIMATE_PCT
 #
-# One caveat. Q assumes independent estimates, and these are not independent:
-# concepts share hospitals, counties and months, so their sampling errors are
-# positively correlated and Q is inflated. I2 is therefore an upper bound.
-# s33_cross_instrument_reliability() is the complement that does not rest on
-# that assumption.
+# Q assumes independent estimates. Concepts share hospitals, counties, and
+# months, so their sampling errors are positively correlated and Q is
+# inflated; I2 is therefore an upper bound. s33_cross_instrument_reliability()
+# does not rely on that assumption.
 
 s33_heterogeneity_budget <- function(cr, dependents = S33_DEPENDENTS) {
   cr <- as.data.table(cr)
@@ -15692,8 +16346,9 @@ s33_heterogeneity_budget <- function(cr, dependents = S33_DEPENDENTS) {
       tau2 <- max(0, (Q - df) / cval)
       I2   <- max(0, (Q - df) / Q)
       
-      # Naive unweighted decomposition, reported alongside because it is the
-      # one a reader can verify by eye from the CSV.
+      # Unweighted decomposition (SD_BHAT_PCT, MEAN_SE_PCT,
+      # NAIVE_SIGNAL_SHARE), reported because it can be verified directly
+      # from the concept-level estimates.
       var_b    <- var(b)
       mean_se2 <- mean(s^2)
       
@@ -15715,11 +16370,13 @@ s33_heterogeneity_budget <- function(cr, dependents = S33_DEPENDENTS) {
   out
 }
 
-# Does the concept-level ranking reproduce across instruments? Different
-# instruments draw on different rollout variation, so a high rank correlation
-# is evidence of real service-level signal that does not depend on Q's
-# independence assumption. A correlation near zero means the estimates are
-# mostly noise and nothing downstream will work.
+# Pearson and Spearman correlations of the concept estimates (RF_COEF by
+# default) between each pair of instruments with at least S33_MIN_CONCEPTS
+# concepts in common; writes QA33B2_cross_instrument_reliability.csv. The
+# instruments use different rollout variation, so a high rank correlation
+# indicates concept-level signal without relying on the independence
+# assumption behind Q. A correlation near zero means the estimates are
+# mostly noise.
 s33_cross_instrument_reliability <- function(cr, dep = "RF_COEF") {
   cr <- as.data.table(cr)
   if (!(dep %in% names(cr))) return(data.table())
@@ -15747,16 +16404,29 @@ s33_cross_instrument_reliability <- function(cr, dep = "RF_COEF") {
 }
 
 
-# ============================================================================
-# 33C  BUILD THE CONCEPT-LEVEL CHARACTERISTIC TABLE
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 33C  Concept-level characteristic table
+# -----------------------------------------------------------------------------
+# s33_build_characteristics() (end of 33C) merges seven sources into one row
+# per concept. Each source has its own function and input:
 #
-# Four sources, each in its own function, each returning NULL with a printed
-# reason when its input is absent rather than killing the section. Every source
-# is keyed on FINAL_CONCEPT_ID *after* MERGE_GROUPS is applied, so the six
-# canonical merged concepts line up with concept_results. Merging on the raw
-# ANALYSIS_CONCEPT_ID would silently drop them, mammography included, which is
-# the most influential single family in the permutation test.
+#   1  codebook             HPT_CODEBOOK.csv, else FILES$codebook
+#   2  estimation panel     outpatient
+#   3  alternative prices   s28_load_alt(), else the HPT_ALT_CONCEPT shards
+#   4  payer dispersion     the HPT_PAYER_DISPERSION shards
+#   5  PFS RVU file         PPRRVU*.xlsx (needs readxl)
+#   6  ASC Addendum BB      Addendum BB *.txt, every year present
+#   7  Medicare geography   MUP_PHY*Geo.csv
+#      and service file
+#
+# A source whose input file is missing or unreadable prints the reason and
+# returns NULL, and the build continues without its characteristics. Reading
+# the .gz shards (sources 3 and 4) needs the R.utils package.
+# Sources keyed on ANALYSIS_CONCEPT_ID or on billing code are mapped to
+# FINAL_CONCEPT_ID with s33_to_canonical() (the MERGE_GROUPS mapping), so the
+# six merged canonical concepts line up with concept_results. A merge on the
+# raw ANALYSIS_CONCEPT_ID would drop them, mammography included, which is the
+# most influential single family in the permutation test.
 
 s33_canonical_map <- function(merge_groups = MERGE_GROUPS)
   rbindlist(lapply(merge_groups, function(g)
@@ -15773,7 +16443,11 @@ s33_to_canonical <- function(dt, id_col) {
   d
 }
 
-# --- source 1: the codebook, aggregated from billing code to concept --------
+# Source 1: codebook ----------------------------------------------------------
+#
+# Aggregates billing codes to FINAL_CONCEPT_ID: N_CODES_IN_CONCEPT and, each
+# only when its source column exists, SHARE_ASC_COVERED, SHARE_NCCI_ADDON,
+# ANY_CMS70, the four SHARE_SI_* shares, and HAS_CONTRAST_VARIANT.
 s33_chars_from_codebook <- function() {
   cb <- s33_read_all(S33_CODEBOOK_PATTERN)
   if (is.null(cb)) cb <- tryCatch(fread(FILES$codebook), error = function(e) NULL)
@@ -15783,9 +16457,9 @@ s33_chars_from_codebook <- function() {
   }
   cb <- s33_to_canonical(cb, "ANALYSIS_CONCEPT_ID")
   
-  # Share of a concept's codes whose OPPS status indicator falls in `set`.
-  # Codes with no indicator are excluded rather than counted as zero, so the
-  # share is over codes where the question is answerable.
+  # Share of a concept's codes with an OPPS status indicator in `set`. A code
+  # may list several indicators separated by commas and counts if any is in
+  # `set`. Codes with no indicator are left out rather than counted as zero.
   si_share <- function(x, set) {
     v <- toupper(trimws(as.character(x)))
     v <- v[!is.na(v) & nzchar(v)]
@@ -15822,7 +16496,13 @@ s33_chars_from_codebook <- function() {
   out
 }
 
-# --- source 2: the estimation panel itself ---------------------------------
+# Source 2: the estimation panel ----------------------------------------------
+#
+# From outpatient: LN_CONCEPT_PRICE and SD_LN_PRICE_XHOSP (median and SD
+# across hospitals of each hospital's median LN_MEDIAN_PRICE),
+# LN_N_HOSPITALS, MEAN_HOSP_PER_MARKET (hospitals per county cell, averaged
+# over counties), N_MARKETS_CONCEPT, and, when the columns exist,
+# MEAN_CODE_COVERAGE and MEAN_N_PAYERS.
 s33_chars_from_panel <- function(panel) {
   d <- as.data.table(panel)
   
@@ -15852,12 +16532,15 @@ s33_chars_from_panel <- function(panel) {
   out
 }
 
-# --- source 3: Phase 5 alternative price series ----------------------------
+# Source 3: alternative price series ------------------------------------------
 #
-# Prefers s28_load_alt() when Section 28 is loaded, so the shard handling and
-# the canonical remap are done once, in the function that already validates
-# them, rather than reimplemented here. Falls back to reading the shards
-# directly when Section 28 is not in the session.
+# Uses s28_load_alt() (Section 28) when it is defined; that function reads
+# the shards, checks their columns, and maps concepts to FINAL_CONCEPT_ID.
+# Otherwise reads the shards with s33_read_all() and maps them with
+# s33_to_canonical(). LN_MEDICARE_RATE is the log of the concept's median
+# Medicare rate; GROSS_TO_MEDICARE, CASH_TO_MEDICARE, and NEG_TO_MEDICARE
+# divide the median gross charge, cash rate, and negotiated rate
+# (MEDIAN_NEGOTIATED_CHECK) by that median.
 s33_chars_from_alt_prices <- function() {
   a <- NULL
   if (exists("s28_load_alt", mode = "function")) {
@@ -15903,7 +16586,11 @@ s33_chars_from_alt_prices <- function() {
   out
 }
 
-# --- source 4: payer dispersion --------------------------------------------
+# Source 4: payer dispersion --------------------------------------------------
+#
+# Reads every shard matching PAYER_DISPERSION_PATTERN and computes
+# MEAN_CV_PAYER and MEAN_N_PAYERS by concept. Unlike load_payer_dispersion()
+# (Section 9), it does not drop rows duplicated across shards.
 s33_chars_from_payer_dispersion <- function() {
   parts <- list.files(PAYER_DISPERSION_DIR, pattern = PAYER_DISPERSION_PATTERN,
                       full.names = TRUE)
@@ -15919,15 +16606,17 @@ s33_chars_from_payer_dispersion <- function() {
     return(NULL)
   }
   pd <- s33_to_canonical(pd, "ANALYSIS_CONCEPT_ID")
-  # N_DISTINCT_PAYERS comes from this file rather than from `outpatient`,
-  # which does not carry it: the Phase 4 concept rollup drops the payer count.
+  # MEAN_N_PAYERS is taken from this file when it has N_DISTINCT_PAYERS. The
+  # Phase 4 concept rollup drops the payer count, so `outpatient` is not
+  # expected to carry it. If it does, s33_chars_from_panel() also returns
+  # MEAN_N_PAYERS, and the merge in s33_build_characteristics() then yields
+  # MEAN_N_PAYERS.x and MEAN_N_PAYERS.y (reported NOT BUILT in QA33C).
   has_np <- "N_DISTINCT_PAYERS" %in% names(pd)
   
-  # CV_PAYER_NEGOTIATED is (P75-P25)/median, so it explodes wherever the
-  # median price is near zero: P99 is 114 and the maximum 241, against a P75
-  # of 0.87. A median across hospital-months is robust to that; a mean is not.
-  # The column name stays MEAN_CV_PAYER for continuity with the registry and
-  # every downstream reference, but the statistic is a median.
+  # CV_PAYER_NEGOTIATED is (P75 - P25) / median, so it becomes very large
+  # where the median price is near zero: P99 is 114 and the maximum 241,
+  # against a P75 of 0.87. MEAN_CV_PAYER is therefore the median across
+  # hospital-months, not the mean; the column keeps the registry name.
   out <- pd[, c(list(
     MEAN_CV_PAYER = median(safe_numeric(CV_PAYER_NEGOTIATED), na.rm = TRUE)),
     if (has_np) list(MEAN_N_PAYERS = mean(safe_numeric(N_DISTINCT_PAYERS), na.rm = TRUE))),
@@ -15939,19 +16628,21 @@ s33_chars_from_payer_dispersion <- function() {
   out
 }
 
-# --- source 5: PFS RVU file (PPRRVU) -- PC/TC split and global period -------
+# Source 5: PFS RVU file ------------------------------------------------------
 #
-# Global row only (blank modifier): a code with PCTC IND = 1 has separate 26/
-# TC rows in addition to the global row, and the global row is the one whose
-# RVUs match what a payer negotiates against, so it is the row that answers
-# "does a PC/TC split exist for this code" without double-counting.
+# SHARE_PCTC_SPLIT (share of a concept's codes with PCTC IND = 1) and
+# SHARE_GLOB_SURGICAL (share with GLOB DAYS 000, 010, or 090), from the first
+# file matching S33_PFS_RVU_PATTERN; needs readxl. Only global rows (blank
+# modifier) are kept. A code with PCTC IND = 1 also has separate modifier 26
+# and TC rows, and the global row carries the RVUs a payer negotiates
+# against, so each code is counted once.
 #
-# Columns are addressed by position, not name: CMS's header row repeats the
-# literal string "INDICATOR" three times (NA indicators, physician
-# supervision) and the PCTC/GLOB columns carry only the fragment "IND"/"DAYS"
-# after their header wraps across two spreadsheet rows. Position 1/2/14/15
-# is the verified CY2025 January-release layout; a released quarter with a
-# different column count changes this and should be re-checked before reuse.
+# Columns are taken by position (1, 2, 14, 15), not by name: CMS's header row
+# repeats the string "INDICATOR" three times (NA indicators, physician
+# supervision), and the PCTC and GLOB columns carry only "IND" and "DAYS"
+# because their header wraps across two spreadsheet rows. These positions
+# are those of the CY2025 January release. The code checks only that the
+# sheet has at least 15 columns.
 s33_chars_from_pfs_rvu <- function() {
   f <- s33_find_files(S33_PFS_RVU_PATTERN)
   if (length(f) == 0L) {
@@ -16002,13 +16693,15 @@ s33_chars_from_pfs_rvu <- function() {
   out
 }
 
-# --- source 6: ASC Addendum BB -- ancillary packaging status ---------------
+# Source 6: ASC Addendum BB ---------------------------------------------------
 #
-# Both years read and row-bound (AA/BB rarely reclassify a code between
-# vintages -- confirmed directly: 410 vs 412 matched codes across 2024/2025),
-# then deduplicated on code+indicator. A code whose indicator genuinely
-# changed between years keeps both rows, which lets the concept-level share
-# reflect that ambiguity honestly rather than picking one year arbitrarily.
+# SHARE_ASC_ANCILLARY_PACKAGED: share of a concept's codes whose final
+# payment indicator is N1. Every matching file (one per year) is read from
+# the line containing "HCPCS Code", stacked, and de-duplicated on code and
+# indicator. Indicators rarely change between years (410 vs 412 matched
+# codes across 2024/2025); a code whose indicator did change keeps both
+# rows, so the concept-level share reflects the change rather than an
+# arbitrary choice of year.
 s33_chars_from_asc_bb <- function() {
   f <- s33_find_files(S33_ASC_BB_PATTERN)
   if (length(f) == 0L) {
@@ -16062,13 +16755,15 @@ s33_chars_from_asc_bb <- function() {
   out
 }
 
-# --- source 7: Medicare Physician & Other Practitioners, Geography/Service -
+# Source 7: Medicare geography and service file -------------------------------
 #
-# National-level rows only (excludes the ~255K state-level rows the file also
-# carries). Volume and provider count are summed across the codes making up
-# a concept, not averaged -- a concept's total national volume is the sum of
-# its constituent codes' volumes, matching how N_CODES_IN_CONCEPT already
-# treats code-level counts elsewhere in this section.
+# LN_NATIONAL_VOLUME, N_PROVIDERS_NATIONAL, and SHARE_VOL_FACILITY from the
+# CMS Medicare Physician & Other Practitioners by Geography and Service file
+# (first file matching S33_GEO_PATTERN). Only national rows are used; the
+# file also carries about 255K state-level rows. Volume and provider counts
+# are summed over the codes in a concept, not averaged, in the same way that
+# N_CODES_IN_CONCEPT counts codes. SHARE_VOL_FACILITY is the share of volume
+# billed in a facility place of service (Place_Of_Srvc "F").
 s33_chars_from_geo_volume <- function() {
   f <- s33_find_files(S33_GEO_PATTERN)
   if (length(f) == 0L) {
@@ -16122,10 +16817,15 @@ s33_chars_from_geo_volume <- function() {
   out
 }
 
-# Deliberately NOT wrapped in cache_or_run(). This takes seconds, and caching
-# it would serve a stale characteristic table the first time the codebook or
-# the alt-price shards are re-downloaded, which is exactly the iteration this
-# section is built for.
+# s33_build_characteristics() merges the sources by FINAL_CONCEPT_ID, keeps
+# the concepts in concepts_keep, and writes QA33C_characteristic_coverage.csv:
+# the registry with, for each characteristic, the number of non-missing
+# concepts, the SD, and a STATUS of USABLE, TOO FEW (fewer than
+# S33_MIN_CONCEPTS non-missing), NO VARIATION, or NOT BUILT (no source
+# produced it). Only USABLE characteristics enter 33D. Returns the table, the
+# coverage, and the usable names; stops if no source can be built or no
+# characteristic is usable. Not cached: it takes seconds, and a cached table
+# would not reflect re-downloaded inputs.
 s33_build_characteristics <- function(panel, concepts_keep = NULL) {
   cat("\nBuilding concept characteristics:\n")
   pieces <- Filter(Negate(is.null), list(
@@ -16174,16 +16874,28 @@ s33_build_characteristics <- function(panel, concepts_keep = NULL) {
 }
 
 
-# ============================================================================
-# 33D  META-REGRESSIONS
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 33D  Meta-regressions
+# -----------------------------------------------------------------------------
+# One observation per concept, estimated separately for each of the three
+# main instruments; the run block uses RF_COEF. Weights are 1/SE^2
+# ("Inverse variance") or equal ("Unweighted"); the univariate sweep reports
+# both, the joint model and the horse race inverse variance only. Standard
+# errors are clustered by clinical family (CLUSTER_FAMILY, 16 families), and
+# .pval() takes the degrees of freedom from the fit: t(15) with all 16
+# families, the same reference as the two-way clustered models of Section 7.
+# Characteristics and size controls are z-scored, unweighted, over the rows
+# of s33_panel (one per concept and instrument), so each coefficient is the
+# change in the concept-level estimate per one SD of the characteristic and
+# coefficients are comparable across characteristics. ESTIMATE_PCT and
+# SE_PCT are 100 times the coefficient and its standard error.
 #
-# Unit of observation: one concept, one instrument. Weight 1/SE^2. Cluster on
-# clinical family, which gives 16 clusters, so .pval() lands on t(15) exactly
-# as it does for the two-way clustered models in Section 7. Characteristics are
-# z-scored across concepts, unweighted, so every coefficient reads as the
-# change in the concept-level effect per one cross-concept SD of that
-# characteristic and coefficients are comparable down the column.
+# s33_assemble() merges the characteristics onto concept_results and adds
+# CLUSTER_FAMILY, SHOP_CERTAINTY (Scheme 1: DIAGNOSTIC_FAMILIES are
+# shoppable), LN_N_OBS, and the weight W_IV. s33_fit_one() fits one model on
+# complete cases and returns the rows for the characteristics and
+# SHOP_CERTAINTY (not the controls); it returns NULL when fewer than
+# S33_MIN_CONCEPTS concepts or 3 families remain, or when the fit fails.
 
 s33_assemble <- function(cr, chars, dep = "RF_COEF") {
   se_col <- S33_SE_FOR[[dep]]
@@ -16213,8 +16925,9 @@ s33_fit_one <- function(d, dep, rhs, spec, weighting) {
   fe  <- if (spec == "FAMILY") " | CLUSTER_FAMILY" else ""
   ctl <- if (spec %chin% c("SIZE", "FAMILY"))
     intersect(S33_SIZE_CONTROLS, names(d)) else character(0)
-  # unique() matters: MEAN_HOSP_PER_MARKET is both a candidate characteristic
-  # and a size control, so its SIZE row is the RAW model plus LN_N_OBS only.
+  # unique(): MEAN_HOSP_PER_MARKET is both a characteristic and a size
+  # control, so in its own models it enters once, and its SIZE row is the
+  # RAW model plus LN_N_OBS.
   terms <- unique(c(rhs, ctl))
   terms <- terms[nzchar(terms)]
   if (length(terms) == 0L) return(NULL)
@@ -16247,7 +16960,11 @@ s33_fit_one <- function(d, dep, rhs, spec, weighting) {
   td[]
 }
 
-# --- one characteristic at a time, every spec ------------------------------
+# Univariate sweep ------------------------------------------------------------
+#
+# Each usable characteristic alone, for each main instrument, specification,
+# and weighting (META_WEIGHTINGS). Writes T33B_meta_univariate_sweep.csv with
+# the registry LABEL and OUTCOME_DERIVED; stops if nothing is estimated.
 s33_meta_univariate <- function(d, usable, dep = "RF_COEF",
                                 instruments = names(MAIN_INSTRUMENTS)) {
   rows <- list()
@@ -16269,7 +16986,12 @@ s33_meta_univariate <- function(d, usable, dep = "RF_COEF",
   out
 }
 
-# --- everything jointly ----------------------------------------------------
+# Joint model -----------------------------------------------------------------
+#
+# All usable characteristics in one inverse-variance-weighted model per
+# instrument and specification, on the concepts that have every
+# characteristic; writes T33C_meta_joint_model.csv. Returns an empty table
+# with a warning if no model can be estimated.
 s33_meta_joint <- function(d, usable, dep = "RF_COEF",
                            instruments = names(MAIN_INSTRUMENTS)) {
   rows <- list()
@@ -16294,16 +17016,18 @@ s33_meta_joint <- function(d, usable, dep = "RF_COEF",
   out
 }
 
-# --- the horse race --------------------------------------------------------
+# Horse race against shoppability ---------------------------------------------
 #
-# Does the shoppability gradient survive once objective characteristics enter,
-# and does any characteristic add anything on top of shoppability? Three nested
-# models per instrument, reported side by side.
+# Tests whether the shoppability gradient (SHOP_CERTAINTY) remains once the
+# characteristics enter, and whether any characteristic adds to it. Three
+# nested models per instrument, inverse-variance weighted, in the RAW and
+# SIZE specifications: shoppability only, characteristics only, and both.
+# Only characteristics with outcome_derived = FALSE enter. Writes
+# T33D_meta_horserace_vs_shoppability.csv.
 #
-# The FAMILY spec is deliberately absent here. SHOP_CERTAINTY is a
-# deterministic function of FINAL_FAMILY_ID, so family fixed effects absorb it
-# entirely and the comparison is vacuous. The within-family evidence lives in
-# the FAMILY rows of T33B instead.
+# There is no FAMILY specification here: SHOP_CERTAINTY is a function of
+# FINAL_FAMILY_ID, so family fixed effects absorb it and the comparison is
+# empty. The within-family evidence is in the FAMILY rows of T33B.
 s33_meta_horserace <- function(d, usable, dep = "RF_COEF",
                                instruments = names(MAIN_INSTRUMENTS)) {
   clean <- intersect(usable, s33_registry_dt()[OUTCOME_DERIVED == 0, CHARACTERISTIC])
@@ -16339,22 +17063,25 @@ s33_meta_horserace <- function(d, usable, dep = "RF_COEF",
 }
 
 
-# ============================================================================
-# 33R  RESTORE FROM DISK -- loads Section 33's saved output, computes nothing
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 33R  Restore from disk
+# -----------------------------------------------------------------------------
+# restore_section33() loads Section 33's saved output and estimates nothing
+# (it never calls feols()). The run block re-estimates everything whenever
+# it is switched on, because the meta-regression functions write their CSVs
+# without checking for existing ones; this function reuses a completed run.
 #
-# s33_meta_univariate(), s33_meta_joint() and s33_meta_horserace() only ever
-# WRITE their CSVs; none of the three checks whether a current one already
-# exists before re-running its regressions. HPT_CONCEPT_CHARS <- TRUE forces
-# the whole of Section 33 to rebuild every time regardless. This function is
-# the read path that was missing: it loads what 33C/33D already wrote,
-# reassembles s33_panel by simple merge and z-score (no regression), and sets
-# every object 33's run block would have set. Nothing here calls feols().
+# Reads T33A_concept_characteristics.csv (TABLE_DIR) and
+# QA33C_characteristic_coverage.csv (QA_DIR) and stops if either is missing;
+# reads T33B, T33C, and T33D if present (NULL otherwise). Rebuilds s33_panel
+# from concept_results with s33_assemble() and s33_zscore() and assigns
+# s33_chars, s33_usable, s33_panel, s33_uni, s33_joint, and s33_race in the
+# global environment. s33_inv, s33_budget, and s33_rel are not restored.
 #
-# Requires concept_results in the session (from a plain warm start) and the
-# four Section 33 CSVs on disk from a prior HPT_CONCEPT_CHARS <- TRUE run.
-# Takes a few seconds regardless of how many characteristics or instruments
-# that prior run covered.
+# Needs concept_results in the session (a warm start restores it; setting
+# HPT_WARM_START_KEYS <- "concept_level_6inst" is enough) and the CSVs from
+# an earlier run with Section 33 switched on. Not called in this file. Takes
+# a few seconds.
 
 restore_section33 <- function() {
   .s33_hd("33R. RESTORING SECTION 33 FROM SAVED OUTPUT")
@@ -16363,9 +17090,8 @@ restore_section33 <- function() {
     stop("concept_results not in session -- run a warm start first.", call. = FALSE)
   }
   
-  # Self-contained on purpose: read_table() only exists when HPT_RUN$figures
-  # is TRUE (it is defined inside that guard, lines 7388-7786), which is FALSE
-  # under a plain warm start. This function must not depend on it.
+  # Local reader: read_table() is defined only inside the HPT_RUN$figures
+  # block in PART 5, which is switched off under a warm start.
   .s33_read <- function(fn, dir = TABLE_DIR) {
     p <- file.path(dir, fn)
     if (!file.exists(p)) { message("SKIP: ", fn, " not found in ", dir); return(NULL) }
@@ -16412,9 +17138,15 @@ restore_section33 <- function() {
 }
 
 
-# ============================================================================
-# 33  RUN BLOCK. Each block is checked before the next is run.
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 33  Run block
+# -----------------------------------------------------------------------------
+# Switch: HPT_RUN$concept_characteristics (see the Section 33 header). When
+# it is TRUE, the block stops unless concept_results and outpatient exist,
+# then runs 33A to 33D in order and prints each result with notes on reading
+# it. When it is FALSE, s33_inv, s33_budget, s33_chars, s33_uni, s33_joint,
+# and s33_race are set to NULL, and s33_rel, s33_chars_obj, s33_panel, and
+# s33_usable are not created.
 
 HPT_RUN$concept_characteristics <-
   if (exists("HPT_CONCEPT_CHARS")) isTRUE(HPT_CONCEPT_CHARS) else !isTRUE(HPT_WARM_START)
@@ -16424,7 +17156,7 @@ if (isTRUE(HPT_RUN$concept_characteristics)) {
   stopifnot("concept_results not in session" = exists("concept_results"),
             "outpatient not in session"      = exists("outpatient"))
   
-  # ---- GATE 1 -------------------------------------------------------------
+  # 33A  Inventory ------------------------------------------------------------
   .s33_hd("33A. INVENTORY -- what exists before anything is built")
   s33_inv <- s33_inventory()
   print(as.data.frame(s33_inv))
@@ -16432,7 +17164,7 @@ if (isTRUE(HPT_RUN$concept_characteristics)) {
       "characteristics drop out of 33C without further warning. The two that\n",
       "matter most are OPPS_STATUS_INDICATORS and IS_ASC_COVERED_FLAG.\n", sep = "")
   
-  # ---- GATE 2 -------------------------------------------------------------
+  # 33B  Heterogeneity budget -------------------------------------------------
   .s33_hd("33B. HETEROGENEITY BUDGET -- is there anything to explain?")
   s33_budget <- s33_heterogeneity_budget(concept_results)
   print(as.data.frame(s33_budget))
@@ -16457,7 +17189,7 @@ if (isTRUE(HPT_RUN$concept_characteristics)) {
       "    as an upper bound and weight the reliability table more heavily.\n",
       sep = "")
   
-  # ---- GATE 3 -------------------------------------------------------------
+  # 33C-33D  Characteristics and meta-regressions -----------------------------
   .s33_hd("33C. CONCEPT CHARACTERISTICS")
   s33_chars_obj <- s33_build_characteristics(
     outpatient, concepts_keep = unique(concept_results$FINAL_CONCEPT_ID))
@@ -16517,27 +17249,38 @@ if (isTRUE(HPT_RUN$concept_characteristics)) {
 cat("\nSection 33 complete.\n")
 
 
-# ===========================================================================
-# 33E  ROBUSTNESS CHECKS FOR SHARE_SI_PACKAGED
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 33E  Robustness checks for SHARE_SI_PACKAGED
+# -----------------------------------------------------------------------------
+# Interactive checks, run only when HPT_SCRATCH is TRUE, all for the primary
+# instrument (Competitor_only_hospitals_9m). They use s33_panel, s33_chars,
+# and s33_usable from the run block above, and outpatient. When Section 33
+# is switched off, as under a warm start, s33_panel and s33_usable do not
+# exist and s33_chars is NULL, so the block stops with an error unless
+# restore_section33() is run after the run block.
 #
-# Off by default. Everything here reads s33_panel, s33_chars and s33_usable,
-# which exist only after the Section 33 run block above has executed, so this
-# errors on a warm start that leaves Section 33 switched off.
+#   Leave-one-family-out    SHARE_SI_PACKAGED in the FAMILY specification
+#                           without XRAY_FLUOROSCOPY, without BIOPSY, and
+#                           without both; these two families hold 82% of the
+#                           packaged concepts
+#   Split-half reliability  hospitals split at random into two halves, the
+#                           concept-level sweep run in each, and RF_COEF
+#                           correlated across the halves, a measure of how
+#                           much of the cross-concept spread is signal
+#                           (QA33_splithalf_concept_correlation.csv)
+#   Correlation matrix      correlations among the SI shares,
+#                           SD_LN_PRICE_XHOSP, and the support and payer
+#                           measures, the collinearity the 33D joint model
+#                           faces
+#   Packaging vs SHOP       by SHOP_CERTAINTY, the number of concepts, the
+#                           number with any packaged code, and the mean
+#                           SHARE_SI_PACKAGED: whether packaging cuts across
+#                           the shoppable split or relabels it
+#   Joint model             the FAMILY joint model without SD_LN_PRICE_XHOSP,
+#                           SHARE_SI_PACKAGED row
 #
-# The split-half block calls estimate_concept_level() twice. That is the same
-# function behind the eight-hour concept sweep, restricted here to the primary
-# instrument on half the hospitals, so budget hours rather than minutes.
-#
-#   Leave-one-family-out   is the SHARE_SI_PACKAGED result driven by the two
-#                          families holding 82% of the packaged concepts?
-#   Split-half reliability what share of the cross-concept spread in RF_COEF
-#                          is real, estimated by splitting hospitals at random
-#                          and correlating the two independent sweeps?
-#   Correlation matrix     collinearity among the SI shares and the support
-#                          cluster, which the joint model in 33D runs into.
-#   Packaging vs SHOP      does packaging cut across the shoppable/non-shoppable
-#                          split, or merely relabel it?
+# The split-half check calls estimate_concept_level() (Section 6) twice, for
+# one instrument on half the hospitals each time, and takes hours.
 
 if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off by default
   
@@ -16565,7 +17308,7 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
                     INSTRUMENT_LABEL == "Competitor_only_hospitals_9m"]
   
   loo_result2 <- rbindlist(list(
-    loo_result[, INSTRUMENT_LABEL := "Competitor_only_hospitals_9m"],   # fixes the NA on row 1
+    loo_result[, INSTRUMENT_LABEL := "Competitor_only_hospitals_9m"],   # row 1 is NA otherwise
     data.table(DROPPED = "both",
                s33_fit_one(d2, "RF_COEF", "SHARE_SI_PACKAGED", "FAMILY", "Inverse variance"))
   ), fill = TRUE)
@@ -16577,7 +17320,7 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   
   
   
-  set.seed(20260909)  # fixed seed, so this is exactly reproducible if anyone asks
+  set.seed(20260909)  # seed for the random split of hospitals
   
   hosp_ids <- unique(outpatient$HOSPITAL_ID)
   hosp_A   <- sample(hosp_ids, floor(length(hosp_ids) / 2))
@@ -16589,8 +17332,10 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
   slim_A <- slim_primary[HOSPITAL_ID %in% hosp_A]; setkey(slim_A, ANALYSIS_SERVICE_ID)
   slim_B <- slim_primary[HOSPITAL_ID %in% hosp_B]; setkey(slim_B, ANALYSIS_SERVICE_ID)
   
-  # NOT wrapped in cache_or_run, and save_stem is overridden -- this must never
-  # write to T05_concept_level* or touch concept_level_6inst.rds.
+  # Not cached. With save_stem set, estimate_concept_level() writes its
+  # progress files to TABLE_DIR as QA33_splithalf_A_PARTIAL.csv and
+  # QA33_splithalf_B_PARTIAL.csv instead of T05_concept_level_PARTIAL.csv.
+  # concept_level_6inst.rds is not touched.
   sh_A <- estimate_concept_level(slim_A, instruments = MAIN_INSTRUMENTS["Competitor_only_hospitals_9m"],
                                  save_stem = "QA33_splithalf_A")
   sh_B <- estimate_concept_level(slim_B, instruments = MAIN_INSTRUMENTS["Competitor_only_hospitals_9m"],
@@ -16642,92 +17387,71 @@ if (exists("HPT_SCRATCH") && isTRUE(HPT_SCRATCH)) {   # interactive scratch, off
 }   # end interactive scratch
 
 
+# =============================================================================
+# Section 34: Code-keyed supplemental characteristics
+# =============================================================================
+#
+# Builds six concept characteristics from three CMS files keyed on HCPCS
+# code, adds them to the Section 33 characteristic table, and re-runs the
+# Section 33 meta-regressions (univariate sweep, joint model, and horse race
+# against shoppability) on the extended set.
+#
+#   File                         Characteristics
+#   PPRRVU*.xlsx (PFS RVU)       SHARE_PCTC_SPLIT, SHARE_GLOB_SURGICAL
+#   Addendum BB *.txt (ASC)      SHARE_ASC_ANCILLARY_PACKAGED
+#   MUP_PHY*Geo.csv (Medicare    LN_NATIONAL_VOLUME, N_PROVIDERS_NATIONAL,
+#     geography and service)     SHARE_VOL_FACILITY
+#
+# Each file is joined to concepts through the BILLING_CODE to
+# ANALYSIS_CONCEPT_ID crosswalk in HPT_CODEBOOK.csv (34.1). The concept IDs
+# are mapped with s33_to_canonical(), so codes of the merged concepts in
+# MERGE_GROUPS (Section 3) count toward their canonical concept. The note
+# field of each registry entry (34.3) states what the characteristic
+# measures. OPPS Addendum A is not used: it is keyed on APC number, and
+# HPT_CODEBOOK.csv has no APC column to join it through
+# (OPPS_STATUS_INDICATORS is its only OPPS field).
+#
+# Section 33 lists the same six characteristics in S33_CHAR_REGISTRY (33.0)
+# and has loaders for the same three files (33C), which search PANEL_DIR
+# only. The Section 34 loaders also search its subfolders (34.0). The file
+# patterns, crosswalk, loaders, and meta-regression functions here are close
+# copies of their Section 33 counterparts, under s34_ names.
+#
+# Needs concept_results (BUILD block or warm start), and s33_chars and
+# s33_usable from the Section 33 run block (HPT_CONCEPT_CHARS) or from
+# restore_section33(). A loader whose file is missing or unreadable prints a
+# message and is skipped; run_section34() stops if all three fail.
+#
+# Section 34 has no run switch. Sourcing the file defines the functions, runs
+# the registry block (34.3), and runs 34F. The estimation is in
+# run_section34() (34.5), which is not called in this file. It writes
+#   QA34A_supplemental_coverage.csv          coverage and SD (QA_DIR)
+#   T34A_concept_characteristics.csv         s33_chars plus the six columns
+#   T34B_meta_univariate_sweep.csv           univariate sweep
+#   T34C_meta_joint_model.csv                joint model
+#   T34D_meta_horserace_vs_shoppability.csv  horse race
+# (the T34 files to TABLE_DIR) and sets s34_chars, s34_usable, s34_panel,
+# s34_uni, s34_joint, and s34_race. It does not modify Section 33's objects
+# or files. restore_section34() (34.6) reloads its results from disk.
+#
+# 34F, at the end of the file, has no run switch either. When the file is
+# sourced it runs the loader checks and then the one-step regressions, which
+# need an object `op` that this file does not create (see 34F).
 
 
-###############################################################################
-#
-#   SECTION 34 -- CODE-KEYED SUPPLEMENTAL CHARACTERISTICS
-#
-#   Adds three externally sourced characteristic sets to the Section 33
-#   framework. Additive and non-destructive: Section 33's own objects and its
-#   T33*/QA33* outputs are left untouched, and everything here writes under a
-#   T34/QA34 prefix. If the new characteristics turn out to be uninformative,
-#   nothing has to be undone.
-#
-#   Requires a live session with Section 33 already loaded, via either
-#   HPT_CONCEPT_CHARS <- TRUE or restore_section33(). Specifically needs
-#   concept_results, s33_chars, s33_usable, and the s33_* helper functions.
-#
-#   ---------------------------------------------------------------------------
-#   THE THREE SOURCES, AND WHY EACH IS KEYED DIFFERENTLY FROM SECTION 33
-#   ---------------------------------------------------------------------------
-#
-#   Every Section 33 source is concept-keyed already (the codebook is
-#   collapsed to concept before use; the alt-price and payer-dispersion files
-#   arrive keyed on ANALYSIS_CONCEPT_ID). All three sources here are keyed on
-#   HCPCS CODE instead, so each is joined through the codebook's
-#   BILLING_CODE -> ANALYSIS_CONCEPT_ID crosswalk and then collapsed with
-#   s33_to_canonical(), which is what keeps a code belonging to one of the six
-#   MERGE_GROUPS concepts (mammography tomosynthesis, the MRI/CT abdomen
-#   variants) landing on the same canonical concept the rest of the paper is
-#   estimated on.
-#
-#   PFS RVU (PPRRVU)        PC/TC split and global-surgery period. A code with
-#                           PCTC IND = 1 is billed as separate professional and
-#                           technical components, so the hospital's posted
-#                           price is only part of what the patient owes. None
-#                           of the Section 33 characteristics express this.
-#
-#   ASC Addendum BB         Packaging status for covered ancillary services,
-#                           from the ASC payment system rather than OPPS. This
-#                           is an independent second reading of "is this
-#                           service separately priced," which makes it a
-#                           corroboration check on SHARE_SI_PACKAGED rather
-#                           than a restatement of it.
-#
-#   Geography and Service   National Medicare FFS volume, distinct provider
-#                           count, and the facility share of volume. Volume and
-#                           supply breadth are absent from Section 33 entirely.
-#
-#   ---------------------------------------------------------------------------
-#   WHAT IS NOT HERE
-#   ---------------------------------------------------------------------------
-#
-#   OPPS Addendum A is not built. It is keyed on APC number, and
-#   HPT_CODEBOOK.csv carries no APC column to join it through
-#   (OPPS_STATUS_INDICATORS is the only OPPS field in that export). Adding it
-#   requires either a fresh Phase 1 SQL pull that retains APC per code, or
-#   Addendum B's own code-to-APC mapping loaded separately.
-#
-#   ---------------------------------------------------------------------------
-#   OUTPUTS
-#   ---------------------------------------------------------------------------
-#     QA34A_supplemental_coverage.csv    per-characteristic coverage and SD
-#     T34A_concept_characteristics.csv   Section 33 table plus the new columns
-#     T34B_meta_univariate_sweep.csv
-#     T34C_meta_joint_model.csv
-#     T34D_meta_horserace_vs_shoppability.csv
-#
-###############################################################################
-
-
-# ============================================================================
-# 34.0  FILE PATTERNS
-# ============================================================================
-#
-# s33_find_files() passes ignore.case = TRUE to list.files(), which uses POSIX
-# regex. A PCRE inline flag such as (?i) would be read as four literal
-# characters and match nothing, so case handling is left to that argument.
+# -----------------------------------------------------------------------------
+# 34.0  File patterns
+# -----------------------------------------------------------------------------
+# Matched without regard to case: s34_find_files() sets ignore.case = TRUE.
 
 S34_PFS_RVU_PATTERN <- "^PPRRVU.*\\.xlsx$"
 S34_ASC_BB_PATTERN  <- "Addendum[ _-]?BB.*\\.txt$"
 S34_GEO_PATTERN     <- "^MUP_PHY.*Geo\\.csv$"
 
-# S33's own s33_find_files() is not recursive, which is correct for Section
-# 33's four sources -- they sit flat in PANEL_DIR. Section 34's three sources
-# each unzipped into their own subfolder, so this is a separate function
-# rather than a change to s33_find_files(), to avoid touching anything
-# Section 33 already depends on.
+# s34_find_files() is s33_find_files() with recursive = TRUE, so it also
+# searches the subfolders of PANEL_DIR, where each of the three files sits in
+# its own unzipped folder. The Section 33C loaders use s33_find_files() and
+# find these files only directly in PANEL_DIR.
 s34_find_files <- function(pattern, dir = PANEL_DIR)
   list.files(dir, pattern = pattern, full.names = TRUE, ignore.case = TRUE,
              recursive = TRUE)
@@ -16736,9 +17460,15 @@ s34_find_files <- function(pattern, dir = PANEL_DIR)
   cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78), "\n", sep = "")
 
 
-# ============================================================================
-# 34.1  BILLING_CODE -> CONCEPT CROSSWALK, SHARED BY ALL THREE LOADERS
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 34.1  Billing code to concept crosswalk
+# -----------------------------------------------------------------------------
+# Shared by the three loaders. Reads HPT_CODEBOOK.csv from PANEL_DIR, or
+# FILES$codebook (HPT_CODEBOOK_FOR_SHOPPABILITY_SCHEMES.csv) if that file is
+# absent, and maps ANALYSIS_CONCEPT_ID to FINAL_CONCEPT_ID with
+# s33_to_canonical(). Returns one row per code (HCPCS_CODE, trimmed and upper
+# case; the first concept if a code is listed under more than one), or NULL
+# if the codebook cannot be read or lacks BILLING_CODE or ANALYSIS_CONCEPT_ID.
 
 s34_code_to_concept_map <- function() {
   cb <- s33_read_all(S33_CODEBOOK_PATTERN)
@@ -16755,23 +17485,29 @@ s34_code_to_concept_map <- function() {
 }
 
 
-# ============================================================================
-# 34.2  SOURCE LOADERS
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 34.2  Source loaders
+# -----------------------------------------------------------------------------
+# Each loader reads its file, joins it to the crosswalk (34.1), and returns
+# one row per FINAL_CONCEPT_ID. A loader that cannot find, read, or match its
+# file prints a message and returns NULL.
 
-# --- PFS RVU: PC/TC split and global-surgery period -------------------------
+# PFS RVU: PC/TC split and global-surgery period ------------------------------
 #
-# Global row only, meaning a blank modifier. A code with PCTC IND = 1 also has
-# separate -26 and -TC rows; the global row is the one whose RVUs correspond to
-# the whole service, so restricting to it answers "does a split exist for this
-# code" once rather than three times.
+# Reads the first matching PPRRVU*.xlsx (needs readxl) and keeps each code's
+# global row, the row with a blank modifier. A code with PCTC IND = 1 also has
+# -26 and -TC rows; the global row covers the whole service, so each code is
+# counted once.
 #
-# Columns are addressed by position because the header is unusable by name:
-# CMS wraps it across spreadsheet rows 9 and 10, leaving the literal string
-# "INDICATOR" repeated three times and the PCTC and GLOB columns carrying only
-# the fragments "IND" and "DAYS". Positions 1, 2, 14, 15 are verified against
-# the CY2025 January release. A quarter with a different column count would
-# need this re-checked.
+# Columns are taken by position (1, 2, 14, 15, read as HCPCS_CODE, MODIFIER,
+# PCTC_IND, GLOB_DAYS) because the CMS header spans spreadsheet rows 9 and 10
+# and gives no usable names: "INDICATOR" appears three times, and the PCTC
+# and GLOB columns are headed only "IND" and "DAYS". The positions follow the
+# CY2025 January release. The code checks only that the sheet has at least
+# 15 columns, so a release with another layout needs checking by hand.
+#
+# SHARE_PCTC_SPLIT is the share of a concept's codes with PCTC IND = 1, and
+# SHARE_GLOB_SURGICAL the share with a 000, 010, or 090 global period.
 s34_chars_from_pfs_rvu <- function() {
   f <- s34_find_files(S34_PFS_RVU_PATTERN)
   if (length(f) == 0L) {
@@ -16821,12 +17557,16 @@ s34_chars_from_pfs_rvu <- function() {
   out
 }
 
-# --- ASC Addendum BB: ancillary packaging status ---------------------------
+# ASC Addendum BB: ancillary packaging status ---------------------------------
 #
-# Every matching vintage is read and row-bound, then deduplicated on code and
-# indicator together. A code whose indicator genuinely changed between years
-# therefore keeps both rows, and the concept-level share reflects that
-# ambiguity rather than silently taking whichever year sorted first.
+# Reads every matching file (one per year), each from its first line that
+# contains "HCPCS", and stacks them. The payment indicator is the first
+# column whose name contains "Payment Indicator" and "Final", or else the
+# first containing "Payment Indicator". Rows are deduplicated on code and
+# indicator together, so a code whose indicator differs between years keeps
+# one row per indicator and both count in the concept share.
+# SHARE_ASC_ANCILLARY_PACKAGED is the share of code rows with indicator N1
+# (packaged).
 s34_chars_from_asc_bb <- function() {
   f <- s34_find_files(S34_ASC_BB_PATTERN)
   if (length(f) == 0L) {
@@ -16886,16 +17626,18 @@ s34_chars_from_asc_bb <- function() {
   out
 }
 
-# --- Geography and Service: national volume, providers, facility share -----
+# Geography and Service: national volume, providers, facility share -----------
 #
-# National rows only. The file also carries roughly 255,000 state-level rows,
-# which are the same services counted again per state and would double-count
-# every total below.
-#
-# Volume and provider counts are SUMMED across the codes making up a concept
-# rather than averaged: a concept's national volume is the total of its
-# constituent codes' volumes, the same way N_CODES_IN_CONCEPT already treats
-# code-level counts in Section 33.
+# Reads the first matching MUP_PHY*Geo.csv and keeps the National rows. The
+# file also has roughly 255,000 state-level rows, which count the same
+# services again by state. Totals are summed over a code's place-of-service
+# rows and then over the concept's codes, not averaged:
+#   LN_NATIONAL_VOLUME    log of total services (floored at 1)
+#   N_PROVIDERS_NATIONAL  sum of the rendering-provider counts, so a provider
+#                         billing more than one of the concept's codes or
+#                         places of service is counted more than once
+#   SHARE_VOL_FACILITY    services with place of service F over total
+#                         services (NA if the total is zero)
 s34_chars_from_geo_volume <- function() {
   f <- s34_find_files(S34_GEO_PATTERN)
   if (length(f) == 0L) {
@@ -16948,19 +17690,23 @@ s34_chars_from_geo_volume <- function() {
 }
 
 
-# ============================================================================
-# 34.3  REGISTRY EXTENSION
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 34.3  Registry extension
+# -----------------------------------------------------------------------------
+# Registry entries for the six characteristics, in the S33_CHAR_REGISTRY
+# format. s33_registry_dt() reads S33_CHAR_REGISTRY when called, so entries
+# appended to it supply the LABEL merged into the univariate sweep and the
+# OUTCOME_DERIVED flag that selects the horse-race regressors. None of the
+# six is built from negotiated prices, so all have outcome_derived = FALSE
+# and are eligible for the horse race.
 #
-# s33_registry_dt() reads S33_CHAR_REGISTRY at call time, so appending here is
-# enough for the LABEL/OUTCOME_DERIVED merge in the univariate sweep and for
-# the horse race's OUTCOME_DERIVED == 0 filter to see the new entries. None of
-# the six is built from the negotiated price, so all are outcome_derived =
-# FALSE and all are eligible for the horse race.
-#
-# The guard makes re-pasting this block harmless: without it, a second paste
-# would append duplicate entries and every new characteristic would appear
-# twice in the sweep.
+# The entries are appended only if one of the six names is missing from
+# S33_CHAR_REGISTRY, so running the block twice adds no duplicates. Section
+# 33.0 already lists all six, with three of the labels and all of the notes
+# worded differently, so when the file is sourced the registry is left
+# unchanged ("registry already extended" is printed) and the Section 33.0
+# labels appear in the output.
+# S34_CHAR_NAMES marks the six as new in the Section 34 output.
 
 S34_CHAR_REGISTRY <- list(
   list(name = "SHARE_PCTC_SPLIT",
@@ -17001,15 +17747,14 @@ if (!all(S34_CHAR_NAMES %in% vapply(S33_CHAR_REGISTRY, `[[`, character(1), "name
 }
 
 
-# ============================================================================
-# 34.4  META-REGRESSIONS WRITING UNDER A T34 PREFIX
-# ============================================================================
-#
-# Structurally identical to s33_meta_univariate/_joint/_horserace, including
-# the same s33_fit_one() call, the same spec and weighting loops, and the same
-# .pval() reference. The only difference is the output filename, so that
-# Section 33's T33B/C/D remain on disk and restore_section33() keeps working
-# against the 19-characteristic set while these run alongside it.
+# -----------------------------------------------------------------------------
+# 34.4  Meta-regressions under a T34 prefix
+# -----------------------------------------------------------------------------
+# Same as s33_meta_univariate(), s33_meta_joint(), and s33_meta_horserace()
+# (33D): the same s33_fit_one() calls, specifications, weightings, and
+# .pval() reference. They also print progress and timings, and they write
+# T34B, T34C, and T34D in place of T33B, T33C, and T33D, so the Section 33
+# tables (the 19-characteristic set) stay on disk for restore_section33().
 
 s34_meta_univariate <- function(d, usable, dep = "RF_COEF",
                                 instruments = names(MAIN_INSTRUMENTS)) {
@@ -17106,15 +17851,28 @@ s34_meta_horserace <- function(d, usable, dep = "RF_COEF",
 }
 
 
-# ============================================================================
-# 34.5  DRIVER
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 34.5  Driver
+# -----------------------------------------------------------------------------
+# run_section34() starts from `chars`, by default a copy of s33_chars, and
+# prints three stages:
+#   34A  builds the three sources and merges them onto `chars` by
+#        FINAL_CONCEPT_ID, keeping the concepts of `chars`. Columns of
+#        `chars` with the same names (Section 33C builds them when it finds
+#        the files) are replaced.
+#   34B  classifies each characteristic in S33_CHAR_NAMES by the Section 33C
+#        rule: TOO FEW with fewer than S33_MIN_CONCEPTS nonmissing values, NO
+#        VARIATION with a zero or undefined SD, otherwise USABLE. Writes
+#        QA34A and T34A.
+#   34C  assembles and z-scores the concept panel (s33_assemble(),
+#        s33_zscore()) and runs the three T34 meta-regressions on the usable
+#        characteristics.
+# dep = "IV_COEF" uses the concept-level IV estimates as the dependent
+# variable. Stops if concept_results is missing or no source can be built.
 #
-# Merges the three new sources onto whatever s33_chars currently holds,
-# recomputes the coverage/usable classification across the full extended set
-# using the same STATUS rule Section 33 applies, reassembles the panel, and
-# re-runs the three meta-regressions. Section 33's objects are read but never
-# overwritten; everything new lands under an s34_ name.
+# Needs s33_usable, and s33_chars unless `chars` is given. After a warm start
+# with Section 33 switched off, s33_chars exists but is NULL, so the check
+# below passes and the first merge fails; restore_section33() sets both.
 
 run_section34 <- function(chars = NULL, dep = "RF_COEF") {
   
@@ -17210,13 +17968,14 @@ run_section34 <- function(chars = NULL, dep = "RF_COEF") {
 }
 
 
-# ============================================================================
-# 34.6  RESTORE FROM DISK
-# ============================================================================
-#
-# The Section 34 counterpart to restore_section33(). Reads what run_section34()
-# wrote and reassembles the panel by merge and z-score, estimating nothing.
-# Requires concept_results in the session and a prior run_section34().
+# -----------------------------------------------------------------------------
+# 34.6  Restore from disk
+# -----------------------------------------------------------------------------
+# The Section 34 counterpart to restore_section33(). Reads the T34 and QA34
+# files written by run_section34(), rebuilds s34_panel with s33_assemble()
+# and s33_zscore(), and sets the six s34_ objects. Nothing is estimated.
+# Needs concept_results in the session. Stops if T34A or QA34A is missing; a
+# missing T34B, T34C, or T34D leaves the matching object NULL.
 
 restore_section34 <- function(dep = "RF_COEF") {
   .s34_hd("34R. RESTORING SECTION 34 FROM SAVED OUTPUT")
@@ -17268,41 +18027,45 @@ restore_section34 <- function(dep = "RF_COEF") {
 cat("Section 34 loaded. Run:  run_section34()\n")
 
 
-# ===========================================================================
-# 34F  INTERACTIVE CHECKS AND THE ONE-STEP PROMOTION
-# ===========================================================================
+# -----------------------------------------------------------------------------
+# 34F  Interactive checks and one-step estimates
+# -----------------------------------------------------------------------------
+# Interactive code. It is not inside HPT_SCRATCH or any other run switch, so
+# it runs whenever the file is sourced; run_section34() does not call it.
 #
-# Everything below is run by hand, not by run_section34(). Two separate
-# exercises share this space.
+#   34F.1   Runs each loader on its own and prints the result.
+#   34F.2a  Estimates the SHARE_SI_PACKAGED gradient in one step: the
+#           concept-level share enters estimate_interacted() (Section 4) as
+#           a continuous moderator on the row-level panel, instead of being
+#           a regressor in the concept-level meta-regression (two steps,
+#           Section 33).
+#   34F.2b  Adds a shoppability interaction to the 34F.2a model.
 #
-#   34F.1  Loader smoke tests. Each of the three code-level sources is built
-#          on its own before the merged table is trusted, so a failure names
-#          the file that caused it.
+# 34F.2 needs `op`, the outpatient panel with SHARE_SI_PACKAGED merged on,
+# which this file does not create (see 34F.2a). Building it needs
+# `outpatient` and s33_chars. restore_section33() does not load `outpatient`,
+# the largest object in the session. A warm start restores it from the
+# outpatient_panel cache key, which HPT_WARM_START_KEYS <-
+# "concept_level_6inst" leaves out.
 #
-#   34F.2  SHARE_SI_PACKAGED estimated one-step on the row-level panel rather
-#          than two-step on concept summaries, then re-estimated netting out
-#          shoppability.
-#
-# 34F.2 needs `outpatient`, which restore_section33() does not load and which
-# is the largest object in the session. Start from a full warm start, not
-# HPT_WARM_START_KEYS <- "concept_level_6inst".
+# Writes share_si_packaged_onestep_all_instruments.rds and
+# share_si_packaged_net_shoppability_all.rds to CACHE_DIR, outside
+# cache_or_run().
 
 
-# ---------------------------------------------------------------------------
-# 34F.1  Loader smoke tests
-# ---------------------------------------------------------------------------
+# 34F.1  Loader checks --------------------------------------------------------
 #
-# Expected on the CY2025/2024 files, checked against HPT_CODEBOOK.csv:
-#   PFS RVU    753 concepts from 877 of 915 codes. The 38 unmatched are all
-#              C-prefix OPPS pass-through codes, which by definition never
-#              appear on the physician fee schedule.
-#   ASC BB     340 concepts, read from both vintages. Two concepts return NaN
-#              because every matched code has a blank payment indicator in
-#              CMS's own file; is.finite() drops them downstream, correctly.
-#   Geo/volume 698 concepts from 813 codes, National rows only.
+# Output from the author's run on the CY2025/2024 files and HPT_CODEBOOK.csv:
+#   PFS RVU     753 concepts from 877 of 915 codes. The 38 unmatched codes
+#               are C-prefix OPPS pass-through codes, which do not appear on
+#               the physician fee schedule.
+#   ASC BB      340 concepts, from both years. Two are NaN because every
+#               matched code has a blank payment indicator in the CMS file;
+#               later steps treat them as missing.
+#   Geo/volume  698 concepts from 813 codes, National rows only.
 #
-# readxl emits ~50 type-guessing warnings on the PFS file. They name columns
-# E, H and X; the loader reads 1, 2, 14 and 15. Ignore them.
+# readxl gives about 50 type-guessing warnings on the PFS file. They concern
+# columns E, H, and X; the loader reads columns 1, 2, 14, and 15.
 
 test_pfs <- s34_chars_from_pfs_rvu()
 nrow(test_pfs)
@@ -17317,24 +18080,26 @@ nrow(test_geo)
 head(test_geo)
 
 
-# ---------------------------------------------------------------------------
-# 34F.2a  SHARE_SI_PACKAGED, one-step, all three main instruments
-# ---------------------------------------------------------------------------
+# 34F.2a  SHARE_SI_PACKAGED in one step, three main instruments ---------------
 #
-# Section 33 regresses concept-level RF_COEF estimates on characteristics.
-# This asks the same question of the 1.4M-row panel directly: does the
-# disclosure response differ by packaging within county x concept cells,
-# with the moderator entering as a continuous interaction rather than as a
-# regressor in a second-stage summary regression.
+# Section 33 regresses the concept-level reduced-form estimates (RF_COEF) on
+# characteristics. Here the same question is asked of the 1.4M-row panel:
+# whether the price response differs with packaging within county x concept
+# cells. SHARE_SI_PACKAGED enters estimate_interacted() as a continuous
+# moderator, with the baseline outcome, controls, fixed effects, and
+# clustering, once for each instrument in MAIN_INSTRUMENTS.
 #
 # `op` is the panel with the concept-level moderator merged on:
 #   op <- merge(outpatient, s33_chars[, .(FINAL_CONCEPT_ID, SHARE_SI_PACKAGED)],
 #               by = "FINAL_CONCEPT_ID", all.x = TRUE, sort = FALSE)
+# These lines are commented out, and `op` is not created anywhere else in
+# this file. Unless `op` exists in the session, estimate_interacted() below
+# stops with "object 'op' not found", and sourcing the file stops there.
 #
-# The moderator is demeaned inside estimate_interacted(), so the Main row is
-# the response at average packaging and should reproduce the pooled estimate
-# already in the paper. It does: -3.06% IV against POOLED_IV = -3.07.
-# That agreement is a specification check, not a new result.
+# estimate_interacted() centers the moderator at its estimation-sample mean,
+# so the Main row is the response at average packaging. It reproduces the
+# pooled estimate in the paper (IV -3.06% against POOLED_IV = -3.07), a check
+# on the specification.
 #
 # Roughly 3 minutes per instrument.
 
@@ -17350,14 +18115,16 @@ r_all <- rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
   cbind(INSTRUMENT_LABEL = il, res$rows)
 }), fill = TRUE)
 
-# The "x Moderator" row is the object of interest. Read RF, not IV: first-stage
-# Wald runs 6.8 to 8.6 here, below the conventional threshold, so the IV
-# columns carry the usual weak-instrument caveat while the reduced form is the
-# Anderson-Rubin-equivalent test.
+# Prints the "x Moderator" rows. The first-stage Wald statistic
+# (FIRST_STAGE_WALD_MIN) is 6.8 to 8.6 in these models, below the
+# conventional threshold, so the IV columns are subject to weak-instrument
+# bias. The reduced form coincides with the Anderson-Rubin test (design
+# decision 2 in the file header) and is the relevant test.
 #
-# Result: -0.00495 (p = .018), -0.00427 (p = .037), -0.00430 (p = .062).
-# Sign and magnitude near-identical across instruments; the marginal third is
-# also the weakest first stage, which is internally consistent.
+# Reduced-form x Moderator estimates from the author's run, in
+# MAIN_INSTRUMENTS order: -0.00495 (p = .018), -0.00427 (p = .037), and
+# -0.00430 (p = .062). Sign and size are similar across instruments; the
+# third also has the weakest first stage.
 r_all[TERM == "x Moderator",
       .(INSTRUMENT_LABEL, RF_COEF, RF_P, RF_PERCENT_PER_SD, IV_PERCENT, IV_P,
         FIRST_STAGE_WALD_MIN, N_OBSERVATIONS)]
@@ -17365,23 +18132,26 @@ r_all[TERM == "x Moderator",
 saveRDS(r_all, file.path(CACHE_DIR, "share_si_packaged_onestep_all_instruments.rds"))
 
 
-# ---------------------------------------------------------------------------
-# 34F.2b  Netting out shoppability
-# ---------------------------------------------------------------------------
+# 34F.2b  Netting out shoppability --------------------------------------------
 #
 # Packaged codes are concentrated in the shoppable group (36 of 439 shoppable
-# concepts vs 8 of 297 non-shoppable), so 34F.2a leaves open whether the
-# packaging interaction is shoppability in another guise. This is the one-step
-# analogue of the concept-level horse race.
+# concepts against 8 of 297 non-shoppable), so the 34F.2a interaction could
+# partly reflect shoppability. This block adds a shoppability interaction to
+# the same model, the one-step counterpart of the Section 33 horse race.
 #
-# estimate_interacted() takes a single moderator, so this rebuilds its
-# continuous branch with two. Nothing else changes: same outcome, controls,
-# fixed effects and clustering as everywhere else in the paper.
+# estimate_interacted() takes one moderator, so s34_net_shoppability()
+# repeats its continuous branch with two, using the baseline outcome,
+# controls, fixed effects, and clustering. Neither moderator enters on its
+# own: both are constant within a concept, so the MARKET_ID (county x
+# concept) fixed effect absorbs them and only their interactions are
+# estimated. Both are centered at their estimation-sample means, so the Main
+# row is the response at the sample average of both.
 #
-# Neither moderator's own level enters as a regressor. Both are concept-level
-# and time-invariant, so county x concept absorbs them entirely; only the
-# interaction with Z is identified. Both are demeaned, so Main stays readable
-# as the response at the sample average of both.
+# Returns three rows (Main, x SHARE_SI_PACKAGED, x Shoppable; the labels do
+# not change with moderator1 and moderator2) with reduced-form and IV
+# estimates, FIRST_STAGE_WALD_MIN, and N_OBSERVATIONS from the reduced form.
+# Returns NULL if the sample has fewer than MIN_MODEL_OBS rows or the reduced
+# form fails.
 
 s34_net_shoppability <- function(panel, instrument_label, instrument,
                                  moderator1 = "SHARE_SI_PACKAGED",
@@ -17403,9 +18173,9 @@ s34_net_shoppability <- function(panel, instrument_label, instrument,
   d[, MOD1 := safe_numeric(get(moderator1))]; d[, MOD1 := MOD1 - mean(MOD1, na.rm = TRUE)]
   d[, MOD2 := safe_numeric(get(moderator2))]; d[, MOD2 := MOD2 - mean(MOD2, na.rm = TRUE)]
   
-  # Three terms per equation: level, packaging interaction, shoppability
-  # interaction. RF and IV columns are built in parallel so the same three
-  # rows come back for both.
+  # Three terms per equation: the main term and its interactions with the two
+  # moderators. RF_* enter the reduced form; TREAT_* are the endogenous terms
+  # of the IV model, instrumented by IV_*.
   d[, `:=`(RF_MAIN = get(instrument), RF_PACKAGED = get(instrument) * MOD1,
            RF_SHOP = get(instrument) * MOD2,
            TREAT_MAIN = get(endogenous), TREAT_PACKAGED = get(endogenous) * MOD1,
@@ -17454,13 +18224,15 @@ s34_net_shoppability <- function(panel, instrument_label, instrument,
   out[]
 }
 
-# SHOP_CERTAINTY lives on s33_panel, which is concept-level. The panel-native
-# column is SCHEME_1_CERTAINTY, the same field every Section 28-30
-# specification uses.
+# SHOP_DUMMY is 1 for concepts classified Shoppable in SCHEME_1_CERTAINTY,
+# the row-level column that Sections 28-30 also use. SHOP_CERTAINTY, the
+# shoppability variable of the Section 33 horse race, exists only on
+# concept-level tables such as s33_panel. The column is added to `op` by
+# reference.
 op[, SHOP_DUMMY := as.numeric(SCHEME_1_CERTAINTY == "Shoppable")]
 
-# Single instrument first, to confirm the specification runs before spending
-# three times the wall clock on the full set.
+# The primary instrument alone first, to check that the specification runs,
+# then all three main instruments.
 t0 <- Sys.time()
 r_net <- s34_net_shoppability(op, "Competitor_only_hospitals_9m",
                               MAIN_INSTRUMENTS[["Competitor_only_hospitals_9m"]])
@@ -17476,22 +18248,23 @@ r_net_all <- rbindlist(lapply(names(MAIN_INSTRUMENTS), function(il) {
   res
 }), fill = TRUE)
 
-# What this returns:
+# Output from the author's run (coefficient and p-value of each interaction):
 #
 #   instrument            x SHARE_SI_PACKAGED    x Shoppable
 #   Competitor hospitals  -0.00415 (p = .053)    -0.00284 (p = .024)
 #   Primary strict system -0.00364 (p = .084)    -0.00221 (p = .043)
 #   Competitor ex-CBSA    -0.00330 (p = .168)    -0.00337 (p = .018)
 #
-# Shoppability is robust across all three. Packaging holds its sign and rough
-# magnitude but weakens as the instrument weakens, and is not distinguishable
-# from zero under the third, which is also the weakest first stage in the
-# paper (5.7). Attenuation from 34F.2a is 16% on the primary instrument.
+# The shoppability interaction has p < .05 under all three instruments. The
+# packaging interaction keeps its sign and approximate size but weakens with
+# the instrument: p = .168 under the third, which has the weakest first stage
+# in the paper (5.7). On the primary instrument the packaging coefficient is
+# 16% smaller than in 34F.2a.
 #
-# The two-step horse race in Section 33 had packaging clearing p < .02 on
-# every instrument. This one-step version, on the real panel rather than 736
-# concept summaries, is the more rigorous test and is less favourable. Where
-# they disagree, this one governs.
+# In the Section 33 horse race (two steps), packaging has p < .02 under every
+# instrument. The one-step estimate uses the row-level panel rather than 736
+# concept-level estimates, is the more demanding test, and takes precedence
+# where the two disagree.
 r_net_all[TERM != "Main",
           .(INSTRUMENT_LABEL, TERM, RF_COEF, RF_P, RF_PERCENT_PER_SD,
             IV_PERCENT, IV_P, FIRST_STAGE_WALD_MIN, N_OBSERVATIONS)]

@@ -1,74 +1,141 @@
 ###############################################################################
-#                                                                             #
-#   HPT -- MARKET DEFINITION AND EXCLUSION RESTRICTION ROBUSTNESS             #
-#                                                                             #
-#   Replication companion to HPT_Analysis_Pipeline.R. The file answers two    #
-#   questions about the headline shoppability result.                         #
-#                                                                             #
-#     1. MARKET DEFINITION. Is the county the right market? The headline      #
-#        shoppability gradient is re-estimated under six market definitions   #
-#        (county, city, CBSA, HSA, HRR, and a 30-mile ring), under            #
-#        rural/urban and multi-hospital-market subsamples, and at the         #
-#        concept level at HSA and HRR.                                        #
-#                                                                             #
-#     2. EXCLUSION RESTRICTION. Instruments IV01-IV14 apply a "different      #
-#        county" filter and, in the CBSA variants, an "outside the CBSA"      #
-#        filter. Neither excludes adjacent counties, and metropolitan areas   #
-#        span touching counties. IV15 is IV06 plus a non-adjacency filter.    #
-#        The file compares the two and decomposes the own-county and          #
-#        adjacent-county channels directly.                                   #
-#                                                                             #
-#   The headline result is not modified anywhere in this file. Every          #
-#   instrument, panel, and estimate used in the main text is left untouched;  #
-#   this file only adds rows to robustness tables.                            #
-#                                                                             #
-#   PREREQUISITE                                                              #
-#     Run HPT_Analysis_Pipeline.R Parts 1-2, or restore_session() via         #
-#     HPT_warm_start.R, so that the shared helper functions and constants     #
-#     exist. Part 0 checks for them by name and stops if any are absent.      #
-#     The cached objects concept_results and schemes_long from the main       #
-#     county run are also required, from Part 9 onward.                       #
-#                                                                             #
-#   CONTENTS, in the order the file executes                                  #
-#     Part 0    Preflight: required objects, column list, panel paths         #
-#     Part 1    Hospital-level support data (geography, rings, adjacency)     #
-#     Part 2    Panel loader                                                  #
-#     Part 3    Market definition ladder                                      #
-#     Part 4    Ring exposure and the spatial decay diagnostic                #
-#     Part 5    Own-county against adjacent-county decomposition              #
-#     Part 6    IV15 against IV06                                             #
-#     Part 7    Rural/urban and multi-hospital subsamples                     #
-#     Part 9    Concept-level analysis at HRR, one instrument                 #
-#     Part 8    Assembled summary of Parts 3-7 (runs after Part 9)            #
-#     Part 10   Competitor instruments rebuilt in R, validated; six at HRR    #
-#     Part 11   HSA adjacency from boundary polygons; nine HSA instruments    #
-#     Part 12   Concept-level estimation and meta-regressions at HSA and HRR  #
-#     Part 13   Between-concept heterogeneity across county, HSA, and HRR     #
-#     Part 14   Fixed-effect feasibility                                      #
-#     Part 15   Six-instrument concept runs and the restricted county run     #
-#     Part 15E  Cross-geography comparison tables and figures                 #
-#     Part 16   Distance-banded instruments and the ring decay IV             #
-#     Part 17   Out-of-state and ownership-dated constructions                #
-#                                                                             #
-#   Parts 9 and 8 execute in that order because the assembled summary in      #
-#   Part 8 collects results from Parts 3-7 and is placed at the end of that   #
-#   block. The numbering is kept as-is because the paper and its appendix     #
-#   refer to these part numbers.                                              #
-#                                                                             #
-#   RUNTIME. The concept-level loops in Parts 9, 12, and 15 dominate: budget  #
-#   11-12 hours per single-instrument geography and 8-12 hours per            #
-#   six-instrument geography. Every such run is wrapped in cache_or_run(), so #
-#   a completed run is never repeated, and estimate_concept_level() writes a  #
-#   partial CSV every 50 concepts, so an interruption costs at most the last  #
-#   50 concepts.                                                              #
-#                                                                             #
+#
+#   WHEN TRANSPARENCY WORKS: SERVICE SHOPPABILITY, CONTRACTING DEPTH, AND
+#   THE PRICE EFFECTS OF HOSPITAL DISCLOSURE
+#
+#   Replication code: market definition and the exclusion restriction
+#
+#   Danny Sierra
+#   Department of Economics, Florida State University
+#   Ds22c@fsu.edu
+#
 ###############################################################################
-
-# Set HPT_ROOT to the project directory before sourcing the main pipeline, for
-# example:
+#
+# HOW TO RUN
+# -----------------------------------------------------------------------------
+# This file is a companion to HPT_Analysis_Pipeline.R and uses the pipeline's
+# functions, constants, paths, and cached results. Source the pipeline first,
+# in the same R session. A warm start loads its functions and cached results
+# without estimating anything:
 #   Sys.setenv(HPT_ROOT = "/path/to/Hospital Price Transparency Paper")
 #   HPT_WARM_START <- TRUE
 #   source(file.path(Sys.getenv("HPT_ROOT"), "Code", "HPT_Analysis_Pipeline.R"))
+# Then source this file. A session in which the pipeline has completed a full
+# run also works. Either way, source() of the pipeline stops in its Section
+# 34F with "object 'op' not found" (see the pipeline's KNOWN ISSUES); every
+# object this file uses is defined before that point. This file has no run
+# switches: source() runs every part in order, and cache_or_run() follows the
+# pipeline's USE_CACHE.
+#
+# Part 0 checks the pipeline objects listed in MD_REQUIRED_OBJECTS by name and
+# stops if any is missing. Sourcing the pipeline only through PART 2 does not
+# pass this check: CONCEPT_INSTRUMENTS is defined in the pipeline's PART 3
+# (BUILD block) or by restore_session(), which a warm start calls. Two cached
+# results of the main county run must also be in memory: concept_results
+# (cache key concept_level_6inst) from Part 9 (9C) onward, and schemes_long in
+# Part 15E. A warm start loads both; if HPT_WARM_START_KEYS restricts it, the
+# keys must include concept_level_6inst and schemes_long.
+#
+# Inputs. Part 0 stops if any of these is missing from PANEL_DIR
+# (Data/data_final/01_R_Analysis_Panels):
+#   HPT_R_MAIN_PRIMARY_COUNTY_OUTPATIENT_CONCEPT.parquet
+#   HPT_R_MAIN_ROBUSTNESS_<LEVEL>_OUTPATIENT_CONCEPT.parquet, for LEVEL = CITY,
+#     CBSA, HSA, and HRR
+#   HPT_RING_EXPOSURE.csv, HPT_ADJACENCY_DECOMP.csv, HPT_HOSPITAL_GEO.csv
+# Read later in the file:
+#   HPT_HOSPITAL_DISCLOSURE_EVENTS.parquet, in
+#     Data/data_final/02_Treatments_and_Instruments (10.1)
+#   the Dartmouth HSA boundary shapefile, in PANEL_DIR (11.1)
+#   HPT_COUNTY_ADJACENCY_PAIRS.csv, in PANEL_DIR (11.2)
+# Every call to md_load_panel() also reads the pipeline's county exact-code
+# panel (FILES$outpatient_exact) through apply_concept_merges().
+#
+# WHAT THE FILE ESTIMATES
+# -----------------------------------------------------------------------------
+# Two questions about the headline shoppability result.
+#
+# 1. Market definition. The headline gradient, estimated on county markets,
+#    is re-estimated with markets defined by city, CBSA, HSA, and HRR, with
+#    the number of prior posters within 30 miles as the treatment, in
+#    rural/urban and multi-hospital subsamples, and at the concept level at
+#    HSA and HRR.
+#
+# 2. Exclusion restriction. Instruments IV01-IV14 apply a "different county"
+#    filter and, in the CBSA variants, an "outside the CBSA" filter. Neither
+#    excludes adjacent counties, and metropolitan areas span adjacent
+#    counties. IV15 (Z_SYS_COMPETITOR_EXCL_ADJACENT_9M_EXCL_CURRENT) is IV06
+#    (PRIMARY_INSTRUMENT, Z_SYS_COMPETITOR_ONLY_9M_EXCL_CURRENT) with peers in
+#    adjacent counties excluded. The file compares the two and estimates the
+#    own-county and adjacent-county channels separately. Part 17 adds
+#    out-of-state and ownership-dated versions of IV06.
+#
+# Unless a part says otherwise, models use the pipeline's baseline
+# specification: LOG_TOTAL_BEDS as control, MARKET_ID and POST_MONTH fixed
+# effects, and two-way clustering by ANALYSIS_MARKET and POST_MONTH, where
+# ANALYSIS_MARKET is the market of the panel in use (0.2).
+#
+# Its tables are CSV files whose names begin with MD, written to TABLE_DIR
+# (MD06 to QA_DIR). One block also writes under the pipeline's file names:
+# 15E.7 calls the pipeline's run_comparability_within_family() and
+# run_comparability_meta(), which save T09D_comparability_within_family.csv,
+# T10_comparability_meta_regression.csv, and T10B_horse_race_summary.csv to
+# TABLE_DIR and QA09_moderator_screen.csv to QA_DIR (see KNOWN ISSUES).
+# Parts 15E and 16 also write PDF figures to FIGURE_DIR and
+# tab_schemes_geography_body.tex to TABLE_DIR. Its own caches use keys that
+# begin with md_, p12_, or p15_. It also reads three of the pipeline's caches:
+# schemes_long (Part 2), meta_regressions_iv (15E.3), and
+# comparability_measures (15E.7). When a cache file is missing or USE_CACHE
+# is FALSE, schemes_long is rebuilt and saved with the pipeline's own call,
+# and the other two fail (see KNOWN ISSUES). The file also changes the
+# session: 0.1 extends ANALYSIS_COLUMNS, 11.1 sets sf_use_s2(FALSE), and 15.0
+# removes `outpatient` and other large pipeline objects from memory.
+#
+# STRUCTURE
+# -----------------------------------------------------------------------------
+# The parts in the order they run:
+#   Part 0    Preflight: required objects, column list, input files
+#   Part 1    Hospital-level support data (rural/urban, rings, adjacency)
+#   Part 2    Panel loader, md_load_panel()
+#   Part 3    Market definition ladder
+#   Part 4    Ring exposure and the spatial decay diagnostic
+#   Part 5    Own-county against adjacent-county decomposition
+#   Part 6    IV15 against IV06
+#   Part 7    Rural/urban and multi-hospital subsamples
+#   Part 9    Concept-level analysis at HRR, one instrument
+#   Part 8    Assembled summary of Parts 3-7
+#   Part 10   Competitor instruments rebuilt in R and validated; six at HRR
+#   Part 11   HSA adjacency from boundary polygons; nine HSA instruments
+#   Part 12   Concept-level estimation and meta-regressions at HSA and HRR
+#   Part 13   Between-concept heterogeneity across county, HSA, and HRR
+#   Part 14   Fixed-effect feasibility
+#   Part 15   Six-instrument concept runs and the restricted county run
+#   Part 15E  Cross-geography comparison tables and figures
+#   Part 16   Distance-banded instruments and the ring decay IV
+#   Part 17   Out-of-state and ownership-dated constructions
+#
+# Part 9 is placed before Part 8 in the file and runs first; Part 8 uses only
+# the results of Parts 3-7. The part numbers are kept because the paper and
+# its appendix refer to them.
+#
+# RUNTIME
+# -----------------------------------------------------------------------------
+# The concept-level loops in Parts 9, 12, and 15 take most of the time: about
+# 11-12 hours per single-instrument geography and 8-12 hours per
+# six-instrument geography. Each loop runs inside cache_or_run(), so with
+# USE_CACHE = TRUE a completed run is loaded instead of repeated.
+# estimate_concept_level() saves a _PARTIAL.csv every 50 concepts as a record
+# of the concepts finished. It does not resume from that file, so an
+# interrupted loop starts again from the first concept.
+#
+# Two costs remain when every result is cached. The Part 3 ladder is cached
+# with overwrite = TRUE, so its five models are re-estimated on every run.
+# md_load_panel() runs for every panel a block needs (five times in Part 3,
+# once each in Parts 4, 9, 10.6, and 11.5, twice per run in Part 12, and again
+# in Parts 15 and 17.4), also when the estimates come from the cache, and each
+# call reads the county exact-code panel as well.
+#
+#
+###############################################################################
 
 library(arrow)
 library(data.table)
@@ -78,13 +145,17 @@ library(lubridate)
 library(sf)
 
 
-# ============================================================================
-# PART 0 -- PREFLIGHT
-# ============================================================================
+# =============================================================================
+# Part 0: Preflight
+# =============================================================================
 #
-# Every name below is defined by HPT_Analysis_Pipeline.R, not by this file.
-# Checking them up front turns a missing prerequisite into an immediate,
-# named error rather than a NULL model several hours into a concept loop.
+# Every name in MD_REQUIRED_OBJECTS is defined by HPT_Analysis_Pipeline.R, not
+# by this file (see HOW TO RUN). The check stops with the list of missing
+# names, so a missing prerequisite produces an immediate error instead of a
+# NULL model hours into a concept loop. The list holds the main functions and
+# constants; other pipeline objects used below, such as wald_equality(),
+# SCHEME_COLUMNS, and FINAL_DATA_ROOT, are defined in PARTS 1 and 2 of the
+# pipeline.
 
 MD_REQUIRED_OBJECTS <- c(
   "estimate_interacted", "prepare_panel", "read_panel", "build_schemes",
@@ -112,14 +183,16 @@ cat("\n=== MARKET DEFINITION ANALYSIS ===\n")
 cat("Endogenous:", ENDOGENOUS_VARIABLE, "| Primary IV:", PRIMARY_INSTRUMENT, "\n")
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 0.1  Extend ANALYSIS_COLUMNS so the IV15 family survives read_panel()
-# ---------------------------------------------------------------------------
-# read_panel() selects columns with intersect(ANALYSIS_COLUMNS, names(ds)).
-# The IV15 family is not a member of ALL_CANDIDATE_INSTRUMENTS, so without
-# this extension those columns are dropped at load with no warning and any
-# model using them returns NULL. The three geography columns are added for
-# the same reason.
+# -----------------------------------------------------------------------------
+# read_panel() keeps only intersect(ANALYSIS_COLUMNS, names(ds)). The three
+# IV15-family columns in IV_EXCLUDE_ADJACENT are not in
+# ALL_CANDIDATE_INSTRUMENTS, so without this extension they are dropped at
+# load with no warning and any model that uses them returns NULL. HSA_NUM,
+# HRR_NUM, and RUCC_2023 are added so that they are kept where a panel has
+# them. The extended ANALYSIS_COLUMNS stays in effect for the rest of the
+# session.
 
 IV_EXCLUDE_ADJACENT <- c(
   Competitor_excl_adjacent_hospitals_9m = "Z_SYS_COMPETITOR_EXCL_ADJACENT_9M_EXCL_CURRENT",
@@ -135,20 +208,23 @@ cat("ANALYSIS_COLUMNS extended with", length(IV_EXCLUDE_ADJACENT),
     "adjacency instruments.\n")
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 0.2  Market definitions and their panel files
-# ---------------------------------------------------------------------------
-# The headline specification runs on the CONCEPT panel
-# (FILES$outpatient_concept) rather than the exact-code panel, so the ladder
-# reads the CONCEPT panel at each geography and mirrors the headline exactly.
+# -----------------------------------------------------------------------------
+# The headline specification uses the concept panel
+# (FILES$outpatient_concept), not the exact-code panel, so every rung of the
+# ladder reads the concept panel for its geography. md_panel_path() returns
+# the file in PANEL_DIR: HPT_R_MAIN_PRIMARY_COUNTY_OUTPATIENT_CONCEPT.parquet
+# for COUNTY and HPT_R_MAIN_ROBUSTNESS_<LEVEL>_OUTPATIENT_CONCEPT.parquet for
+# the other levels.
 #
-# Fixed effects and clustering follow the panel automatically. Each exported
-# panel renames its own geography column to the generic ANALYSIS_MARKET and
-# rebuilds MARKET_ID as ANALYSIS_MARKET::FINAL_CONCEPT_ID. BASELINE_FIXED_
-# EFFECTS and BASELINE_CLUSTERS refer to those generic names, so swapping the
-# panel swaps the fixed effects and the cluster level together. Setting them
-# by hand for one geography would desynchronise the fixed effects from the
-# treatment without any visible error.
+# Fixed effects and clustering follow the panel. Each exported panel renames
+# its geography column to ANALYSIS_MARKET and builds MARKET_ID as
+# ANALYSIS_MARKET::FINAL_CONCEPT_ID. BASELINE_FIXED_EFFECTS (MARKET_ID,
+# POST_MONTH) and BASELINE_CLUSTERS (ANALYSIS_MARKET, POST_MONTH) use these
+# generic names, so changing the panel changes the fixed effects and the
+# cluster level together. Setting them by hand for one geography would put
+# the fixed effects out of step with the treatment without any error.
 
 MD_GEOGRAPHIES <- c("COUNTY", "CITY", "CBSA", "HSA", "HRR")
 
@@ -158,8 +234,9 @@ md_panel_path <- function(level) {
             sprintf("HPT_R_MAIN_%s_%s_OUTPATIENT_CONCEPT.parquet", role, level))
 }
 
-# Support files carrying hospital geography, ring exposure, and the own/
-# adjacent county decomposition. All three are checked before anything runs.
+# Hospital-level support files in PANEL_DIR: ring exposure, the own- and
+# adjacent-county decomposition, and hospital geography. The two loops below
+# stop if any support file or any of the five panels is missing.
 MD_SUPPORT_FILES <- list(
   ring      = file.path(PANEL_DIR, "HPT_RING_EXPOSURE.csv"),
   adjacency = file.path(PANEL_DIR, "HPT_ADJACENCY_DECOMP.csv"),
@@ -178,19 +255,21 @@ for (g in MD_GEOGRAPHIES) {
 MD_SCHEME <- "SCHEME_1_CERTAINTY"   # headline classification
 
 
-# ============================================================================
-# PART 1 -- HOSPITAL-LEVEL SUPPORT DATA
-# ============================================================================
+# =============================================================================
+# Part 1: Hospital-level support data
+# =============================================================================
 #
-# Assembles one row per hospital carrying rural/urban status, ring exposure
-# counts at three distance bands, and the own/adjacent county prior-poster
-# counts. Merged onto every panel by md_load_panel() in Part 2.
+# Builds md_hospital_attrs, one row per hospital, with RUCC_2023 and
+# METRO_STATUS (RUCC 1-3 metro, 4-9 nonmetro), prior-poster counts in
+# distance rings around the hospital (0-15, 15-30, 30-60, and 0-30 miles)
+# and RING_TOTAL_0_30, and the own-county and adjacent-county prior-poster
+# counts. md_load_panel() (Part 2) merges it onto every panel by HOSPITAL_ID.
 #
-# Four hospitals (La Salle IL, La Porte IN, and two Valdez-Cordova AK
-# records) appear twice in HPT_HOSPITAL_GEO because the Snowflake Section 3
-# join matches them through both HPT_REF_GEO_OVERRIDES and the name
-# crosswalk. The duplicate rows are byte-identical, so deduplicating on
-# HOSPITAL_ID is safe. The permanent fix belongs in the SQL override join.
+# unique() keeps one row per HOSPITAL_ID in each support file. Four hospitals
+# (La Salle IL, La Porte IN, and two Valdez-Cordova AK records) appear twice
+# in HPT_HOSPITAL_GEO because the join in Section 3 of the Snowflake build
+# matches them through both HPT_REF_GEO_OVERRIDES and the name crosswalk. The
+# duplicate rows are byte-identical, so keeping the first loses nothing.
 
 md_hosp_geo <- unique(
   fread(MD_SUPPORT_FILES$geo,
@@ -228,29 +307,39 @@ cat("Hospital attributes assembled:",
     format(nrow(md_hospital_attrs), big.mark = ","), "hospitals\n")
 
 
-# ============================================================================
-# PART 2 -- PANEL LOADER
-# ============================================================================
+# =============================================================================
+# Part 2: Panel loader
+# =============================================================================
 #
-# md_load_panel() reproduces load_outpatient() step for step, with the
-# geography-specific panel file swapped in and the Part 1 hospital attributes
-# merged on. Deviating from this sequence would make the ladder
-# non-comparable to the headline.
+# md_load_panel(level) builds a geography's panel with the steps the
+# pipeline's BUILD block uses for `outpatient`: read_panel() and
+# prepare_panel() as in load_outpatient(), then apply_concept_merges() and
+# attach_scheme_columns(), applied to the file from md_panel_path(level). It
+# then merges the Part 1 hospital attributes (stops if the row count changes)
+# and sets ANALYSIS_GEOGRAPHY_LABEL. Following the same sequence keeps every
+# rung comparable with the headline. md_schemes_long is read from the
+# pipeline's schemes_long cache; if that file is missing or USE_CACHE is
+# FALSE, it is rebuilt and saved with the pipeline's own call.
 #
-# One correction is applied inside the loader. apply_concept_merges() reads a
-# second, always county-level exact-code panel to resolve the six canonical
-# concept collapses (MRI brain, CT abdomen, and four others). That secondary
-# panel carries its own county-keyed ANALYSIS_MARKET, which overwrites the
-# primary panel's ANALYSIS_MARKET for every row the merge touches. At COUNTY
-# the leaked value equals the correct value and nothing changes. At CITY,
-# CBSA, HSA, and HRR it replaces the correct market key with a raw county
-# string for roughly 12,000 to 14,000 rows per geography.
+# Market keys of the merged concepts. apply_concept_merges() builds the six
+# merged concepts from the county exact-code panel at every geography, so the
+# merged rows carry a county ANALYSIS_MARKET. At CITY, CBSA, HSA, and HRR
+# this replaces the market key with a county string in roughly 12,000 to
+# 14,000 rows per geography. The loader therefore saves ANALYSIS_MARKET by
+# HOSPITAL_ID, POST_MONTH, and FINAL_CONCEPT_ID before the merge, writes it
+# back afterwards, and rebuilds MARKET_ID; apply_concept_merges() is used as
+# the pipeline defines it. A stop() checks that the write-back leaves the row
+# count unchanged, and a warning() flags keys that still look like county
+# keys.
 #
-# The loader therefore saves ANALYSIS_MARKET before the call, restores it
-# after, and rebuilds MARKET_ID to match. apply_concept_merges() is left
-# unmodified: it is validated code the headline result depends on, so the
-# correction is applied from outside it. Two guards confirm the restore held,
-# one on row count and one on the maximum market-key length.
+# A merged row whose combination of HOSPITAL_ID, POST_MONTH, and
+# FINAL_CONCEPT_ID did not occur before the merge gets ANALYSIS_MARKET = NA,
+# at every geography including COUNTY. This covers every row of the two
+# constructed canonical concepts (MRI_MRA_FMRI_BRAIN, MRI_MRA_ARHFCMRIGTBS)
+# and the rows of the other four merged concepts in hospital-months that had
+# no row for the canonical concept itself. ANALYSIS_MARKET is a clustering
+# variable, so these rows drop out of every model in this file, while the
+# pipeline's `outpatient` panel keeps them.
 
 md_schemes_long <- cache_or_run("schemes_long",
                                 extend_schemes_for_merged(build_schemes()))
@@ -285,9 +374,10 @@ md_load_panel <- function(level) {
   p[, ANALYSIS_MARKET_CORRECT := NULL]
   p[, MARKET_ID := paste(ANALYSIS_MARKET, FINAL_CONCEPT_ID, sep = "::")]
   
-  # Post-fix guard: no market key should still look like a leaked county
-  # string (COUNTY excepted -- there it's a coincidental non-issue, not
-  # something to flag) once restored.
+  # A restored key longer than 10 characters at CITY, CBSA, HSA, or HRR is
+  # taken to be a county key that was not restored, and triggers a warning.
+  # At COUNTY every key is a county key, so the check is skipped. Keys set to
+  # NA above are ignored by max(na.rm = TRUE).
   max_len <- max(nchar(p$ANALYSIS_MARKET), na.rm = TRUE)
   if (level != "COUNTY" && max_len > 10)
     warning(level, ": ANALYSIS_MARKET max length is ", max_len,
@@ -309,21 +399,25 @@ md_load_panel <- function(level) {
 }
 
 
-# ============================================================================
-# PART 3 -- MARKET DEFINITION LADDER
-# ============================================================================
+# =============================================================================
+# Part 3: Market definition ladder
+# =============================================================================
 #
-# The headline specification re-estimated once per market definition, with
-# the instrument held at PRIMARY_INSTRUMENT throughout. Each row of the
-# output reports the shoppability gradient together with the number of
-# markets, fixed-effect cells, hospitals, and panel rows behind it.
+# Re-estimates the headline specification (estimate_interacted() with the
+# Scheme 1 categories in MD_SCHEME, PRIMARY_OUTCOME, and PRIMARY_INSTRUMENT)
+# once for each geography in MD_GEOGRAPHIES. MD01 has one row per category
+# and geography, with the number of markets, fixed-effect cells, hospitals,
+# and panel rows behind it; MD02 has the equality tests.
 #
-# One construction choice to record in the table notes. Every Z_SYS_*
-# instrument is built at COUNTY level in the Python pipeline. When the
-# treatment and fixed effects move to HRR, the instrument remains
-# county-based. This is defensible, since the instrument's role is to predict
-# the posting decision rather than to define the market, but it is a choice
-# rather than an automatic consequence of swapping the panel.
+# The instrument is county-based at every rung. Every Z_SYS_* instrument is
+# built at county level in the Python pipeline, so when the treatment and the
+# fixed effects move to HRR the instrument does not. This is a choice rather
+# than a consequence of swapping the panel: the instrument's role is to
+# predict the posting decision, not to define the market. Parts 10 and 11
+# build instruments at HRR and HSA.
+#
+# cache_or_run() is called with overwrite = TRUE, so the ladder is
+# re-estimated, and its five panels reloaded, every time this part runs.
 
 md_run_ladder_row <- function(level) {
   cat("\n=== Ladder:", level, "===\n")
@@ -358,9 +452,8 @@ md_run_ladder_row <- function(level) {
     t <- copy(res$tests); t[, MARKET_DEFINITION := level]; t
   } else NULL
   
-  # Checkpoint: confirms this geography finished cleanly and reports live
-  # memory state before moving to the next one, so a problem on CBSA/HRR
-  # shows up immediately rather than after all five have run.
+  # Progress report for this geography (rows, hospitals, markets, the IV
+  # estimates, and gc() memory use), printed before the next one is loaded.
   cat(sprintf("  DONE %-6s | rows: %s | hospitals: %s | markets: %s\n",
               level, format(nrow(p), big.mark = ","),
               format(uniqueN(p$HOSPITAL_ID), big.mark = ","),
@@ -392,24 +485,26 @@ print(md_ladder$rows[, .(MARKET_DEFINITION, TERM, N_MARKETS,
                          N_OBSERVATIONS)])
 
 
-# ============================================================================
-# PART 4 -- RING EXPOSURE AND THE SPATIAL DECAY DIAGNOSTIC
-# ============================================================================
+# =============================================================================
+# Part 4: Ring exposure and the spatial decay diagnostic
+# =============================================================================
 #
-# The county panel is loaded once here and stays in scope for Parts 4 through
-# 7 and for the instrument construction in Parts 10, 11, 16, and 17.
+# md_county_panel is loaded once here and stays in memory for the rest of the
+# file. It is used in Parts 4-7, as the focal panel for the instruments built
+# in Parts 10, 11, 16, and 17, and in Parts 14 and 15.
 
 md_county_panel <- md_load_panel("COUNTY")
 
 
+# -----------------------------------------------------------------------------
 # 4.1  Ring exposure as a treatment
-#
-# The treatment becomes the count of prior posters within 30 miles while
-# ANALYSIS_MARKET and MARKET_ID stay county-based, because a ring has no
+# -----------------------------------------------------------------------------
+# The treatment is replaced by the number of prior posters within 30 miles
+# (RING_PRIOR_0_30). The instrument stays PRIMARY_INSTRUMENT, and
+# ANALYSIS_MARKET and MARKET_ID stay county-based because a ring has no
 # discrete market key. This rung changes the treatment without changing the
-# fixed effects, so it is not a clean substitute for the other five and is
-# reported as a distance-based treatment check rather than as a sixth market
-# definition.
+# fixed effects, so it is reported as a distance-based treatment check
+# (MD03_ring_treatment_rows.csv), not as a sixth market definition.
 
 md_ring_panel <- copy(md_county_panel)
 md_ring_panel[, N_PRIOR_POSTERS_COUNTY_ORIG := get(ENDOGENOUS_VARIABLE)]
@@ -440,18 +535,21 @@ if (!is.null(md_ring_result)) {
                       IV_P = round(IV_P, 4), N_OBSERVATIONS)])
 }
 
-# 4.2  Spatial decay, reduced form
+
+# -----------------------------------------------------------------------------
+# 4.2  Spatial decay, OLS
+# -----------------------------------------------------------------------------
+# One OLS regression of the outcome on the prior-poster counts in all three
+# bands (0-15, 15-30, and 30-60 miles), with the baseline controls, fixed
+# effects, and clusters and no instrument; the printed heading calls it the
+# reduced form. It does not define a market. It estimates the distance at
+# which the peer-posting relationship fades. Writes
+# MD04_ring_spatial_decay.csv.
 #
-# All three distance bands enter one reduced-form regression simultaneously.
-# This does not define a market. It estimates the distance at which the
-# peer-posting relationship dies out, which is the evidence-based answer to
-# the question of what the market is.
-#
-# Read the estimates against the raw shares. Descriptively, the share of ring
-# peers that posted first is close to flat across the three bands (0.398,
-# 0.402, and 0.407 for 0-15, 15-30, and 30-60 miles). Flat regression
-# coefficients are therefore a substantive finding about the setting, namely
-# that peer posting is not spatially local, rather than a data problem.
+# The share of ring peers that posted first is nearly flat across the three
+# bands (0.398, 0.402, and 0.407 for 0-15, 15-30, and 30-60 miles), so flat
+# coefficients describe the setting, in which peer posting is not spatially
+# local, rather than a data problem.
 
 md_decay_fit <- tryCatch(
   feols(
@@ -483,20 +581,25 @@ if (!is.null(md_decay_fit)) {
                      P_VALUE = round(P_VALUE, 4))])
 }
 
+
+# -----------------------------------------------------------------------------
 # 4.3  Band contrasts and rings interacted with shoppability
-#
-# The decay claim is a claim about differences between bands, which 4.2 does
+# -----------------------------------------------------------------------------
+# A claim of decay is a claim about differences between bands, which 4.2 does
 # not test. If the selection bias that attenuates OLS is similar across
-# bands, it cancels in those differences, so the contrasts are the sharper
-# object. The interacted version asks the further question of whether the
-# shoppability gradient itself is local.
+# bands, it cancels in those differences, so the contrasts are less exposed
+# to it than the band coefficients. The interacted model asks whether the
+# shoppability gradient itself is local: each band count is interacted with
+# the Scheme 1 shoppable and non-shoppable indicators (six terms). Both models
+# are OLS; Part 16 builds the three excluded instruments that a banded IV
+# needs and compares that IV with OLS.
 #
-# Both remain OLS. Part 16 builds the three excluded instruments a banded IV
-# would require and reports why that system is not identified here.
-#
-# md_lincomb() forms a linear combination of coefficients with its delta-
-# method standard error; md_run_contrasts() applies it to a named list of
-# weight vectors.
+# md_lincomb() returns a linear combination of coefficients with its
+# delta-method standard error and stops if a term is missing from the model;
+# md_run_contrasts() applies it to a named list of weight vectors. The block
+# stops if the levels of MD_SCHEME are not MD_SHOP_LEVEL and
+# MD_NONSHOP_LEVEL. Writes MD04B_ring_band_contrasts.csv,
+# MD04C_ring_shop_coefficients.csv, and MD04D_ring_shop_contrasts.csv.
 
 MD_SHOP_LEVEL    <- "Shoppable"
 MD_NONSHOP_LEVEL <- "Non_shoppable"
@@ -593,18 +696,22 @@ if (!is.null(md_ring_i_fit)) {
 rm(md_ring_i); invisible(gc())
 
 
-# ============================================================================
-# PART 5 -- OWN-COUNTY AGAINST ADJACENT-COUNTY DECOMPOSITION
-# ============================================================================
+# =============================================================================
+# Part 5: Own-county against adjacent-county decomposition
+# =============================================================================
 #
-# Own-county and adjacent-county prior-poster counts enter as two separate
-# regressors, followed by a Wald test of equality. A near-zero adjacent
-# coefficient shows the county boundary is defensible rather than assuming
-# it; a large one measures the cross-border channel instead of ignoring it.
+# OLS of the outcome on the own-county and adjacent-county prior-poster counts
+# (ADJ_PRIOR_OWN, ADJ_PRIOR_ADJACENT) as two regressors, with the baseline
+# controls, fixed effects, and clusters, followed by a Wald test that the two
+# coefficients are equal (wald_equality(), pipeline Section 1); the printed
+# heading calls it the reduced form. A near-zero adjacent-county coefficient
+# supports the county boundary; a large one measures the cross-border
+# channel. Writes MD05_adjacency_decomposition.csv to TABLE_DIR and
+# MD06_adjacency_equality_test.csv to QA_DIR.
 #
-# The two regressors are not collinear. Descriptively the own-county mean is
-# 2.343 and the adjacent-county mean 5.711, with a correlation of 0.468,
-# which is low enough to identify both coefficients.
+# The two counts are not collinear: the own-county mean is 2.343 and the
+# adjacent-county mean 5.711, with a correlation of 0.468, low enough to
+# identify both coefficients.
 
 md_adj_panel <- md_county_panel[is.finite(ADJ_PRIOR_OWN) & is.finite(ADJ_PRIOR_ADJACENT)]
 
@@ -642,20 +749,21 @@ if (!is.null(md_adj_fit)) {
 }
 
 
-# ============================================================================
-# PART 6 -- IV15 AGAINST IV06
-# ============================================================================
+# =============================================================================
+# Part 6: IV15 against IV06
+# =============================================================================
 #
-# The headline specification re-estimated with the adjacency-excluded
-# instrument in place of the primary one, on the county panel.
+# The headline specification on the county panel, estimated once with IV06
+# (PRIMARY_INSTRUMENT) and once with IV15
+# (Competitor_excl_adjacent_hospitals_9m), each on its own full sample. Writes
+# the coefficient rows to MD07_iv15_vs_iv06_rows.csv.
 #
-# The filter does real work without gutting the instrument. IV15 drops 19.6%
-# of IV06's peers, moving the mean from 7.168 to 5.763, while the two
-# correlate at 0.9806.
+# The adjacency filter removes part of the peer set but leaves the instrument
+# largely intact: IV15 drops 19.6% of IV06's peers, moving the mean from
+# 7.168 to 5.763, and the two correlate at 0.9806.
 #
-# IV15 is NaN for 0.78% of hospital-months. Those are almost entirely
-# Connecticut, where the 2022 planning-region reorganisation leaves no usable
-# county FIPS code.
+# IV15 is NaN for 0.78% of hospital-months, almost all in Connecticut, where
+# the 2022 planning-region reorganization leaves no usable county FIPS code.
 
 md_iv_compare <- rbindlist(lapply(
   c(Competitor_only_hospitals_9m = PRIMARY_INSTRUMENT,
@@ -695,13 +803,18 @@ if (nrow(md_iv_compare) > 0L) {
                           N_OBSERVATIONS)])
 }
 
+
+# -----------------------------------------------------------------------------
 # 6.1  The same comparison in reduced form
-#
-# Part 6 above reports only the IV rows, while every other robustness check
-# in the paper is read off the reduced form and its equality test. This block
-# supplies that reduced form. Each instrument runs on its own full sample, as
-# in Part 6, so the IV_PERCENT column reproduces MD07 row for row and acts as
-# a consistency check between the two blocks.
+# -----------------------------------------------------------------------------
+# Part 6 keeps only the coefficient rows and prints the IV columns. The other
+# robustness checks in the paper are read off the reduced form and its
+# equality test, so this block re-estimates the same two models, caches them
+# (md_iv15_vs_iv06_rf_2inst), and writes the rows
+# (MD07B_iv15_vs_iv06_rf_rows.csv) and the equality tests
+# (MD07C_iv15_vs_iv06_tests.csv). The calls match Part 6, so IV_PERCENT
+# reproduces MD07 row for row, which checks the two blocks against each
+# other.
 
 md_iv_compare_rf <- cache_or_run("md_iv15_vs_iv06_rf_2inst", {
   ivs <- c(Competitor_only_hospitals_9m = PRIMARY_INSTRUMENT,
@@ -735,18 +848,25 @@ print(md_iv_compare_rf$tests[, .(INSTRUMENT_TESTED, ESTIMATOR,
                                  P_VALUE = round(P_VALUE, 4))])
 
 
-# ============================================================================
-# PART 7 -- RURAL/URBAN AND MULTI-HOSPITAL SUBSAMPLES
-# ============================================================================
+# =============================================================================
+# Part 7: Rural/urban and multi-hospital subsamples
+# =============================================================================
 #
-# Both restrictions leave estimable samples: 2,551 metro against 1,138
-# nonmetro hospitals, and 2,541 of 3,724 hospitals (68.2%) sit in counties
-# containing at least two hospitals.
+# The headline specification on the county panel in five samples: full,
+# metro, nonmetro (METRO_STATUS), and markets with at least two or at least
+# three hospitals. Writes MD08_subsample_rows.csv. Both restrictions leave
+# estimable samples: 2,551 metro against 1,138 nonmetro hospitals, and 2,541
+# of 3,724 hospitals (68.2%) are in counties with at least two hospitals.
 #
-# The multi-hospital restriction is the one where the word "market" carries
-# content. In a single-hospital county there is no local competitor for the
-# treatment to vary against, so those counties contribute level differences
-# but no within-market identifying variation.
+# The multi-hospital restriction bears most directly on the market
+# definition. In a single-hospital county there is no local competitor for
+# the treatment to vary against, so those counties contribute level
+# differences but no within-market identifying variation.
+#
+# The number of hospitals per market is counted in md_county_panel and merged
+# onto it as N_HOSP_IN_MARKET. Running this part a second time in the same
+# session duplicates that column (N_HOSP_IN_MARKET.x and .y), and the two
+# hospital-count filters then fail.
 
 md_market_sizes <- unique(md_county_panel, by = "HOSPITAL_ID")[
   !is.na(ANALYSIS_MARKET), .(N_HOSP_IN_MARKET = .N), by = ANALYSIS_MARKET]
@@ -802,30 +922,37 @@ if (nrow(md_subsample_results) > 0L) {
 }
 
 
-# ============================================================================
-# PART 9 -- CONCEPT-LEVEL ANALYSIS AT HRR, ONE INSTRUMENT
-# ============================================================================
+# =============================================================================
+# Part 9: Concept-level analysis at HRR, one instrument
+# =============================================================================
 #
-# HSA is excluded here, for a reason that is substantive rather than
-# practical. A median 73.4% of MARKET_ID fixed-effect cells at HSA are
-# singletons in a 30-concept sample, against 20.1% at HRR. Per-concept
-# identification at HSA is not supported by this panel, so the asymmetry is
-# reported rather than a silently thin HSA table. Part 12 returns to HSA
-# under an explicit sample restriction that makes it estimable.
+# Runs the pipeline's concept-level estimator (estimate_concept_level(),
+# Section 6) and meta-regressions (run_meta_regressions(), Section 8) on the
+# HRR panel with one instrument, Competitor_only_hospitals_9m
+# (CONCEPT_INSTRUMENTS_MD), and compares the concept estimates with the
+# county run.
 #
-# One instrument, not six. estimate_concept_level() fits three models per
-# instrument (reduced form, first stage, IV) plus one OLS, so six
-# instruments would mean nineteen fits per concept. Direct system.time()
-# benchmarking on this fixed-effect structure put three instruments at
-# roughly 28-30 hours for 738 concepts. One instrument is four fits per
-# concept, roughly 11-12 hours.
+# HSA is not run here. In a 30-concept sample a median 73.4% of MARKET_ID
+# fixed-effect cells at HSA are singletons, against 20.1% at HRR, so this
+# panel does not support per-concept estimation at HSA. Part 12 estimates HSA
+# on a restricted sample.
 #
-# This does not foreclose the other instruments. The exclusion-restriction
-# evidence in Part 6, comparing IV06 with IV15 at pooled county level, is
-# untouched by this choice, and Part 15 runs the six-instrument version at
-# both HRR and HSA. Because each run caches under a key encoding the
-# instrument count, adding a different instrument later is an additional
-# pass rather than a redo.
+# One instrument instead of six. estimate_concept_level() fits a reduced
+# form, a first stage, and an IV for each instrument plus one OLS, so six
+# instruments mean nineteen fits per concept and one instrument four.
+# Benchmarks with system.time() on this fixed-effect structure put three
+# instruments at roughly 28-30 hours for 738 concepts and one instrument at
+# roughly 11-12 hours. The comparison of IV06 with IV15 in Part 6 does not
+# depend on this choice, and Part 15 runs six instruments at HRR and HSA.
+#
+# md_run_concept_level() loads the panel, then runs the concept loop and the
+# reduced-form and IV meta-regressions under the cache keys
+# md_concept_level_<geo>_<n>inst, md_meta_rf_<geo>_<n>inst, and
+# md_meta_iv_<geo>_<n>inst, and writes MD13_concept_level, MD14_meta_rf, and
+# MD15_meta_iv with the suffix _<geo>_<n>inst. The keys record the number of
+# instruments, not their names: a run with a different single instrument
+# loads the cached Competitor_only_hospitals_9m results unless those cache
+# files are deleted.
 
 CONCEPT_INSTRUMENTS_MD <- c(Competitor_only_hospitals_9m = PRIMARY_INSTRUMENT)
 
@@ -879,10 +1006,12 @@ md_run_concept_level <- function(level, instruments = CONCEPT_INSTRUMENTS_MD) {
 }
 
 
-# 9A  HRR concept level. Roughly 11-12 hours: 738 concepts at four fits each.
-#     estimate_concept_level() writes a _PARTIAL.csv every 50 concepts, so an
-#     interruption costs at most 50 concepts, and cache_or_run() means a
-#     completed run is never repeated.
+# -----------------------------------------------------------------------------
+# 9A  HRR concept level
+# -----------------------------------------------------------------------------
+# Roughly 11-12 hours: 738 concepts at four fits each. Progress is saved to
+# MD13_concept_level_hrr_1inst_PARTIAL.csv every 50 concepts, and a completed
+# run is loaded from the cache.
 md_hrr <- md_run_concept_level("HRR")
 
 cat("\n=== HRR META-REGRESSION, IV (all schemes) ===\n")
@@ -892,9 +1021,12 @@ cat("\n=== HRR META-REGRESSION, REDUCED FORM (all schemes) ===\n")
 print(md_hrr$meta_rf)
 
 
-# 9B  Does the shoppability gradient survive at referral-market granularity?
-#     Summarises the concept-level run: how many concepts, the median effect,
-#     the share negative, the share significant, and the median first stage.
+# -----------------------------------------------------------------------------
+# 9B  Summary of the HRR concept-level estimates
+# -----------------------------------------------------------------------------
+# Number of concepts, median IV estimate in percent, share of negative IV
+# coefficients, share significant at 5%, and median first-stage F
+# (MD19_hrr_concept_summary_1inst.csv).
 md_hrr_summary <- md_hrr$concept[, .(
   N_CONCEPTS      = .N,
   MEDIAN_IV_PCT   = round(median(IV_ESTIMATE_PERCENT, na.rm = TRUE), 3),
@@ -908,16 +1040,19 @@ cat("\n=== HRR CONCEPT-LEVEL SUMMARY ===\n")
 print(md_hrr_summary)
 
 
-# 9C  County against HRR, concept by concept.
-#
-#     The cached six-instrument county run supplies the local-catchment
-#     comparator. Only Competitor_only_hospitals_9m appears in both runs, so
-#     the inner join keys down to that one instrument on its own; the five
-#     county-only instrument rows find no partner and drop out. The delta is
-#     the county coefficient minus the HRR coefficient, computed for concepts
-#     whose first-stage F is at least 10 on both sides, then summarised by
-#     scheme category, by an ordinal-shoppability slope, and by clinical
-#     family.
+# -----------------------------------------------------------------------------
+# 9C  County against HRR, concept by concept
+# -----------------------------------------------------------------------------
+# The county side is concept_results, the pipeline's cached six-instrument
+# county run, restricted to Competitor_only_hospitals_9m, the instrument used
+# at HRR; the block stops if concept_results is not in memory. The delta is
+# the county IV coefficient minus the HRR coefficient
+# (IV_DELTA_LOCAL_MINUS_HRR), and MD16 holds it for every matched concept.
+# Concepts with a first-stage F of at least 10 on both sides are then
+# summarized by category under each of the 18 schemes in md_schemes_long
+# (MD17), by the slope of the delta on the ordinal shoppability rank (MD17B),
+# and by clinical family (MD18). SHARE_LOCAL_STRONGER is the share of
+# negative deltas.
 if (!exists("concept_results"))
   stop("concept_results (cached county run) not in scope. ",
        "Re-run warm_start().", call. = FALSE)
@@ -1002,14 +1137,18 @@ cat("\n=== BY CLINICAL FAMILY ===\n")
 print(md_family_delta)
 
 
-# ============================================================================
-# PART 8 -- ASSEMBLED SUMMARY OF PARTS 3 TO 7
-# ============================================================================
+# =============================================================================
+# Part 8: Assembled summary of Parts 3 to 7
+# =============================================================================
 #
-# Collects the market-definition ladder, the ring treatment, the instrument
-# comparison, and the subsamples into one table. Blocks whose upstream object
-# is absent are skipped through exists() and nrow() guards, so a partial run
-# still produces a summary of whatever completed.
+# Stacks the IV rows of the ladder (Part 3), the ring treatment (4.1), the
+# IV06 against IV15 comparison (Part 6), and the subsamples (Part 7) into
+# MD09_committee_response_summary.csv. Part 8 sits after Part 9 in the file
+# and runs after it, but uses only results from Parts 3-7. ring_rows enters
+# only if it exists, and md_iv_compare and md_subsample_results only if they
+# have rows. The "Shoppability x market" block refers to md_crossover, which
+# is not defined in this file or in the pipeline, so its exists() guard
+# skips it.
 
 md_summary <- rbindlist(list(
   md_ladder$rows[, .(BLOCK = "Market definition", VARIANT = MARKET_DEFINITION,
@@ -1049,31 +1188,28 @@ cat("  MD09       assembled summary\n")
 cat("\n=== DONE ===\n")
 
 
-###############################################################################
-#  PART 10 -- COMPETITOR INSTRUMENTS AT HRR
-###############################################################################
+# =============================================================================
+# Part 10: Competitor instruments at HRR
+# =============================================================================
 #
-#  Parts 10 and 11 rebuild the Python pipeline's competitor instrument in R,
-#  validate the rebuild against the panel columns the Python pipeline
-#  produced, and then use the validated builder to construct instrument sets
-#  at HRR and HSA that the Python pipeline never built.
-#
-#  The validation in 10.3 and 11.2 is the reason the rebuild is trustworthy:
-#  each switch of the builder is exercised against a column whose values are
-#  already known, and the run stops if any variant fails to reproduce.
+# Parts 10 and 11 rebuild the Python pipeline's competitor instrument in R,
+# check the rebuild against the instrument columns in the county panel, and
+# use the same builder to construct instrument sets at HRR and HSA, which the
+# Python pipeline does not build. 10.3 and 11.2 stop unless every tested
+# rebuild matches its panel column exactly in at least 98% of hospital-months.
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 10.1  Hospital roster
-#
-# The roster comes from the hospital disclosure events file, which the Python
-# pipeline assembles from all three exact-code frames (outpatient, inpatient,
-# and component) and writes to INSTRUMENT_DIR. That file covers 3,805
-# hospitals, whereas md_county_panel is outpatient concept only and covers
-# 3,723. Building the roster from the panel would omit inpatient-only and
-# component-only hospitals, which are legitimate peers, and would understate
-# every instrument.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Peers come from HPT_HOSPITAL_DISCLOSURE_EVENTS.parquet in INSTRUMENT_DIR,
+# which the Python pipeline assembles from all three exact-code frames
+# (outpatient, inpatient, and component). It covers 3,805 hospitals, while
+# md_county_panel (outpatient concepts only) covers 3,723. A roster built from
+# the panel would omit inpatient-only and component-only hospitals, which are
+# valid peers, and would understate every instrument. md_event_roster has one
+# row per hospital with the first non-missing SYSTEM_KEY, posting month
+# (PEER_POST_MONTH), COUNTY_STATE_KEY, and COUNTY_FIPS.
 INSTRUMENT_DIR <- file.path(FINAL_DATA_ROOT, "02_Treatments_and_Instruments")
 
 first_non_na <- function(x) {
@@ -1100,36 +1236,46 @@ cat(sprintf("Event roster: %d hospitals, %d missing SYSTEM_KEY, %d missing post 
             sum(is.na(md_event_roster$PEER_POST_MONTH))))
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 10.2  Instrument builder
-#
-# A port of build_competitor_instrument() from the Python pipeline,
-# generalised over geography. This is the single definition used everywhere
-# in this file, including the ownership-dated construction in Part 17.
+# -----------------------------------------------------------------------------
+# build_dynamic_competitor_instrument() is an R port of the Python pipeline's
+# build_competitor_instrument() for any geography; geo_col names the roster
+# column that defines it. For each hospital-month in focal_panel it counts
+# the peers that meet all of these conditions:
+#   * the peer's system has a hospital in the focal hospital's geography that
+#     posted no later than the focal month (LOCAL_SYSTEM_FIRST_POST_MONTH <=
+#     POST_MONTH);
+#   * the peer is in a different geography;
+#   * the peer posted in the lookback_months (default 9) before the focal
+#     month, not counting the focal month itself;
+#   * with exclude_own_system = TRUE, the peer's system differs from the focal
+#     hospital's.
+# It returns one row per hospital-month with the number of qualifying peer
+# hospitals, systems, and geographies in <out_prefix>_HOSPITALS, _SYSTEMS, and
+# _GEOS. The counts are zero where no peer qualifies, including hospitals with
+# no geography code.
 #
 #   exclude_own_system = TRUE    competitor family (the IV06 analog)
 #   exclude_own_system = FALSE   strict family (the IV02 analog)
-#   adjacency = <pair table>     drops peers in adjacent geographies (the
-#                                IV15 analog); NULL skips the filter
-#   presence = "posted"          default. A rival system counts only once its
-#                                own hospital in the focal geography has
-#                                posted, through the
-#                                LOCAL_SYSTEM_FIRST_POST_MONTH gate below.
-#   presence = "owned"           a rival system counts throughout the window,
-#                                dated by ownership rather than by its own
-#                                posting date.
-#   return_pairs = TRUE          returns hospital-peer pairs instead of the
-#                                aggregated counts, for distance joins and
-#                                other peer-level work.
+#   adjacency = <pair table>     drops peers in geographies adjacent to the
+#                                focal one (columns GEO_A and GEO_B; the IV15
+#                                analog); NULL skips the filter
+#   presence = "posted"          default; applies the first condition in full
+#   presence = "owned"           drops the date in the first condition: a
+#                                rival system counts whenever it has a
+#                                hospital (with a recorded posting month) in
+#                                the focal geography
+#   return_pairs = TRUE          returns the qualifying hospital-peer pairs
+#                                instead of the counts; no call in this file
+#                                uses it
 #
-# The LOCAL_SYSTEM_FIRST_POST_MONTH gate is the core of the construction. A
-# peer counts only once its system has established presence in the focal
-# hospital's geography. An earlier reimplementation that omitted this gate
-# was off by a factor of 30 to 1700.
-#
-# With the defaults presence = "posted" and return_pairs = FALSE, this
-# function reproduces the version validated in 10.3 and 11.2 exactly.
-# ---------------------------------------------------------------------------
+# The first condition, the LOCAL_SYSTEM_FIRST_POST_MONTH gate, is the core of
+# the construction: without it the rebuilt counts are off by a factor of 30
+# to 1700. 10.3 and 11.2 validate the defaults (presence = "posted",
+# return_pairs = FALSE), and Part 17 uses presence = "owned". The
+# distance-band instruments in Part 16 come from a separate function,
+# build_ring_instruments(), that applies the same conditions.
 build_dynamic_competitor_instrument <- function(focal_panel, roster, geo_col,
                                                 out_prefix, lookback_months = 9,
                                                 exclude_own_system = TRUE,
@@ -1179,8 +1325,8 @@ build_dynamic_competitor_instrument <- function(focal_panel, roster, geo_col,
   setnames(focal_events, c("GEO", "SYSTEM_KEY"), c("FOCAL_GEO", "FOCAL_SYSTEM"))
   
   joined <- merge(focal_events, peer_universe, by = "FOCAL_GEO", allow.cartesian = TRUE)
-  # "posted" reproduces IV06. "owned" dates a rival system's presence by
-  # ownership instead of by that rival's own posting date.
+  # presence = "posted" keeps a peer only once a hospital of its system in the
+  # focal geography has posted; "owned" drops that condition.
   joined[, DYNAMIC_OK := if (presence == "owned") TRUE else
     LOCAL_SYSTEM_FIRST_POST_MONTH <= POST_MONTH]
   joined[, LOWER := POST_MONTH %m-% months(lookback_months)]
@@ -1211,21 +1357,25 @@ build_dynamic_competitor_instrument <- function(focal_panel, roster, geo_col,
 }
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 10.3  Validation against the Python-generated columns
+# -----------------------------------------------------------------------------
+# Rebuilds the county instruments on COUNTY_STATE_KEY with both values of
+# exclude_own_system and compares them with the panel's columns: competitor
+# hospitals, systems, and counties with Z_SYS_COMPETITOR_ONLY_9M_EXCL_CURRENT,
+# Z_SYS_COMPETITOR_SYSTEMS_9M_EXCL_CURRENT, and
+# Z_SYS_COMPETITOR_COUNTIES_9M_EXCL_CURRENT, and strict hospitals with
+# Z_SYS_STRICT_9M_EXCL_CURRENT. The run stops unless both branches are tested
+# and every tested variant matches exactly in at least 98% of hospital-months.
+# The adjacency branch is validated in 11.2 against IV15, and 17.2 checks
+# that presence = "owned" never yields fewer peers than "posted".
 #
-# Both branches of exclude_own_system are exercised and the run stops unless
-# both reproduce their target column to at least 0.98 exact match. The
-# adjacency branch is validated separately in 11.2 against IV15, and the
-# presence and return_pairs branches in Parts 16 and 17.
-#
-# Z_SYS_COMPETITOR_COUNTIES_9M_EXCL_CURRENT belongs to
-# SUPPORTING_INSTRUMENTS, which is not part of ALL_CANDIDATE_INSTRUMENTS, so
-# read_panel() filters it out at load and that one check reports "column not
-# loaded" rather than a match rate. Its N_GEOS counting logic is identical to
-# N_SYSTEMS and N_HOSPITALS, both of which validate exactly. To test it
-# directly, add the column to ANALYSIS_COLUMNS in Part 0.1 and reload.
-# ---------------------------------------------------------------------------
+# Z_SYS_COMPETITOR_COUNTIES_9M_EXCL_CURRENT is not in
+# ALL_CANDIDATE_INSTRUMENTS, so it is not in ANALYSIS_COLUMNS and read_panel()
+# does not load it; that check reports "column not loaded" instead of a match
+# rate. Its N_GEOS count uses the same logic as N_SYSTEMS and N_HOSPITALS,
+# both of which reproduce their columns exactly. Adding the column to
+# ANALYSIS_COLUMNS in 0.1 would make it testable.
 cty_comp_rebuild <- build_dynamic_competitor_instrument(
   md_county_panel, md_event_roster, "COUNTY_STATE_KEY", "CTY_COMP",
   exclude_own_system = TRUE)
@@ -1277,20 +1427,19 @@ cat(sprintf("Validated: %d variants across %d branches.\n",
             nrow(tested), uniqueN(tested$BRANCH)))
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 10.4  Six HRR instruments
+# -----------------------------------------------------------------------------
+# Adds HRR_NUM from md_hosp_geo to the roster and crosses the competitor
+# filter (on or off) with the unit counted (peer hospitals, peer systems, or
+# peer HRRs). HRR_INSTRUMENTS lists the six columns of hrr_six.
 #
-# Two axes crossed: the competitor filter on or off, and the unit counted as
-# peer hospitals, peer systems, or peer HRRs.
-#
-# The outside-CBSA variants from the county instrument set are not ported.
-# CBSA sits between county and HRR in size, 929 against 306, so "outside the
-# focal CBSA" is largely implied by "outside the focal HRR". The adjacency
-# variant is not ported either: HRRs are delineated from observed patient
-# travel for major cardiovascular surgery and neurosurgery, so excluding
-# adjacent HRRs would drop valid variation without tightening the exclusion
-# restriction.
-# ---------------------------------------------------------------------------
+# The outside-CBSA variants of the county set are not built. CBSA lies between
+# county and HRR in size (929 CBSAs against 306 HRRs), so "outside the focal
+# CBSA" is largely implied by "outside the focal HRR". The adjacency variant
+# is not built either: HRRs are delineated from observed patient travel for
+# major cardiovascular surgery and neurosurgery, so excluding adjacent HRRs
+# would drop valid variation without strengthening the exclusion restriction.
 md_event_roster_hrr <- merge(md_event_roster,
                              unique(md_hosp_geo[, .(HOSPITAL_ID, HRR_NUM)]),
                              by = "HOSPITAL_ID", all.x = TRUE)
@@ -1314,13 +1463,14 @@ HRR_INSTRUMENTS <- c(
   HRR_strict_hrrs          = "HRR_STRICT_GEOS")
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 10.5  Descriptives and the correlation matrix
-#
-# The correlation matrix carries interpretive weight. Instruments correlating
-# above roughly 0.95 are one instrument measured several ways and should not
-# be presented as independent evidence.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# iv_descriptives() returns the mean, median, SD, share of zeros, 90th
+# percentile, and maximum of each instrument and prints the roster size for
+# scale (MD24_hrr_six_descriptives.csv). The correlation matrix is printed,
+# not saved. Instruments that correlate above roughly 0.95 measure the same
+# variation and are not independent evidence.
 iv_descriptives <- function(dt, instruments, roster_n) {
   out <- rbindlist(lapply(names(instruments), function(nm) {
     x <- dt[[instruments[[nm]]]]
@@ -1342,19 +1492,24 @@ cat("\n=== CORRELATION AMONG THE SIX ===\n")
 print(round(cor(iv_mat, use = "complete.obs"), 3))
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 10.6  Pooled second stage with an explicit first stage
+# -----------------------------------------------------------------------------
+# For each instrument, run_pooled_with_first_stage() fits the pooled first
+# stage of the treatment on the instrument (baseline controls, fixed effects,
+# and clusters) and reports its coefficient, t-statistic, within-R2, and
+# effect per SD of the instrument; it then fits the interacted shoppability
+# model with estimate_interacted(). Instruments absent from the panel or
+# without usable variation are skipped with a message. shoppability_gap()
+# returns the shoppable minus non-shoppable IV_PERCENT for each instrument,
+# in percentage points.
 #
-# run_pooled_with_first_stage() fits the first stage explicitly, so its
-# coefficient, t-statistic, within-R2, and per-SD effect are reported
-# alongside the second stage rather than only through the Wald statistic.
-# Instruments that are absent or have no usable variation are skipped with a
-# message rather than failing the loop.
-#
-# The county-gated IV06 is appended as a benchmark row so the HRR instruments
-# are read against a known quantity. shoppability_gap() reduces the results
-# to the shoppable-minus-non-shoppable gap in percentage points.
-# ---------------------------------------------------------------------------
+# The HRR panel is loaded again as md_hrr_pooled, and the six HRR instruments
+# are merged on by hospital-month. PRIMARY_INSTRUMENT (IV06, built at county
+# level) is added as a benchmark under the name County_gated_IV06_benchmark.
+# Writes MD25_hrr_six_instruments_results.csv and
+# MD26_hrr_shoppability_gap_by_instrument.csv. md_hrr_pooled stays in memory
+# until 15.0 removes it.
 run_pooled_with_first_stage <- function(panel, instruments, geo_tag) {
   rbindlist(lapply(names(instruments), function(nm) {
     iv <- instruments[[nm]]
@@ -1431,30 +1586,30 @@ if (!is.null(hrr_gap)) {
 }
 
 
-###############################################################################
-#  PART 11 -- HSA INSTRUMENTS
-###############################################################################
+# =============================================================================
+# Part 11: HSA instruments
+# =============================================================================
+#
+# HSA adjacency from the Dartmouth boundary file, a check of the builder's
+# adjacency branch against IV15, nine HSA instruments, and the pooled model
+# at HSA.
 
-# ---------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
 # 11.1  HSA adjacency from Dartmouth boundary polygons
+# -----------------------------------------------------------------------------
+# Adjacency is computed from the HSA polygons (st_touches()) rather than
+# inferred from county adjacency and the hospital-to-HSA mapping, which would
+# miss HSAs that connect only through a county with no sample hospital. The
+# block stops if the shapefile (HSA_SHP) is missing, if a geometry is still
+# invalid after st_make_valid(), or if the adjacency is not symmetric. Writes
+# the pairs to MD30_hsa_adjacency_pairs.csv.
 #
-# Adjacency is computed topologically from the boundary file rather than
-# inferred from county adjacency plus the hospital-to-HSA mapping. Inference
-# would miss HSAs that connect only through a county containing no sample
-# hospital.
-#
-# Replication note on s2. The spherical geometry engine enforces stricter
-# validity rules than planar geometry and rejects these 1993 boundaries even
-# after st_make_valid(). Adjacency is topological at this spatial scale, so
-# the planar treatment does not affect the result. A reader who leaves s2
-# enabled will see an edge-crossing error and may conclude the shapefile is
-# corrupt; it is not.
-#
-# The block also verifies HSA-to-HRR nesting from the boundary file rather
-# than assuming it, since that nesting is the structural premise of the
-# HSA-against-HRR comparison in Part 12, and checks that the adjacency
-# relation is symmetric.
-# ---------------------------------------------------------------------------
+# sf_use_s2(FALSE) switches sf to planar geometry for the rest of the session.
+# The spherical engine (s2) rejects these 1993 boundaries with an
+# edge-crossing error even after st_make_valid(); the shapefile is not
+# corrupt. Adjacency is topological at this spatial scale, so planar geometry
+# does not affect the result.
 sf_use_s2(FALSE)
 
 HSA_SHP <- file.path(PANEL_DIR, "HSA_Bdry__AK_HI_unmodified", "hsa-shapefile",
@@ -1487,8 +1642,9 @@ cat(sprintf("Neighbours per HSA: mean %.1f, median %d, max %d. Islands: %d\n",
 rev_pairs <- hsa_adjacency[, .(GEO_A = GEO_B, GEO_B = GEO_A)]
 stopifnot("adjacency is not symmetric" = nrow(fsetdiff(hsa_adjacency, rev_pairs)) == 0)
 
-# HSA-to-HRR nesting, verified from the boundary file rather than assumed.
-# This is the structural premise of the HSA/HRR comparison in Part 12.
+# HSA-to-HRR nesting, on which the HSA-against-HRR comparison in Part 12
+# rests: prints the number of HSAs that map to more than one HRR in the
+# boundary file (no check).
 nest <- as.data.table(st_drop_geometry(hsa_sf))[, .(N_HRR = uniqueN(HRR93)), by = HSA93]
 cat(sprintf("HSAs mapping to more than one HRR: %d of %d. Distinct HRRs: %d\n",
             nest[N_HRR > 1, .N], nrow(nest),
@@ -1500,17 +1656,21 @@ md_hosp_geo[HSA_NUM == "", HSA_NUM := NA_character_]
 save_csv(hsa_adjacency, "MD30_hsa_adjacency_pairs.csv")
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 11.2  Validation of the adjacency branch
+# -----------------------------------------------------------------------------
+# IV15 (Z_SYS_COMPETITOR_EXCL_ADJACENT_9M_EXCL_CURRENT) is the county
+# competitor-hospitals count with peers in adjacent counties excluded. The
+# builder is run on five-digit county FIPS codes with the county pairs in
+# HPT_COUNTY_ADJACENCY_PAIRS.csv as `adjacency`, and the run stops unless it
+# matches IV15 exactly in at least 98% of hospital-months.
 #
-# IV15 is county-level, competitor-only, with adjacent counties excluded, so
-# the builder must reproduce it when handed county geography and a county
-# adjacency table. The run stops if it does not.
-#
-# IV15 is NA wherever the focal hospital has no county FIPS code, which is
-# almost entirely Connecticut following the 2022 planning-region
-# reorganisation; those rows are dropped before the comparison.
-# ---------------------------------------------------------------------------
+# IV15 is NA wherever the focal hospital has no county FIPS code, almost
+# entirely in Connecticut after the 2022 planning-region reorganization;
+# those rows are left out of the comparison. formatC() turns a missing
+# COUNTY_FIPS into "   NA", so roster hospitals without a code form one
+# county in this rebuild (17.1 avoids this with md_fips5()), and it pads a
+# character code shorter than five characters with spaces, not zeros.
 cty_adj <- fread(file.path(PANEL_DIR, "HPT_COUNTY_ADJACENCY_PAIRS.csv"),
                  colClasses = list(character = c("COUNTY_GEOID", "NEIGHBOR_GEOID")))
 cty_adj_pairs <- unique(cty_adj[, .(
@@ -1537,13 +1697,15 @@ cat(sprintf("\nAdjacency validation against IV15: %s rows, exact match %.4f, mea
 stopifnot("adjacency branch does not reproduce IV15" = adj_match >= 0.98)
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 11.3  Nine HSA instruments
-#
-# The same two axes as the HRR set, plus the adjacency-excluded variant,
-# which is ported here because HSAs are small enough that adjacent-HSA
-# spillover is a live concern in a way adjacent-HRR spillover is not.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# The six instruments of the HRR design (competitor and strict families,
+# counting hospitals, systems, or HSAs) plus the competitor family with peers
+# in adjacent HSAs excluded. The adjacency variant is built here, unlike at
+# HRR, because HSAs are small enough that spillover from adjacent HSAs is a
+# concern. Writes MD27_hsa_nine_descriptives.csv and prints the correlation
+# matrix.
 md_event_roster_hsa <- merge(md_event_roster,
                              unique(md_hosp_geo[!is.na(HSA_NUM), .(HOSPITAL_ID, HSA_NUM)]),
                              by = "HOSPITAL_ID", all.x = TRUE)
@@ -1584,15 +1746,18 @@ cat("\n=== CORRELATION AMONG THE NINE ===\n")
 print(round(cor(iv_mat, use = "complete.obs"), 3))
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 11.4  Where the HSA instrument has variation
-#
+# -----------------------------------------------------------------------------
 # Dartmouth delineated HSAs around individual hospital catchments, so most
-# contain a single hospital, and in a single-hospital HSA the
-# LOCAL_SYSTEM_FIRST_POST_MONTH gate can never fire. This block reports how
-# much of the sample that affects. It determines the sample restriction used
-# in Part 12 and the scope condition attached to every HSA estimate.
-# ---------------------------------------------------------------------------
+# contain a single hospital. In a single-hospital HSA the only system that can
+# be present is the focal hospital's own, which the competitor filter
+# excludes, so the competitor instruments are zero there. The block prints the
+# number of HSAs by hospital count (from md_hosp_geo), the share of
+# county-panel rows with a positive HSA_COMP_HOSPITALS by HSA size, and the
+# HSA size and metro share of rows with a positive and a zero value. This
+# sets the sample restriction in Part 12 and the scope condition for every
+# HSA estimate.
 hsa_size <- md_hosp_geo[!is.na(HSA_NUM), .(N_HOSP_IN_HSA = .N), by = HSA_NUM]
 hsa_size[, BUCKET := fifelse(N_HOSP_IN_HSA == 1, "1",
                              fifelse(N_HOSP_IN_HSA == 2, "2",
@@ -1620,13 +1785,16 @@ print(md_hsa_check[, .(N = .N,
                    by = NONZERO])
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 11.5  Pooled second stage at HSA
-#
-# The full-sample estimates come first, then the same specification on the
-# subsample where the instrument actually has variation, so that the estimate
-# and the population it describes refer to the same units.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# The HSA panel is loaded as md_hsa_pooled, the nine HSA instruments are
+# merged on, and run_pooled_with_first_stage() (10.6) is run with IV06 as a
+# benchmark (MD28_hsa_instruments_results.csv, MD29_hsa_shoppability_gap.csv).
+# The HSA_COMP_HOSPITALS model is then re-estimated on the rows where that
+# instrument is positive, so that the estimate and the population it
+# describes refer to the same units; that result is printed, not saved.
+# md_hsa_pooled stays in memory until 15.0 removes it.
 md_hsa_pooled <- md_load_panel("HSA")
 md_hsa_pooled <- merge(md_hsa_pooled, hsa_nine,
                        by = c("HOSPITAL_ID", "POST_MONTH"), all.x = TRUE)
@@ -1656,8 +1824,9 @@ if (!is.null(hsa_gap)) {
   save_csv(hsa_gap, "MD29_hsa_shoppability_gap.csv")
 }
 
-# Restricted to markets where the instrument has variation, so the estimate
-# and the population it describes refer to the same units.
+# Nonzero subsample: the rows whose own HSA_COMP_HOSPITALS is positive. Part
+# 12 restricts by market instead, keeping every row of an HSA in which the
+# instrument is positive for at least one row.
 md_hsa_nz <- md_hsa_pooled[HSA_COMP_HOSPITALS > 0]
 cat(sprintf("\nNonzero subsample: %s rows, %d hospitals, %d HSAs\n",
             format(nrow(md_hsa_nz), big.mark = ","),
@@ -1675,41 +1844,41 @@ if (!is.null(res_nz))
                         WALD = round(FIRST_STAGE_WALD_THIS_EQ, 1), N_OBSERVATIONS)])
 
 
-###############################################################################
-#  PART 12 -- CONCEPT-LEVEL ANALYSIS AT HSA AND HRR
-###############################################################################
+# =============================================================================
+# Part 12: Concept-level analysis at HSA and HRR
+# =============================================================================
 #
-#  Mirrors the county headline machinery. estimate_concept_level() produces
-#  one IV coefficient per concept, and run_meta_regressions() loops every
-#  SCHEME_ID in schemes_long, covering all 18 classification schemes in a
-#  single call.
+# The county concept-level machinery applied at HSA and HRR. For each concept,
+# estimate_concept_level() gives reduced-form, first-stage, and IV estimates,
+# and run_meta_regressions() covers every SCHEME_ID in md_schemes_long (all 18
+# classification schemes) in one call. P12_RUNS defines three runs, each with
+# one instrument:
+#   hsa_comp      HSA, HSA_COMP_HOSPITALS, restricted sample      (12.A)
+#   hsa_excladj   HSA, HSA_EXCLADJ_HOSPITALS, restricted sample   (12.B)
+#   hrr_comp      HRR, HRR_COMP_HOSPITALS, full sample            (12.C)
 #
-#  Instrument choice. HRR_strict_systems has the strongest HRR first stage,
-#  with a within-R2 of 0.425, but the strict family retains own-system peers.
-#  Only the competitor family excludes own-system rollout, which is what
-#  carries the exclusion-restriction argument in the county specification.
-#  The competitor variants are used so that the HRR estimate rests on the
-#  same argument as the county headline rather than on a stronger but
-#  differently-justified instrument.
+# Instrument choice. HRR_strict_systems has the strongest HRR first stage,
+# with a within-R2 of 0.425, but the strict family keeps own-system peers.
+# Only the competitor family excludes own-system rollout, which is the basis
+# of the exclusion-restriction argument in the county specification, so the
+# HRR and HSA estimates use competitor variants and rest on the same argument
+# as the county headline.
 #
-#  HSA sample restriction. HSA runs are restricted to HSAs where the
-#  instrument has variation. The restriction is forced by the geography
-#  rather than chosen: single-hospital HSAs cannot generate instrument
-#  variation at all, as 11.4 shows. It also makes concept-level estimation
-#  feasible, cutting the singleton fixed-effect share from 0.734 to 0.257.
-#  HSA estimates therefore describe metropolitan multi-hospital service
-#  areas, and that scope condition belongs in the table notes.
+# HSA sample restriction. The HSA runs keep only HSAs in which the instrument
+# is positive for at least one row. Single-hospital HSAs cannot generate
+# instrument variation (11.4), so the restriction follows from the geography.
+# It also makes concept-level estimation feasible, cutting the singleton
+# fixed-effect share from 0.734 to 0.257. HSA estimates therefore describe
+# metropolitan multi-hospital service areas.
 #
-#  Fixed effects and clustering are held constant across geographies. Each
-#  panel renames its geography to ANALYSIS_MARKET and rebuilds MARKET_ID as
-#  ANALYSIS_MARKET::FINAL_CONCEPT_ID, and BASELINE_FIXED_EFFECTS and
-#  BASELINE_CLUSTERS refer to those generic names, so both follow the
-#  geography. Varying the fixed-effect structure for one geography alone
-#  would confound market definition with specification.
+# Fixed effects and clustering are the baseline ones at every geography (see
+# 0.2).
 #
-#  Runtime. Roughly two hours per geography per instrument. Each run caches
-#  separately and writes a partial CSV every 50 concepts.
-###############################################################################
+# Runtime: roughly two hours per geography per instrument. Each run has its
+# own cache keys (p12_concept_<run>_1inst, p12_meta_rf_<run>_1inst, and
+# p12_meta_iv_<run>_1inst), saves MD31_concept_<run>_PARTIAL.csv every 50
+# concepts, and writes MD31_concept_level_<run>.csv, MD32_meta_rf_<run>.csv,
+# and MD33_meta_iv_<run>.csv.
 
 P12_RUNS <- list(
   list(key = "hsa_comp",    geo = "HSA", iv_col = "HSA_COMP_HOSPITALS",
@@ -1721,15 +1890,18 @@ P12_RUNS <- list(
 
 p12_key <- function(stem, run) sprintf("%s_%s_1inst", stem, run$key)
 
-# p12_build_panel() loads the geography panel, merges the instrument onto it,
-# and optionally restricts to markets where the instrument varies, reporting
-# the fixed-effect cell structure that results.
+# p12_build_panel() loads the panel for run$geo, merges the run's instrument
+# from hsa_nine or hrr_six by hospital-month (stops if the row count
+# changes), and reports the rows left without an instrument value. With
+# restrict_nonzero = TRUE it keeps only the markets in which the instrument is
+# positive for at least one row. It prints the resulting fixed-effect cell
+# structure.
 #
-# The instruments are built with focal_panel = md_county_panel, so the focal
-# hospital-month set comes from the county panel (3,723 hospitals) rather
-# than the HSA or HRR panel (3,722). The unmatched count is reported; a
-# nonzero value means the instrument should be rebuilt against the matching
-# panel.
+# The instruments are built with focal_panel = md_county_panel, so their
+# hospital-months come from the county panel (3,723 hospitals) rather than
+# the HSA or HRR panel (3,722). Rows of the HSA or HRR panel without a match
+# have NA for the instrument and drop out of the models; the unmatched count
+# shows how many there are.
 p12_build_panel <- function(run) {
   cat("\n", strrep("=", 70), "\n", sep = "")
   cat("PANEL:", run$geo, "| instrument:", run$iv_label, "\n")
@@ -1811,11 +1983,10 @@ p12_run_meta <- function(cr, run) {
   list(rf = m_rf, iv = m_iv)
 }
 
-# Pooled interacted models across all 18 schemes. Cheap relative to the
-# concept-level loop. Pooling averages across roughly 738 concepts whose
-# effects run in opposite directions, so a near-zero pooled coefficient is
-# expected even where a concept-level gradient exists. Read as a robustness
-# spread rather than as significance tests.
+# p12_run_pooled_all_schemes() loads the run's panel with p12_build_panel()
+# and fits the pooled interacted model (estimate_interacted(), categorical)
+# once for each of the six primary scheme columns in SCHEME_COLUMNS. Writes
+# MD34_pooled_all_schemes_<run>.csv. Called in 12.F.
 p12_run_pooled_all_schemes <- function(run) {
   p <- p12_build_panel(run)
   
@@ -1844,28 +2015,41 @@ p12_run_pooled_all_schemes <- function(run) {
   out
 }
 
-# ---- 12.A  HSA, competitor instrument ----
+
+# -----------------------------------------------------------------------------
+# 12.A  HSA, competitor instrument
+# -----------------------------------------------------------------------------
 run_hsa_comp  <- P12_RUNS[[1]]
 cr_hsa_comp   <- p12_run_concept(run_hsa_comp)
 meta_hsa_comp <- p12_run_meta(cr_hsa_comp, run_hsa_comp)
 cat("\n=== HSA competitor, meta-regression (IV) ===\n"); print(meta_hsa_comp$iv)
 
-# ---- 12.B  HSA, adjacency-excluded instrument ----
+
+# -----------------------------------------------------------------------------
+# 12.B  HSA, adjacency-excluded instrument
+# -----------------------------------------------------------------------------
 run_hsa_adj  <- P12_RUNS[[2]]
 cr_hsa_adj   <- p12_run_concept(run_hsa_adj)
 meta_hsa_adj <- p12_run_meta(cr_hsa_adj, run_hsa_adj)
 cat("\n=== HSA adjacency-excluded, meta-regression (IV) ===\n"); print(meta_hsa_adj$iv)
 
-# ---- 12.C  HRR, competitor instrument ----
+
+# -----------------------------------------------------------------------------
+# 12.C  HRR, competitor instrument
+# -----------------------------------------------------------------------------
 run_hrr_comp  <- P12_RUNS[[3]]
 cr_hrr_comp   <- p12_run_concept(run_hrr_comp)
 meta_hrr_comp <- p12_run_meta(cr_hrr_comp, run_hrr_comp)
 cat("\n=== HRR competitor, meta-regression (IV) ===\n"); print(meta_hrr_comp$iv)
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 12.D  Concept-level summaries across the three runs
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Stacks the three runs (MD35_concept_level_all_runs.csv) and summarizes each:
+# number of concepts, median IV estimate in percent, share negative, share
+# significant at 5%, median first-stage F, and share with a first-stage F of
+# at least 10 (MD36_concept_summary_all_runs.csv).
 p12_all_concepts <- rbindlist(list(cr_hsa_comp, cr_hsa_adj, cr_hrr_comp), fill = TRUE)
 save_csv(p12_all_concepts, "MD35_concept_level_all_runs.csv")
 
@@ -1882,21 +2066,26 @@ save_csv(p12_summary, "MD36_concept_summary_all_runs.csv")
 cat("\n=== CONCEPT-LEVEL SUMMARY ===\n"); print(p12_summary)
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 12.E  HSA against HRR, concept by concept
+# -----------------------------------------------------------------------------
+# p12_crossover() takes, for each concept, the HSA IV coefficient minus the
+# HRR coefficient from cr_hrr_comp, once for each HSA run. A negative delta
+# means the HSA market disciplines price more for that concept, the pattern
+# predicted for routine services delivered within a local catchment; a
+# positive delta is the referral-catchment pattern. Concepts with a
+# first-stage F of at least 10 on both sides are summarized by category under
+# each of the 18 schemes, by the slope of the delta on the ordinal
+# shoppability rank, and by clinical family. Writes MD37 (every matched
+# concept), MD38, MD39, and MD40.
 #
-# For each concept, the HSA coefficient minus the HRR coefficient. A negative
-# delta means the HSA market disciplines price more for that concept, the
-# pattern predicted for routine services delivered within a local catchment.
-# A positive delta is the referral-catchment pattern.
-#
-# This comparison is descriptive. The two sides come from non-nested models
-# on different samples, since HSA is restricted to multi-hospital HSAs, so no
-# p-value is available for the per-concept difference. The slope on ordinal
-# shoppability does carry a p-value, but it tests whether the delta trends
-# with shoppability, which is a weaker claim than a cross-model equality
-# test. Part 15E revisits the comparison on a common instrument set.
-# ---------------------------------------------------------------------------
+# The comparison is descriptive. The two sides come from non-nested models on
+# different samples (the HSA runs are restricted, the HRR run is not), so the
+# per-concept difference has no p-value. The slope on ordinal shoppability
+# has one, but it tests whether the delta trends with shoppability, which is
+# a weaker claim than equality across models. Parts 15 and 15E repeat the
+# cross-geography comparison with six instruments at each geography, and
+# 15E.11 checks the robustness of the slope from this block.
 p12_crossover <- function(cr_hsa, hsa_label) {
   d <- merge(
     cr_hsa[, .(FINAL_CONCEPT_ID, FINAL_FAMILY_ID, SERVICE_LABEL,
@@ -1978,15 +2167,16 @@ cat("\n=== CROSS-OVER BY CLINICAL FAMILY ===\n")
 print(rbindlist(list(xo_comp$by_family, xo_adj$by_family), fill = TRUE))
 
 
-# ---------------------------------------------------------------------------
-# 12.F  Pooled interacted models, all 18 schemes
-#
-# Cheap relative to the concept-level loop. Pooling averages across roughly
-# 738 concepts whose effects run in opposite directions, so a near-zero
-# pooled coefficient is expected even where a concept-level gradient exists.
-# Read these as a robustness spread across schemes rather than as
-# significance tests.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 12.F  Pooled interacted models, six primary schemes
+# -----------------------------------------------------------------------------
+# Runs p12_run_pooled_all_schemes() for the three runs
+# (MD41_pooled_all_schemes_all_runs.csv) and tabulates IV_PERCENT by run,
+# scheme, and category (MD42_pooled_gap_by_scheme.csv). This is fast relative
+# to the concept-level loop. Pooling averages over roughly 738 concepts whose
+# effects run in opposite directions, so a pooled coefficient near zero is
+# expected even where a concept-level gradient exists. These models show the
+# spread across schemes and are not read as significance tests.
 p12_pooled_all <- rbindlist(list(
   p12_run_pooled_all_schemes(run_hsa_comp),
   p12_run_pooled_all_schemes(run_hsa_adj),
@@ -2000,42 +2190,48 @@ cat("\n=== POOLED SHOPPABILITY GAP BY SCHEME AND RUN ===\n"); print(pooled_gap)
 save_csv(pooled_gap, "MD42_pooled_gap_by_scheme.csv")
 
 
-###############################################################################
-#  PART 13 -- BETWEEN-CONCEPT HETEROGENEITY
-###############################################################################
+# =============================================================================
+# Part 13: Between-concept heterogeneity
+# =============================================================================
 #
-#  The county meta-regression recovers a shoppability gradient, which
-#  requires genuine between-concept variation for shoppability to correlate
-#  with. This part measures how much such variation exists at each geography,
-#  using identical code on all three so the numbers are comparable.
+# A shoppability gradient in the meta-regression requires variation in the
+# concept-level coefficients beyond sampling error. Part 13 measures that
+# variation at county, HSA, and HRR with the same function, het_decomp(), and
+# the competitor-hospitals instrument at each geography: the
+# Competitor_only_hospitals_9m rows of the cached county run
+# (concept_results) and the Part 12 runs cr_hsa_comp and cr_hrr_comp. The
+# stopifnot() below requires all three objects.
 #
-#  Cochran's Q compares observed dispersion against what sampling error alone
-#  would produce, with Q = df as the null expectation. I-squared is the share
-#  of total variance that is between-concept. tau is the between-concept
-#  standard deviation in the units of the coefficient, by DerSimonian-Laird.
-#  The ratio of tau to the median standard error is the interpretable
-#  summary: below roughly 0.3 the spread is essentially estimation noise.
+# Cochran's Q compares the observed dispersion with what sampling error alone
+# would produce; its expected value without heterogeneity is df. I-squared is
+# the share of total variance that lies between concepts. tau is the
+# between-concept standard deviation in coefficient units (DerSimonian-Laird).
+# TAU_OVER_SE, tau divided by the median standard error, is the summary
+# measure: below about 0.3, the spread is mostly estimation noise.
 #
-#  Caveat for interpretation. Median first-stage F rises across county, HSA,
-#  and HRR in the same order that I-squared falls. A weaker instrument
-#  produces noisier coefficients, which inflates apparent heterogeneity, so
-#  the gradient partly reflects instrument strength rather than geography
-#  alone. The sensitivity sweep over the first-stage screen is reported for
-#  this reason. The per-concept cross-over in 12.E does not share this
-#  vulnerability, since it compares like concepts across geographies rather
-#  than relying on a variance ratio.
+# Median first-stage F rises from county to HSA to HRR, the same order in
+# which I-squared falls. A weaker instrument gives noisier coefficients and
+# more apparent heterogeneity, so the pattern partly reflects instrument
+# strength rather than geography alone. For this reason MD44 repeats the
+# decomposition under first-stage screens of 0, 5, 10, and 20. The
+# per-concept cross-over in 12.E compares the same concepts across
+# geographies and does not rely on a variance ratio.
 #
-#  Prerequisites: cr_hsa_comp and cr_hrr_comp from Part 12, and
-#  concept_results from the cached county run.
-###############################################################################
+# Writes MD43 (decomposition), MD44 (sensitivity to the first-stage screen),
+# and MD45 (family medians); prints the variance share explained by family.
 
 stopifnot("cr_hrr_comp not in scope"  = exists("cr_hrr_comp"),
           "cr_hsa_comp not in scope"  = exists("cr_hsa_comp"),
           "concept_results not in scope" = exists("concept_results"))
 
-# het_decomp() is the single implementation used by Parts 13 and 15. Parts
-# 15.D and 15E report narrower column sets, which the two wrappers defined
-# alongside them select from this output rather than recomputing.
+# het_decomp() summarizes one set of concept-level IV estimates: concepts with
+# finite IV_COEF and IV_SE, IV_SE > 0, and FS_F >= fs_min (default 10), or
+# NULL if fewer than 10 remain. It returns one row: the inverse-variance pooled
+# coefficient (also in percent), Q with its df and chi-square p-value,
+# I-squared, tau, the median SE, TAU_OVER_SE, the raw SD of the coefficients,
+# and the median first-stage F. Parts 13, 15.D, and 15E all use it; 15.D and
+# 15E call it through het_decomp_compact() and het_decomp_minimal(), which
+# keep fewer columns.
 het_decomp <- function(d, label, fs_min = 10) {
   d <- as.data.table(d)
   x <- d[is.finite(IV_COEF) & is.finite(IV_SE) & IV_SE > 0 & FS_F >= fs_min]
@@ -2065,8 +2261,9 @@ het_decomp <- function(d, label, fs_min = 10) {
     MEDIAN_FS_F = round(median(x$FS_F), 1))
 }
 
-# The cached county run carries one row per concept per instrument. Restrict
-# to the competitor instrument so the comparison matches HSA and HRR.
+# The cached county run has one row per concept and instrument. Only the
+# Competitor_only_hospitals_9m rows are kept, to match the single-instrument
+# HSA and HRR runs of Part 12.
 cty_comp <- as.data.table(concept_results)[
   INSTRUMENT_LABEL == "Competitor_only_hospitals_9m"]
 
@@ -2089,11 +2286,11 @@ cat("\n=== SENSITIVITY TO THE FIRST-STAGE SCREEN ===\n")
 print(sens[, .(GEOGRAPHY, N_CONCEPTS, I_SQUARED, TAU, MEDIAN_SE, TAU_OVER_SE)])
 save_csv(sens, "MD44_heterogeneity_sensitivity_fs_screen.csv")
 
-# Family medians are reported unshrunk. Where I-squared is zero, empirical
-# Bayes returns the pooled mean for every concept and the table becomes
-# uninformative by construction. The raw medians are real quantities, but
-# where I-squared is zero the differences between families cannot be claimed
-# to exceed sampling noise.
+# fam_table() summarizes the raw concept-level IV coefficients (FS_F >=
+# fs_min) by clinical family, for families with at least min_concepts
+# concepts. The medians are not shrunk: where I-squared is zero, empirical
+# Bayes would return the pooled mean for every concept. Where I-squared is
+# zero, differences between family medians are within sampling noise.
 fam_table <- function(d, label, fs_min = 10, min_concepts = 5) {
   x <- as.data.table(d)[is.finite(IV_COEF) & FS_F >= fs_min]
   x[, .(GEOGRAPHY = label, N_CONCEPTS = .N,
@@ -2115,8 +2312,9 @@ fam_all <- rbindlist(list(
 cat("\n=== FAMILY MEDIANS BY GEOGRAPHY ===\n"); print(fam_all)
 save_csv(fam_all, "MD45_family_medians_by_geography.csv")
 
-# Variance in the raw coefficients explained by family membership, as a
-# second and independent read on the decomposition above.
+# Share of the variance of the raw coefficients explained by clinical family
+# (R-squared of IV_COEF on family dummies, FS_F >= 10), printed for each
+# geography as a second check on the decomposition above.
 for (nm in c("COUNTY", "HSA", "HRR")) {
   d <- switch(nm, COUNTY = cty_comp, HSA = as.data.table(cr_hsa_comp),
               HRR = as.data.table(cr_hrr_comp))
@@ -2131,27 +2329,26 @@ for (nm in c("COUNTY", "HSA", "HRR")) {
 }
 
 
-###############################################################################
-#  PART 14 -- FIXED-EFFECT FEASIBILITY
-###############################################################################
+# =============================================================================
+# Part 14: Fixed-effect feasibility
+# =============================================================================
 #
-#  The market-by-concept fixed effect absorbs level differences but is held
-#  constant across the study window, so it cannot absorb a shock to the local
-#  competitive environment that arrives partway through. This part tests
-#  three finer alternatives and reports which are feasible.
+# The MARKET_ID (market-by-concept) fixed effect absorbs level differences
+# but is constant over the study window, so it cannot absorb a shock to the
+# local competitive environment that arrives partway through. Part 14
+# considers three finer alternatives: market by month, hospital by month, and
+# system by month. For each geography, the loop below reports the share of
+# market-month cells with a single distinct treatment value and the number
+# of hospitals and systems with no within-unit instrument variation. These
+# three diagnostics decide which of the finer fixed effects can be estimated.
+# Uses md_county_panel and the pooled HSA and HRR panels of 11.5 and 10.6
+# (md_hsa_pooled, md_hrr_pooled).
 #
-#  The loop below reports, for each geography, the share of market-month
-#  cells carrying a single distinct treatment value and the number of
-#  hospitals and systems with no within-unit instrument variation. Those
-#  three diagnostics decide which of the finer fixed effects can be
-#  estimated at all.
-#
-#  Interactions must be materialised as real columns before being passed as
-#  fixed effects. available_columns() applies intersect(columns,
-#  names(data)), a literal string match, so fixest interaction syntax such as
-#  "ANALYSIS_MARKET^POST_MONTH" is silently dropped and the model would run
-#  on BASELINE_FIXED_EFFECTS alone.
-###############################################################################
+# An interacted fixed effect must exist as a column. estimate_interacted()
+# passes fixed_effects through available_columns(), which keeps only names
+# found in names(data), so a fixest interaction such as
+# "ANALYSIS_MARKET^POST_MONTH" would be dropped without a warning and the
+# model would run on BASELINE_FIXED_EFFECTS alone.
 
 for (nm in c("COUNTY", "HSA", "HRR")) {
   p  <- switch(nm, COUNTY = md_county_panel, HSA = md_hsa_pooled, HRR = md_hrr_pooled)
@@ -2174,8 +2371,14 @@ for (nm in c("COUNTY", "HSA", "HRR")) {
 # level and is near-constant within a market-month cell, so the fixed effect
 # absorbs the regressor. Hospital by month is not estimable either, since the
 # instrument changes at most a few times per hospital across the window.
-# System by month is estimable at all three geographies and is reported
-# below, against the baseline specification for comparison.
+# System by month is estimable at all three geographies; SYSTEM_MONTH_FE is
+# added to the three panels in place.
+#
+# run_sysmonth() fits the headline interacted model twice, with the baseline
+# fixed effects and with SYSTEM_MONTH_FE added. The second model also
+# clusters by SYSTEM_KEY, so model_sample() drops rows with a missing
+# SYSTEM_KEY from it and its sample can be smaller than the baseline's.
+# Writes MD51_system_x_month_fe.csv.
 md_county_panel[, SYSTEM_MONTH_FE := paste(SYSTEM_KEY, POST_MONTH, sep = "::")]
 md_hsa_pooled[,   SYSTEM_MONTH_FE := paste(SYSTEM_KEY, POST_MONTH, sep = "::")]
 md_hrr_pooled[,   SYSTEM_MONTH_FE := paste(SYSTEM_KEY, POST_MONTH, sep = "::")]
@@ -2223,49 +2426,46 @@ print(sysmonth_all[, .(GEOGRAPHY, SPEC, TERM, IV_PERCENT = round(IV_PERCENT, 3),
                        WALD = round(FIRST_STAGE_WALD_THIS_EQ, 1), N_OBSERVATIONS)])
 
 
-###############################################################################
-#  PART 15 -- SIX-INSTRUMENT CONCEPT RUNS AND THE RESTRICTED COUNTY RUN
-###############################################################################
+# =============================================================================
+# Part 15: Six-instrument concept runs and the restricted county run
+# =============================================================================
 #
-#  Three analyses, each closing a specific gap left by Parts 12 and 13.
+# Four analyses that extend Parts 12 and 13:
 #
-#    15.A  County concept level, restricted to markets with instrument
-#          variation. The HSA runs are restricted this way and county is not,
-#          so the heterogeneity comparison in Part 13 confounds market
-#          definition with sample composition. This isolates the restriction.
+#   15.A  County concept level, restricted to markets with instrument
+#         variation. The HSA runs are restricted this way and the cached
+#         county run is not, so the Part 13 comparison mixes market
+#         definition with sample composition. 15.A isolates the restriction.
+#   15.B  HRR concept level with six instruments. The county gradient is a
+#         six-instrument result, while the Part 12 HRR run uses one.
+#   15.C  HSA concept level with six instruments, for the same reason.
+#   15.D  The Part 13 decomposition on the three six-instrument runs, with
+#         the instrument count held constant.
 #
-#    15.B  HRR concept level with six instruments. The county headline
-#          gradient is a six-instrument figure, while the Part 12 HRR run
-#          used one, so the two were not directly comparable.
+# Each run goes through p15_run() (15.1), which caches its results under keys
+# that include the instrument count and writes MD52-MD54; 15.D writes MD55 and
+# MD56.
 #
-#    15.C  HSA concept level with six instruments, for the same reason.
-#
-#    15.D  The Part 13 decomposition repeated on all three six-instrument
-#          runs, with instrument count now held constant.
-#
-#  Runtime. Six instruments cost roughly five times a single-instrument run,
-#  so budget 8 to 12 hours per six-instrument geography and 2 to 4 for 15.A.
-#  Each caches under a key encoding the instrument count, so a completed run
-#  is never repeated and an interruption costs only the run in progress. In
-#  cost order, 15.A is cheapest and addresses the clearest weakness in the
-#  Part 13 result, then 15.B, which has the cleaner concept-level
-#  identification, then 15.C.
-###############################################################################
+# Runtime: six instruments cost roughly five times a single-instrument run,
+# so about 8 to 12 hours per six-instrument geography and 2 to 4 hours for
+# 15.A. A completed run is loaded from its cache and not repeated, and an
+# interruption costs only the run in progress.
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 15.0  Working set
-# ---------------------------------------------------------------------------
-# Drop the large objects these analyses do not need. On an 8 GB machine a few
+# -----------------------------------------------------------------------------
+# Removes large objects these analyses do not need. On an 8 GB machine a few
 # leftover panels are enough to push R into swap, which slows the concept
 # loop by roughly an order of magnitude. md_hsa_pooled and md_hrr_pooled are
-# rebuilt below in 15.B and 15.C against the six-instrument sets.
+# rebuilt in 15.B and 15.C with the six-instrument sets.
 #
-# Note that `outpatient` is dropped here and is referenced again in Part 15E,
-# at the build_comparability_measures() call. That call is wrapped in
-# cache_or_run(), which evaluates its second argument lazily, so it succeeds
-# on a warm "comparability_measures" cache and fails on a cold one. Remove
-# "outpatient" from the list below if running Part 15E from a cold cache.
+# `outpatient` is removed here, but 15E.7 passes it to
+# build_comparability_measures() inside a cache_or_run() call with the key
+# "comparability_measures". That call works when
+# 07_Cache/comparability_measures.rds exists, because the argument is then
+# never evaluated. Without the cache file, or with USE_CACHE = FALSE, it
+# stops with "object 'outpatient' not found".
 rm(list = intersect(ls(), c("Dec16", "Jun21", "outpatient", "cbsa_panel",
                             "s15_payer_class_panel", "s15_payer",
                             "test_panel", "md_hsa_pooled", "md_hrr_pooled")))
@@ -2295,8 +2495,8 @@ cat(sprintf("\nHRR_COMP_HOSPITALS mean %.3f, share zero %.3f\n",
 cat(sprintf("HSA_COMP_HOSPITALS mean %.3f, share zero %.3f\n",
             mean(hsa_six$HSA_COMP_HOSPITALS), mean(hsa_six$HSA_COMP_HOSPITALS == 0)))
 
-# Gate before the long runs begin: every object Part 15 depends on, whether
-# built by this file or supplied by the main pipeline.
+# Stops before the long runs if any listed object, from this file or from the
+# main pipeline, is missing.
 md_p15_required <- c("md_load_panel", "md_schemes_long", "md_hospital_attrs",
                      "md_event_roster", "build_dynamic_competitor_instrument",
                      "hrr_six", "hsa_six", "md_county_panel", "MD_SCHEME",
@@ -2311,18 +2511,22 @@ if (length(md_p15_missing))
 cat("\nPart 15 prerequisites present.\n"); gc()
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 15.1  Configuration
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Cache and output keys encode the instrument count, following the
 # concept_level_6inst convention in the main pipeline. cache_or_run() keys on
 # the string alone, so without the count a later run with a different
 # instrument set would return the earlier object and report a cache hit.
 p15_key <- function(stem, tag, n_inst) sprintf("%s_%s_%dinst", stem, tag, n_inst)
 
-# p15_run() reports the panel's fixed-effect cell structure, fits the
-# concept-level models, runs the reduced-form and IV meta-regressions, and
-# writes all three tables under the instrument-count suffix.
+# p15_run() prints the panel's size and fixed-effect cell structure, fits the
+# concept-level models with estimate_concept_level(), and runs the
+# reduced-form and IV meta-regressions on the result. It returns
+# list(concept, meta_rf, meta_iv). Cache keys: p15_concept_<tag>_<n>inst,
+# p15_meta_rf_<tag>_<n>inst, and p15_meta_iv_<tag>_<n>inst. Writes
+# MD52_concept_level, MD53_meta_rf, and MD54_meta_iv, each with the suffix
+# _<tag>_<n>inst.csv; partial files use the stem MD52_concept_<tag>_<n>inst.
 p15_run <- function(panel, instruments, tag, geo_label) {
   t0 <- Sys.time()
   cat("\n", strrep("=", 70), "\n", sep = "")
@@ -2373,17 +2577,18 @@ p15_run <- function(panel, instruments, tag, geo_label) {
 }
 
 
-###############################################################################
-#  15.A -- COUNTY, RESTRICTED TO MARKETS WITH INSTRUMENT VARIATION
-###############################################################################
+# -----------------------------------------------------------------------------
+# 15.A  County, restricted to markets with instrument variation
+# -----------------------------------------------------------------------------
+# Uses CONCEPT_INSTRUMENTS, the same six instruments as the cached county run
+# (concept_level_6inst), so apart from the merged-concept rows that Part 2
+# leaves without a market key, the restriction is the only difference from
+# that run. A change in the heterogeneity decomposition then reflects sample
+# composition rather than instrument count or market definition.
 #
-#  Uses CONCEPT_INSTRUMENTS, the same six-instrument set as the cached county
-#  run, so the only difference from concept_level_6inst is the restriction.
-#  Any change in the heterogeneity decomposition is then attributable to
-#  sample composition rather than to instrument count or market definition.
-#
-#  The restriction rule matches the HSA runs: keep markets where the
-#  instrument is nonzero for at least one hospital-month.
+# The restriction rule matches the HSA runs: a market is kept if
+# PRIMARY_INSTRUMENT is nonzero for at least one of its hospital-months. Run
+# tag county_nz, geography label COUNTY_RESTRICTED.
 
 nz_county_markets <- unique(
   md_county_panel[get(PRIMARY_INSTRUMENT) > 0, ANALYSIS_MARKET])
@@ -2404,11 +2609,12 @@ cat("\n=== COUNTY RESTRICTED, META-REGRESSION (IV) ===\n"); print(county_nz$meta
 rm(md_county_nz); invisible(gc())
 
 
-###############################################################################
-#  15.B -- HRR, SIX INSTRUMENTS
-###############################################################################
-#
-#  HRR_INSTRUMENTS is the six-instrument HRR set defined in Part 10.4.
+# -----------------------------------------------------------------------------
+# 15.B  HRR, six instruments
+# -----------------------------------------------------------------------------
+# HRR_INSTRUMENTS is the six-instrument HRR set defined in Part 10.4. The HRR
+# panel is not restricted. The run stops if any panel row has no instrument
+# value after the merge.
 
 md_hrr_pooled <- merge(md_load_panel("HRR"), hrr_six,
                        by = c("HOSPITAL_ID", "POST_MONTH"), all.x = TRUE)
@@ -2421,13 +2627,13 @@ cat("\n=== HRR SIX INSTRUMENTS, META-REGRESSION (IV) ===\n"); print(hrr_6inst$me
 rm(md_hrr_pooled); invisible(gc())
 
 
-###############################################################################
-#  15.C -- HSA, SIX INSTRUMENTS
-###############################################################################
-#
-#  Restricted to markets with instrument variation, matching Part 12.
-#  Single-hospital HSAs cannot generate instrument variation, so the
-#  restriction is forced by the geography rather than chosen.
+# -----------------------------------------------------------------------------
+# 15.C  HSA, six instruments
+# -----------------------------------------------------------------------------
+# Uses HSA_SIX, defined after 15.0. The panel is restricted to markets where
+# HSA_COMP_HOSPITALS is nonzero for at least one hospital-month, matching
+# Part 12. Single-hospital HSAs cannot generate instrument variation, so the
+# restriction is forced by the geography rather than chosen.
 
 md_hsa_pooled <- merge(md_load_panel("HSA"), hsa_six,
                        by = c("HOSPITAL_ID", "POST_MONTH"), all.x = TRUE)
@@ -2449,17 +2655,17 @@ cat("\n=== HSA SIX INSTRUMENTS, META-REGRESSION (IV) ===\n"); print(hsa_6inst$me
 rm(md_hsa_pooled, md_hsa_nz); invisible(gc())
 
 
-###############################################################################
-#  15.D -- HETEROGENEITY ACROSS THE SIX-INSTRUMENT RUNS
-###############################################################################
-#
-#  Repeats the Part 13 decomposition on the six-instrument results. Because
-#  instrument count is now held constant across geographies and the county
-#  run is restricted the same way as HSA, the comparison isolates market
-#  definition more cleanly than the Part 13 version.
-#
-#  Each run carries one row per concept per instrument, so the decomposition
-#  is computed separately for each instrument rather than pooled across them.
+# -----------------------------------------------------------------------------
+# 15.D  Heterogeneity across the six-instrument runs
+# -----------------------------------------------------------------------------
+# Repeats the Part 13 decomposition on the three six-instrument runs. The
+# instrument count is the same at every geography and the county run is
+# restricted as the HSA run is, so the comparison isolates market definition
+# more closely than Part 13 does. Each run has one row per concept and
+# instrument, so the decomposition is computed for each instrument separately
+# rather than pooled across them. Writes MD55_heterogeneity_six_instrument.csv
+# and, when concept_results is in memory,
+# MD56_heterogeneity_full_vs_restricted.csv.
 
 # Selects the column set these tables report from het_decomp() in Part 13.
 het_decomp_compact <- function(d, label, fs_min = 10) {
@@ -2507,28 +2713,33 @@ if (exists("concept_results")) {
 cat("\n=== PART 15 COMPLETE ===\n")
 
 
-###############################################################################
-#  PART 15E -- CROSS-GEOGRAPHY COMPARISON TABLES AND FIGURES
-###############################################################################
+# =============================================================================
+# Part 15E: Cross-geography comparison tables and figures
+# =============================================================================
 #
-#  Reads the Part 15 outputs back from disk and assembles the cross-geography
-#  comparisons the paper reports: a forest plot of the shoppability gradient
-#  under each market definition, the concept-level distribution, the
-#  shoppable and non-shoppable levels stated separately, and the appendix
-#  table.
+# Reads the Part 15 results back from TABLE_DIR (MD52-MD56) and builds the
+# cross-geography comparisons: a forest plot of the shoppability gradient
+# under each market definition, the concept-level distribution, the
+# shoppable and non-shoppable levels stated separately, and the appendix
+# table.
 #
-#  Reading from CSV rather than from the in-memory objects lets this part run
-#  in a fresh session once Part 15 has completed, which is how it is normally
-#  used given the runtimes above.
+# Because the Part 15 results are read from CSV, this part can run in a fresh
+# session once Part 15 has completed. It also needs the main pipeline's
+# functions with concept_results and schemes_long (a warm start provides
+# them), het_decomp() from Part 13, md_schemes_long (Part 2), and xo_comp
+# from 12.E (for 15E.11).
 #
-#  On which county run is the comparator. The first block below uses
-#  county_nz, the Part 15.A methods check. That is the right object for the
-#  restricted-against-full heterogeneity comparison, and MD60 is written from
-#  it. It is NOT the paper's county estimate. The second block therefore
-#  rebuilds the county side from concept_results and meta_regressions_iv, the
-#  full six-instrument county run that every other table in the paper uses,
-#  and everything from the forest plots onward uses that version.
-###############################################################################
+# County comparator. 15E.1 and 15E.2 use the restricted county run
+# (county_nz, 15.A), which is the comparator for the restricted-against-full
+# heterogeneity comparison; MD60 is written from it. It is not the paper's
+# county estimate. 15E.3 replaces the county side with the full
+# six-instrument county run (concept_results and the cached
+# meta_regressions_iv) that every other table in the paper uses, and 15E.4
+# onward use that version.
+#
+# Two known problems stop this part when it is sourced (15E.7, wf_hsa; 15E.9,
+# abs_anchor_dedup), and two calls work only with existing cache files
+# (15E.3, 15E.7); see the comments there.
 
 read_tbl <- function(f) as.data.table(fread(file.path(TABLE_DIR, f)))
 
@@ -2569,12 +2780,12 @@ print(het_full_vs_nz[GEOGRAPHY %like% "COUNTY",
                      .(GEOGRAPHY, N_CONCEPTS, I_SQUARED, TAU_OVER_SE, MEDIAN_FS_F)])
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 15E.1  Anchor instrument only
-#
-# One instrument per geography, chosen as the competitor-hospitals variant at
-# each, so the three columns rest on the same exclusion-restriction argument.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# One instrument per geography, the competitor-hospitals variant at each, so
+# the three columns rest on the same exclusion-restriction argument. Prints
+# the decomposition for each geography.
 ANCHOR <- data.table(
   GEOGRAPHY = c("COUNTY_RESTRICTED", "HRR", "HSA"),
   INSTRUMENT_LABEL = c("Competitor_only_hospitals_9m",
@@ -2601,22 +2812,24 @@ cat("\n=== ANCHOR INSTRUMENT ONLY ===\n")
 print(anchor_decomp)
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 15E.2  Meta-regression terms, county_nz comparator
+# -----------------------------------------------------------------------------
+# extract_top_term() keeps, for each scheme and collapse, the non-intercept
+# row with the most negative estimate. The minimum is used because the name
+# of the shoppable-category term differs by collapse (CATHIGH for 3-tier,
+# CATShoppable for the 2-tier collapses). The meta-regression tables hold
+# both weightings (inverse variance and unweighted) and the selection does
+# not filter on WEIGHTING, so the row kept is the more negative of the two;
+# for the 3-tier collapse it can also be the INTERMEDIATE term. MD60 is
+# written from these rows.
 #
-# extract_top_term() takes the row with the most negative estimate per scheme
-# and collapse. The name of the "top" category term varies by collapse,
-# CATHIGH for a 3-tier scheme and CATShoppable for a shoppable-labelled one,
-# and the most negative row is always the intended contrast.
-# extract_intercept() takes the reference category, roughly "non-shoppable",
-# whose level is read off the model's own intercept with a correctly
-# computed standard error.
-# ---------------------------------------------------------------------------
+# extract_intercept() returns the intercept, which is the mean of the
+# reference category (Non_shoppable for the 2-tier collapses, LOW for
+# 3-tier), with its standard error from the same fit; one row per scheme,
+# collapse, and weighting.
 extract_top_term <- function(meta_iv_tbl, instrument_label) {
   d <- meta_iv_tbl[INSTRUMENT_LABEL == instrument_label & term != "(Intercept)"]
-  # "top" category term varies by collapse: CATHIGH for 3-tier, CATShoppable
-  # for shoppable-labeled collapses, etc. Take the row with the most negative
-  # estimate per scheme x collapse, which is always the intended contrast.
   d[, .SD[which.min(estimate)], by = .(SCHEME_ID, SCHEME, COLLAPSE)]
 }
 
@@ -2655,13 +2868,18 @@ cat("=== REFERENCE-CATEGORY (roughly 'non-shoppable') SIGN, PROPER TEST ===\n")
 print(intercept_sign)
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 15E.3  County side rebuilt on the full sample
-#
+# -----------------------------------------------------------------------------
 # Replaces the county_nz objects above with the full six-instrument county
 # run for every table and figure that follows. ANCHOR is redefined with
 # GEOGRAPHY = "COUNTY" in place of "COUNTY_RESTRICTED" to match.
-# ---------------------------------------------------------------------------
+#
+# meta_regressions_iv is the main pipeline's stage 8 cache, computed from
+# prepare_meta_input(concept_results, schemes_long). The call below passes
+# concept_results itself, so it works only on a cache hit. On a cache miss,
+# or with USE_CACHE = FALSE, run_meta_regressions() finds no CAT_ columns and
+# stops with "No meta-regressions for dep = IV_COEF".
 meta_iv_full_county <- cache_or_run("meta_regressions_iv",
                                     run_meta_regressions(concept_results, schemes_long,
                                                          dep = "IV_COEF", se = "IV_SE"))
@@ -2682,8 +2900,8 @@ int_hrr    <- extract_intercept(hrr_meta_iv,          ANCHOR[2, INSTRUMENT_LABEL
 int_hsa    <- extract_intercept(hsa_meta_iv,          ANCHOR[3, INSTRUMENT_LABEL])[, GEOGRAPHY := "HSA"]
 intercept_compare <- rbindlist(list(int_county, int_hrr, int_hsa), fill = TRUE)
 
-# Concept-level (not meta-regression) object, same fix: concept_results in
-# place of county_nz_concept.
+# anchor_concept is rebuilt the same way, with the full county run
+# (concept_results) in place of county_nz_concept.
 anchor_concept <- rbindlist(list(
   as.data.table(concept_results)[INSTRUMENT_LABEL == ANCHOR[1, INSTRUMENT_LABEL]][, GEOGRAPHY := "COUNTY"],
   hrr_concept[INSTRUMENT_LABEL == ANCHOR[2, INSTRUMENT_LABEL]][, GEOGRAPHY := "HRR"],
@@ -2694,9 +2912,12 @@ GEO_LEVELS  <- c("COUNTY", "HSA", "HRR")
 GEO_COLOURS <- c(COUNTY = "#782F40", HSA = "#4472A8", HRR = "#8A8A8A")
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # 15E.4  Five-scheme forest
-# ============================================================================
+# -----------------------------------------------------------------------------
+# The shoppable-category effect from meta_compare (15E.3) for five main
+# scheme-collapse pairs (MAIN_SCHEMES) at each geography, with intervals of
+# 1.96 standard errors. The plot is printed; no file is written.
 MAIN_SCHEMES <- data.table(
   SCHEME   = c("Theory-Based V2 (MRI nonshoppable)", "Imaging vs Procedural",
                "CMS Statutory Shoppable List", "Alt: Upfront Cash-Market Framework",
@@ -2723,9 +2944,13 @@ p_forest <- ggplot(meta_main, aes(x = LABEL, y = estimate, colour = GEOGRAPHY)) 
 print(p_forest)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # 15E.5  Concept-level distribution
-# ============================================================================
+# -----------------------------------------------------------------------------
+# Violin and box plots of the concept-level IV coefficients for the anchor
+# instrument at each geography, concepts with FS_F >= 10. The y-axis is
+# limited to the 2nd to 98th percentiles with coord_cartesian(), which drops
+# no data. The plot is printed; no file is written.
 anchor_fs10 <- anchor_concept[is.finite(IV_COEF) & FS_F >= 10]
 
 p_dist <- ggplot(anchor_fs10, aes(x = factor(GEOGRAPHY, levels = GEO_LEVELS), y = IV_COEF)) +
@@ -2740,9 +2965,12 @@ p_dist <- ggplot(anchor_fs10, aes(x = factor(GEOGRAPHY, levels = GEO_LEVELS), y 
 print(p_dist)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # 15E.6  All-schemes forest and slope chart
-# ============================================================================
+# -----------------------------------------------------------------------------
+# One 2-tier collapse per scheme: "2-tier High vs rest", or "2-tier Low vs
+# rest" for schemes without a High-vs-rest row. Writes
+# explore_forest_all_schemes.pdf and explore_slope_schemes.pdf to FIGURE_DIR.
 ALL_SCHEMES_2TIER <- meta_compare[COLLAPSE == "2-tier High vs rest" |
                                     (COLLAPSE == "2-tier Low vs rest" &
                                        !SCHEME %in% meta_compare[COLLAPSE == "2-tier High vs rest", unique(SCHEME)])]
@@ -2779,19 +3007,29 @@ print(p_slope)
 ggsave(file.path(FIGURE_DIR, "explore_slope_schemes.pdf"), p_slope, width = 6.5, height = 5)
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # 15E.7  Contracting-depth mechanism tests at HRR and HSA
-# ============================================================================
+# -----------------------------------------------------------------------------
+# Runs the main pipeline's comparability tests on the six-instrument HRR and
+# HSA concept results: run_comparability_within_family() (Section 9) and
+# run_comparability_meta() (Section 10). Both functions save their tables
+# under fixed names in TABLE_DIR, so these calls overwrite the main
+# pipeline's county files T09D_comparability_within_family.csv,
+# T10_comparability_meta_regression.csv, and T10B_horse_race_summary.csv, and
+# through screen_moderators() QA09_moderator_screen.csv in QA_DIR; the files
+# left on disk hold the HSA results.
 #
-# build_comparability_measures() needs `outpatient`, which 15.0 drops from
-# the working set, so this call requires a warm "comparability_measures"
-# cache. See the note at 15.0.
+# build_comparability_measures() needs `outpatient`, which 15.0 removes, so
+# the next line works only with a cached comparability_measures.rds (see
+# 15.0).
 
 measures <- cache_or_run("comparability_measures", build_comparability_measures(outpatient))
 
 wf_hrr <- run_comparability_within_family(hrr_concept, measures)
 wf_hsa <- run_comparability_within_family(hsa_concept, measures)
 
+# TIER is still "UNKNOWN" for every HRR and HSA row here (relabel_tier() is
+# applied below), so this loop prints empty tables.
 cat("\n=== CONTRACTING DEPTH, WITHIN-FAMILY, SPEC (b), MAIN TIER ===\n")
 for (nm in c("wf_hrr", "wf_hsa")) {
   d <- get(nm)[term == "MODC" & grepl("^\\(b\\)", SPEC) & TIER == "MAIN" &
@@ -2804,11 +3042,12 @@ meta_hrr <- run_comparability_meta(hrr_concept, measures)
 meta_hsa <- run_comparability_meta(hsa_concept, measures)
 
 
-# instrument_tier() only knows the original six county instrument labels.
-# HRR_* and HSA_* were never added to MAIN_INSTRUMENTS, CONFIRMING_INSTRUMENTS
-# or DISCREPANT_INSTRUMENTS, so every row falls to the "UNKNOWN" default and
-# every TIER == "MAIN" filter matches nothing. Relabelling post hoc by
-# construction avoids editing the pipeline's own lookup lists.
+# instrument_tier() (main pipeline, PART 1.5) assigns tiers only to the six
+# county instrument labels in MAIN_INSTRUMENTS, CONFIRMING_INSTRUMENTS, and
+# DISCREPANT_INSTRUMENTS. Every HRR_* and HSA_* label gets the default
+# "UNKNOWN", so a TIER == "MAIN" filter matches no row. relabel_tier() assigns
+# tiers to those labels by the unit counted: hospitals MAIN, systems
+# CONFIRMING, HRRs or HSAs OTHER_UNIT. The pipeline's lists are not changed.
 relabel_tier <- function(dt) {
   dt <- copy(dt)
   dt[grepl("^HRR_|^HSA_", INSTRUMENT_LABEL), TIER :=
@@ -2821,15 +3060,19 @@ relabel_tier <- function(dt) {
 wf_hrr <- relabel_tier(wf_hrr)
 wf_hsa <- relabel_tier
 
-# NOTE: line above assigns the function `relabel_tier` rather than its result.
-# It should read wf_hsa <- relabel_tier(wf_hsa). Left unchanged so this file
-# reproduces the run it documents; fix before circulating.
+# The line above assigns the function relabel_tier to wf_hsa instead of the
+# result of relabel_tier(wf_hsa). wf_hsa then holds a function, not the HSA
+# results, and the wf_hsa pass of the last loop in 15E.7 stops with "object
+# 'term' not found".
 
 
 meta_hrr <- relabel_tier(meta_hrr)
 meta_hsa <- relabel_tier(meta_hsa)
 
-# Reproduce the "MAIN tier only, spec (b)" summary the function tried and failed to print
+# The spec (b), MAIN-tier summary by moderator that run_comparability_meta()
+# prints is empty for HRR and HSA labels; it is recomputed here after
+# relabel_tier(). Unlike that summary, these counts pool the reduced-form and
+# IV rows (no filter on DEPENDENT).
 for (nm in c("meta_hrr", "meta_hsa")) {
   d <- get(nm)[grepl("_Z$", term) & SPEC == "(b) + family FE" & TIER == "MAIN"]
   cat(sprintf("\n=== %s, MAIN TIER, SPEC (b) ===\n", toupper(nm)))
@@ -2845,15 +3088,19 @@ for (nm in c("wf_hrr", "wf_hsa")) {
 }
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # 15E.8  Shoppable and non-shoppable levels stated separately
-# ============================================================================
-#
-# Mirrors run_meta_regressions() exactly in formula, weights, cluster, and
-# collapse rules, but fits each group twice, once as coded and once with CAT
-# releveled. Both category levels then emerge as a model's own intercept term
-# with a correctly computed standard error, rather than requiring the
-# intercept-slope covariance to combine estimate and delta by hand.
+# -----------------------------------------------------------------------------
+# run_meta_regressions_absolute() follows run_meta_regressions() (main
+# pipeline, Section 8): the same formula (dep ~ CAT), weightings (inverse
+# variance and unweighted, META_WEIGHTINGS), clustering by CLUSTER_FAMILY,
+# sample screens (MIN_CONCEPTS_META, at least two categories), and 2-tier
+# collapse rules. It omits the 3-tier collapse. Each model is fitted twice,
+# with Non_shoppable and then Shoppable as the reference level, so each
+# level's mean is the intercept of one fit and its standard error comes from
+# that fit; no intercept-slope covariance is needed. Returns one row per
+# scheme, collapse, instrument, and weighting with the NONSHOP_* and SHOP_*
+# estimates, standard errors, and p-values.
 run_meta_regressions_absolute <- function(mi, schemes_long, dep = "IV_COEF", se = "IV_SE") {
   rules <- list(
     `2-tier High vs rest` = function(x) factor(fifelse(x == "HIGH", "Shoppable", "Non_shoppable"),
@@ -2910,9 +3157,10 @@ run_meta_regressions_absolute <- function(mi, schemes_long, dep = "IV_COEF", se 
   rbindlist(rows, fill = TRUE)
 }
 
-# Rebuild the meta-input at each geography, which is a merge rather than a
-# refit and therefore cheap, then run the absolute-level version on the IV
-# dependent variable for the anchor instrument only.
+# prepare_meta_input() rebuilds the meta-input at each geography (a merge, not
+# a refit). The absolute-level regressions run on the IV coefficients for
+# every instrument and both weightings; abs_anchor keeps the anchor
+# instrument with inverse-variance weights and is written to MD61.
 mi_county <- prepare_meta_input(concept_results, schemes_long)
 mi_hrr    <- prepare_meta_input(hrr_concept,      schemes_long)
 mi_hsa    <- prepare_meta_input(hsa_concept,       schemes_long)
@@ -2935,15 +3183,15 @@ cat("Rows:", nrow(abs_anchor), "| schemes:", uniqueN(abs_anchor$SCHEME),
     "| geographies:", uniqueN(abs_anchor$GEOGRAPHY), "\n")
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # 15E.9  Two-panel forest, shoppable against non-shoppable
-# ============================================================================
-#
-# NOTE: abs_anchor_dedup is referenced here and in 15E.10 but is never
-# assigned anywhere in this file; abs_anchor above is the nearest object. A
-# reduction of abs_anchor to one row per SCHEME and GEOGRAPHY appears to be
-# missing, which is consistent with the duplicate-label guard further down.
-# Supply that step before running this block.
+# -----------------------------------------------------------------------------
+# abs_anchor_dedup, used here and in 15E.10, is not created in this file or
+# in the main pipeline, so this block stops with "object 'abs_anchor_dedup'
+# not found". The code expects one row per SCHEME and GEOGRAPHY (see the
+# check on scheme_order below); abs_anchor, the nearest object, has one row
+# per scheme, collapse, and geography. Writes
+# fig26_shoppable_nonshoppable_geography.pdf to FIGURE_DIR.
 abs_long <- rbindlist(list(
   abs_anchor_dedup[, .(SCHEME, COLLAPSE, GEOGRAPHY, CATEGORY = "Shoppable",
                        estimate = SHOP_EST, std.error = SHOP_SE, p.value = SHOP_P)],
@@ -2955,9 +3203,8 @@ abs_long[, SCHEME_SHORT := gsub("^(Alt: |CMS |High vs Low )", "", SCHEME)]
 abs_long[, GEOGRAPHY := factor(GEOGRAPHY, levels = GEO_LEVELS)]
 abs_long[, CATEGORY  := factor(CATEGORY, levels = c("Non-shoppable", "Shoppable"))]
 
-# Confirm SCHEME_SHORT itself didn't just recreate the collision via the
-# gsub prefix-stripping (two different SCHEME names shortening to the same
-# string) -- checked directly rather than assumed.
+# Checks that stripping the prefixes did not give two different schemes the
+# same SCHEME_SHORT. If it did, the full SCHEME names are used instead.
 dup_check <- abs_long[, uniqueN(SCHEME), by = SCHEME_SHORT][V1 > 1]
 if (nrow(dup_check) > 0) {
   cat("WARNING: these short labels still collide across different schemes:\n")
@@ -2987,9 +3234,14 @@ ggsave(file.path(FIGURE_DIR, "fig26_shoppable_nonshoppable_geography.pdf"),
        p_forest_split, width = 9, height = 7.5)
 
 
-# ============================================================================
-# 15E.10  Appendix table and the numbers the prose needs
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 15E.10  Appendix table and summary counts
+# -----------------------------------------------------------------------------
+# Writes the body rows of the appendix table to tab_schemes_geography_body.tex
+# in TABLE_DIR (not OUT_TEX): scheme, geography, shoppable estimate and
+# p-value, non-shoppable estimate and p-value, the gap, and the number of
+# concepts. Stars mark p < 0.10, 0.05, and 0.01. Uses abs_anchor_dedup (see
+# 15E.9).
 stars <- function(p) fifelse(is.na(p), "",
                              fifelse(p < 0.01, "$^{***}$",
                                      fifelse(p < 0.05, "$^{**}$",
@@ -3011,7 +3263,7 @@ body <- tex[, sprintf(
 writeLines(body, file.path(TABLE_DIR, "tab_schemes_geography_body.tex"))
 cat("Wrote", length(body), "rows to tab_schemes_geography_body.tex\n")
 
-# ---- Numbers the prose needs ----
+# Summary counts by geography -------------------------------------------------
 cat("\n=== SUMMARY FOR THE WRITE-UP ===\n")
 print(tex[, .(N_SCHEMES      = .N,
               SHOP_NEGATIVE  = sum(SHOP_EST < 0),
@@ -3026,14 +3278,17 @@ cat("\n=== SERVICE COUNTS BY COLLAPSE (the caveat worth checking) ===\n")
 print(tex[GEOGRAPHY == "COUNTY", .(SCHEME, COLLAPSE, N_CONCEPTS)][order(N_CONCEPTS)])
 
 
-# ============================================================================
+# -----------------------------------------------------------------------------
 # 15E.11  Robustness on the cross-over slope
-#
-# No new regressions. Uses xo_comp$delta and md_schemes_long, both already in
-# memory from Part 12, so this runs in seconds. For each scheme it refits the
-# ordinal slope dropping one clinical family at a time, and computes an exact
-# permutation p-value by reshuffling the ordinal shoppability rank.
-# ============================================================================
+# -----------------------------------------------------------------------------
+# Checks the 12.E cross-over slope (HSA minus HRR coefficient on ordinal
+# shoppability) for the HSA competitor run. Uses xo_comp$delta (12.E) and
+# md_schemes_long (Part 2); no concept-level model is refitted, so this runs
+# in seconds. For each of the first six SCHEME_IDs, on concepts with FS_F >=
+# 10 at both HSA and HRR (at least 30 concepts), it refits the slope leaving
+# out one clinical family at a time and computes a two-sided permutation
+# p-value from 2,000 random shuffles of the ordinal rank (set.seed(1)).
+# Writes MD57 (summary) and MD58 (leave-one-family-out detail).
 crossover_robustness <- function(delta_table, hsa_label, schemes_to_check) {
   
   d <- as.data.table(delta_table)[FS_F_HSA >= 10 & FS_F_HRR >= 10 &
@@ -3095,58 +3350,62 @@ cat("\n=== CROSS-OVER ROBUSTNESS: HSA_competitor ===\n")
 print(rob_comp$summary)
 
 
-###############################################################################
+# =============================================================================
+# Part 16: Distance-banded instruments and the ring decay IV
+# =============================================================================
 #
-#  PART 16 -- DISTANCE-BANDED INSTRUMENTS AND THE RING DECAY IV
+# The three-band ring decomposition of Part 4 (4.2 and 4.3) is estimated by
+# OLS, because three endogenous band terms need three excluded instruments
+# and the design supplies one. Part 16 builds the three band instruments,
+# estimates the three-band IV next to OLS (16.4), and plots the OLS estimates
+# (16.5).
 #
-#  Purpose. The three-band ring decomposition in Part 4.3 is ordinary least
-#  squares, because three endogenous band terms require three excluded
-#  instruments and the design supplies one. This part builds those three.
+# Construction. The instrument's exclusion argument requires peers outside
+# the focal market, while the ring decomposition is about local reach, and
+# most hospitals within fifteen miles of a focal hospital are in its own
+# county. The band instruments are therefore county-gated and out-of-county.
+# A peer counts for a focal hospital-month if its system had already posted
+# in the focal hospital's county (the LOCAL_SYSTEM_FIRST_POST_MONTH gate of
+# IV06), it is in a different county, it belongs to a different system, it
+# posted within the trailing nine months, and it lies in the distance band.
+# The near band is thinner than the far bands by construction; 16.3 reports
+# how thin before anything is estimated. If the 0-15 band instrument is zero
+# for most hospital-months, the three-band IV is not identified and the OLS
+# decomposition is the one to report.
 #
-#  Construction, and what it costs. The instrument's exclusion argument rests
-#  on peers being outside the focal market, while the ring decomposition is
-#  about local reach. Those requirements pull against each other, since most
-#  hospitals within fifteen miles of a focal hospital sit in its own county.
-#  The band instruments are therefore county-gated and out-of-county: a peer
-#  counts only if its system had already established presence in the focal
-#  hospital's county, through the same LOCAL_SYSTEM_FIRST_POST_MONTH gate as
-#  IV06, it sits in a different county, it belongs to a different system, it
-#  posted within the trailing nine months, and its facility lies in the
-#  stated distance band.
+# Treatment. The endogenous variables are the SQL ring counts
+# (RING_PRIOR_0_15, RING_PRIOR_15_30, RING_PRIOR_30_60), which count all
+# prior posters in the band, including same-county and same-system ones.
+# This parallels the headline design, where the treatment counts all prior
+# posters in the county and the instrument counts only out-of-county
+# competitors.
 #
-#  The near band is thinner than the far bands by construction. Section 16.3
-#  reports how thin before anything is estimated. If the 0-15 band instrument
-#  is zero for most hospital-months, the three-band IV is not identified and
-#  the OLS decomposition is the reportable object.
+# Checks that stop the run: coordinate columns found (16.1); no duplicate
+# roster or output rows (16.2); the band sum never exceeds IV06 (16.3); the
+# instrument merge keeps the row count and the ring counts are present
+# (16.4); three OLS rows (16.5).
 #
-#  Treatment. The endogenous variables are the existing SQL ring counts
-#  (RING_PRIOR_0_15, RING_PRIOR_15_30, RING_PRIOR_30_60), which count all
-#  prior posters in the band including same-county and same-system ones. This
-#  mirrors the paper's existing structure exactly, where the treatment counts
-#  all prior posters in the county and the instrument counts only
-#  out-of-county competitors.
-#
-#  Prerequisites. md_county_panel, md_event_roster, and md_hosp_geo in scope,
-#  with md_hospital_attrs carrying the RING_PRIOR_* columns from Part 1.
-#
-###############################################################################
+# Needs md_county_panel (with the RING_PRIOR_* columns from Part 1),
+# md_event_roster (10.1), and md_hosp_geo (Part 1). Writes
+# MD59_ring_decay_iv.csv, MD59_ring_decay_ols.csv, and fig25_ring_decay.pdf.
 
 MILES_TO_M <- 1609.344
 RING_CUTS  <- c(0, 15, 30, 60)          # miles
 RING_LABS  <- c("0_15", "15_30", "30_60")
 
 
-# ============================================================================
-# 16.1 -- HOSPITAL COORDINATES AND PAIRWISE DISTANCES
-# ============================================================================
-#
-# Candidate pairs are found on a projected CRS, which is fast because sf
-# indexes it, and exact distances are then recomputed geodesically on that
-# candidate set only. Albers Equal Area (EPSG 5070) distorts Alaska and
-# Hawaii, so the candidate set there is approximate and the geodesic pass
-# corrects it. Points carry no validity problems, so s2 is safe for the
-# distance step and is the correct engine for it; it is switched back off
-# afterwards for the polygon work.
+# -----------------------------------------------------------------------------
+# 16.1  Hospital coordinates and pairwise distances
+# -----------------------------------------------------------------------------
+# Candidate pairs within 60 miles come from st_is_within_distance() on points
+# projected to Albers Equal Area (EPSG 5070), which sf can index. Distances
+# for the candidate pairs are then recomputed geodesically with s2 and
+# assigned to the bands [0, 15), [15, 30), and [30, 60] miles. EPSG 5070
+# distorts Alaska and Hawaii, so the candidate search there is approximate:
+# the geodesic pass corrects the distances of the candidates but cannot add
+# pairs the projected search missed. s2 is switched on only for the distance
+# step (points raise no validity problems) and off again afterwards, the
+# setting used for the polygon work in Part 11.
 #
 # Column names in HPT_HOSPITAL_GEO vary by export vintage, so the latitude
 # and longitude columns are detected rather than assumed.
@@ -3165,9 +3424,7 @@ hosp_xy <- hosp_xy[is.finite(LAT) & is.finite(LON)]
 cat(sprintf("Hospitals with usable coordinates: %d of %d\n",
             nrow(hosp_xy), uniqueN(md_hosp_geo$HOSPITAL_ID)))
 
-# Candidate search on a projected CRS, which is fast because sf indexes it.
-# Albers Equal Area (EPSG 5070) distorts Alaska and Hawaii, so the candidate
-# set there is approximate; exact distances below are geodesic and correct it.
+# Candidate pairs within 60 miles on the projected CRS.
 sf_use_s2(FALSE)
 pts_proj <- st_transform(
   st_as_sf(hosp_xy, coords = c("LON", "LAT"), crs = 4326, remove = FALSE),
@@ -3184,8 +3441,8 @@ pairs <- rbindlist(lapply(seq_along(nb), function(i) {
 }))
 cat(sprintf("Candidate pairs: %s\n", format(nrow(pairs), big.mark = ",")))
 
-# Exact geodesic distance on the candidate set only. Points carry no validity
-# problems, so s2 is safe here and is the correct engine for distance.
+# Geodesic distances for the candidate pairs (s2 on for this step only), then
+# the band assignment.
 pairs <- merge(pairs, hosp_xy[, .(FOCAL_HOSPITAL_ID = HOSPITAL_ID,
                                   F_LON = LON, F_LAT = LAT)],
                by = "FOCAL_HOSPITAL_ID")
@@ -3212,15 +3469,17 @@ print(pairs[, .(PAIRS = .N, MEDIAN_MI = round(median(DIST_MI), 1)), by = BAND][o
 invisible(gc())
 
 
-# ============================================================================
-# 16.2 -- BAND-SPECIFIC COMPETITOR INSTRUMENTS
-# ============================================================================
-#
-# Mirrors build_dynamic_competitor_instrument() gate for gate. The only
-# change is that the peer universe is defined by distance band rather than by
-# a categorical geography, so the out-of-market restriction is applied on
-# county while the band is applied on distance. The four stages are marked
-# inline below.
+# -----------------------------------------------------------------------------
+# 16.2  Band-specific competitor instruments
+# -----------------------------------------------------------------------------
+# build_ring_instruments() applies the gates of
+# build_dynamic_competitor_instrument() (Part 10.2) with presence = "posted"
+# and exclude_own_system = TRUE. The peer universe comes from the distance
+# pairs instead of a geography, so the out-of-market restriction is applied
+# on county (COUNTY_STATE_KEY) and the band on distance. The four stages are
+# marked below. Returns one row per focal hospital-month with Z_RING_0_15,
+# Z_RING_15_30, and Z_RING_30_60, the number of distinct peer hospitals in
+# each band (zero where there are none).
 build_ring_instruments <- function(focal_panel, roster, pair_table,
                                    lookback_months = 9) {
   
@@ -3291,16 +3550,14 @@ cat("\n=== Building distance-banded instruments ===\n")
 ring_iv <- build_ring_instruments(md_county_panel, md_event_roster, pairs)
 
 
-# ============================================================================
-# 16.3 -- DIAGNOSTICS BEFORE ESTIMATING
-# ============================================================================
-#
+# -----------------------------------------------------------------------------
+# 16.3  Diagnostics before estimating
+# -----------------------------------------------------------------------------
 # The near band is thin by construction, since most hospitals within fifteen
-# miles share the focal hospital's county and are excluded. This block
-# reports how thin, checks that the three bands partition a subset of IV06's
-# peer universe so their sum can never exceed it, and applies a hard gate: a
-# band that is zero for more than 95% of rows cannot support its own first
-# stage, whatever the second stage reports.
+# miles share the focal hospital's county and are excluded. Reports the
+# distribution of each band instrument and their correlations, checks that
+# the bands nest within IV06's peers, and flags any band that is zero in
+# more than 95% of rows.
 ring_desc <- rbindlist(lapply(RING_LABS, function(b) {
   x <- ring_iv[[paste0("Z_RING_", b)]]
   data.table(BAND = b, MEAN = round(mean(x), 3), MEDIAN = median(x),
@@ -3312,8 +3569,8 @@ cat("\n=== BAND INSTRUMENTS ===\n"); print(ring_desc)
 cat("\n=== CORRELATION AMONG BAND INSTRUMENTS ===\n")
 print(round(cor(as.matrix(ring_iv[, paste0("Z_RING_", RING_LABS), with = FALSE])), 3))
 
-# Construction checks. The bands partition a subset of IV06's peer universe,
-# so their sum can never exceed it.
+# Construction check: the bands partition a subset of IV06's peers, so their
+# sum cannot exceed IV06. The run stops if it does.
 chk <- merge(ring_iv,
              unique(md_county_panel[, .(HOSPITAL_ID, POST_MONTH,
                                         IV06 = Z_SYS_COMPETITOR_ONLY_9M_EXCL_CURRENT)]),
@@ -3332,9 +3589,10 @@ cat(sprintf("Correlation of band sum with IV06: %.4f\n",
 stopifnot("band sum exceeds IV06, peer universes do not nest" =
             all(chk$BAND_SUM <= chk$IV06, na.rm = TRUE))
 
-# Hard gate. Three endogenous terms need three instruments with real
-# variation. A band that is zero for more than 95% of rows will not support
-# its own first stage.
+# Three endogenous terms need three instruments with variation, and a band
+# that is zero in more than 95% of rows cannot support its own first stage.
+# This check only prints a message; the run continues and 16.4 still
+# estimates the IV.
 share_zero <- ring_desc$SHARE_ZERO
 names(share_zero) <- ring_desc$BAND
 if (any(share_zero > 0.95)) {
@@ -3346,16 +3604,18 @@ if (any(share_zero > 0.95)) {
 }
 
 
-# ============================================================================
-# 16.4 -- THREE-BAND IV AND THE OLS COMPARISON
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 16.4  Three-band IV and the OLS comparison
+# -----------------------------------------------------------------------------
+# PRIMARY_OUTCOME on the three ring counts with the baseline controls and
+# fixed effects, by OLS and by IV with Z_RING_0_15, Z_RING_15_30, and
+# Z_RING_30_60 as instruments, clustered by BASELINE_CLUSTERS. Sample: county
+# panel rows with complete outcome, ring counts, band instruments, and
+# controls. Writes MD59_ring_decay_iv.csv (OLS and IV rows) and prints the
+# first-stage Wald statistics.
 #
-# build_iv_formula() is written for a single endogenous term, so the
-# multi-endogenous formula is assembled directly here, in the fixest form
-# y ~ controls | FE | endo1 + endo2 + endo3 ~ z1 + z2 + z3.
-#
-# Note that md_ring_panel is reused as a name here; the Part 4.1 object of
-# the same name is no longer needed at this point.
+# This reassigns md_ring_panel, the name of the Part 4.1 ring-treatment
+# panel, which is not used after Part 4.
 md_ring_panel <- merge(md_county_panel, ring_iv,
                        by = c("HOSPITAL_ID", "POST_MONTH"), all.x = TRUE)
 stopifnot("instrument merge changed row count" =
@@ -3374,8 +3634,7 @@ cat(sprintf("\nEstimation sample: %s rows, %d hospitals, %d markets\n",
             format(nrow(md_ring_est), big.mark = ","),
             uniqueN(md_ring_est$HOSPITAL_ID), uniqueN(md_ring_est$ANALYSIS_MARKET)))
 
-# build_iv_formula() is written for a single endogenous term, so the
-# multi-endogenous formula is assembled directly. fixest syntax is
+# The IV formula is assembled with sprintf() in the fixest form
 # y ~ controls | FE | endo1 + endo2 + endo3 ~ z1 + z2 + z3.
 ctrl <- available_columns(md_ring_est, BASELINE_CONTROLS)
 fe   <- available_columns(md_ring_est, BASELINE_FIXED_EFFECTS)
@@ -3416,8 +3675,10 @@ ring_results <- rbindlist(list(
   extract_bands(fit_ols, "OLS"),
   extract_bands(fit_iv,  "IV", prefix = "fit_")), fill = TRUE)
 
+# Fallback for IV coefficient names without the fit_ prefix. It runs only
+# when ring_results is empty, so not when the OLS rows were extracted.
 if (nrow(ring_results) == 0L)
-  ring_results <- extract_bands(fit_iv, "IV")   # fixest naming varies by version
+  ring_results <- extract_bands(fit_iv, "IV")
 
 save_csv(ring_results, "MD59_ring_decay_iv.csv")
 cat("\n=== RING DECAY: OLS AND IV ===\n")
@@ -3435,21 +3696,20 @@ if (!is.null(fit_iv)) {
 }
 
 
-# ============================================================================
-# 16.5 -- FIGURE, OLS ONLY
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 16.5  Figure, OLS only
+# -----------------------------------------------------------------------------
+# The figure shows the OLS estimates only. The three-band IV system is weakly
+# identified: its standard errors are two to five times the OLS ones and the
+# sign pattern reverses across bands, as expected with near-collinear
+# instruments in a system of three endogenous terms and three instruments.
+# In Table 8, OLS is attenuated toward zero at the pooled level (-1.05%
+# against an instrumented -3.07%), so a significant near-band OLS
+# coefficient is, if anything, a lower bound on the local effect.
 #
-# The three-band IV system is weakly identified: IV standard errors run two
-# to five times the OLS ones and the sign pattern reverses across bands,
-# which is the signature of near-collinear instruments in a three-endogenous,
-# three-instrument system rather than a corrected estimate.
-#
-# Reporting OLS here is supported by the paper's own framework. Table 8
-# establishes that OLS is attenuated toward zero in this design, -1.05%
-# against an instrumented -3.07% at the pooled level, so a significant
-# near-band OLS coefficient is if anything a lower bound on the local effect
-# rather than an inflated one.
-# ============================================================================
+# Writes fig25_ring_decay.pdf (FIGURE_DIR) and MD59_ring_decay_ols.csv.
+# Intervals are 1.96 standard errors, while the filled points mark P_VALUE <
+# 0.05 from .pval() (t reference), so the two can disagree near the margin.
 
 ring_ols <- ring_results[ESTIMATOR == "OLS"]
 stopifnot("OLS rows missing from ring_results" = nrow(ring_ols) == 3)
@@ -3495,42 +3755,43 @@ rm(pairs, md_ring_panel, fit_iv, ring_iv); invisible(gc())
 cat("\n=== PART 16 COMPLETE (OLS reported; IV attempted and rejected on weak-system grounds) ===\n")
 
 
-###############################################################################
+# =============================================================================
+# Part 17: Out-of-state and ownership-dated constructions
+# =============================================================================
 #
-#  PART 17 -- OUT-OF-STATE AND OWNERSHIP-DATED CONSTRUCTIONS
+# Two alternative constructions of the competitor instrument, each aimed at
+# one channel through which the exclusion restriction could fail.
 #
-#  Two alternative constructions of the competitor instrument, each aimed at
-#  a specific channel through which the exclusion restriction could fail.
+# 17A, multi-market contracting. A carrier that contracts with a system in
+# several markets, or a system that negotiates one contract covering several
+# hospitals, could carry disclosure elsewhere into local prices without
+# passing through local peers. Both channels are densest within a state.
+# CTY_OOS is IV06 with every peer in the focal hospital's own state removed.
 #
-#  17A, multi-market contracting. A carrier that contracts with a system in
-#  several markets, or a system that negotiates one contract covering several
-#  hospitals, could carry disclosure elsewhere into local prices without
-#  passing through local peers. Both channels are densest within a state.
-#  CTY_OOS keeps IV06 as built and drops every peer in the focal hospital's
-#  own state.
+# 17B, simultaneity. IV06 counts a rival system only once that system's own
+# hospital in the focal county has posted, so the instrument's support
+# depends on that hospital's timing. CTY_OWN counts the rival system
+# throughout the window instead, through presence = "owned" in the Part 10.2
+# builder.
 #
-#  17B, simultaneity. IV06 admits a rival system only once that system's own
-#  hospital in the focal county has posted, so the instrument's support
-#  depends on that hospital's timing. CTY_OWN dates presence by ownership
-#  instead, through presence = "owned" on the Part 10.2 builder.
+# Both use build_dynamic_competitor_instrument() at county geography.
+# Passing the same-state county pairs as `adjacency` removes in-state peers
+# in other counties (CTY_OOS); passing the cross-state pairs removes
+# out-of-state peers (CTY_INS). The builder always drops same-county peers,
+# so CTY_OOS + CTY_INS must equal the unfiltered count CTY_ALL (checked in
+# 17.2).
 #
-#  No new counting code is needed. At county geography, passing a same-state
-#  county-pair table as `adjacency` removes in-state peers, since the builder
-#  already drops same-county ones, and the in-state complement must add back
-#  to the unfiltered count exactly. That partition is Gate 1 below.
-#
-#  Prerequisites. Parts 0-2, 4, and 10, with md_county_panel and
-#  md_event_roster in scope.
-#
-###############################################################################
+# Needs Parts 0-2, 4, and 10, with md_county_panel and md_event_roster in
+# scope. Writes MD_P17A_construction_descriptives.csv,
+# MD_P17B_construction_rows.csv, and MD_P17C_construction_tests.csv.
 
-# ---------------------------------------------------------------------------
-# 17.1 -- Clean FIPS roster and the state pair tables
-#
-# Missing FIPS codes are handled explicitly. formatC() turns NA into "   NA",
-# which the builder would otherwise treat as one phantom county shared by
-# every hospital with a missing code.
-# ---------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# 17.1  Clean FIPS roster and the state pair tables
+# -----------------------------------------------------------------------------
+# Missing FIPS codes stay NA. formatC() turns NA into "   NA", which the
+# builder would treat as one county shared by every hospital with a missing
+# code; md_fips5() pads only the codes that are present.
 md_fips5 <- function(x) {
   v   <- suppressWarnings(as.integer(trimws(as.character(x))))
   out <- rep(NA_character_, length(v))
@@ -3560,14 +3821,16 @@ cat(sprintf("County pairs: %s same-state | %s cross-state\n",
             format(nrow(md_cross_state_pairs), big.mark = ",")))
 rm(md_pairs); invisible(gc())
 
-# ---------------------------------------------------------------------------
-# 17.2 -- Build the four counts and gate them
-#
-# Three gates, all fatal on failure: in-state and out-of-state peers must
-# partition the unfiltered set; dating presence by ownership can only add
-# peers, never remove them; and the clean-FIPS rebuild must reproduce the
-# panel's own IV06.
-# ---------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# 17.2  Build the four counts and check them
+# -----------------------------------------------------------------------------
+# CTY_ALL (IV06 rebuilt on the clean FIPS codes), CTY_OOS (out-of-state
+# peers), CTY_INS (in-state peers), and CTY_OWN (ownership-dated). Three
+# checks stop the run on failure: in-state and out-of-state peers partition
+# the unfiltered set; dating presence by ownership can only add peers, never
+# remove them; and CTY_ALL reproduces the panel's IV06 in at least 98% of
+# hospital-months.
 md_p17 <- Reduce(function(a, b) merge(a, b, by = c("HOSPITAL_ID", "POST_MONTH")), list(
   build_dynamic_competitor_instrument(md_county_panel, md_roster_st, "COUNTY_FIPS",
                                       "CTY_ALL", exclude_own_system = TRUE),
@@ -3581,22 +3844,24 @@ md_p17 <- Reduce(function(a, b) merge(a, b, by = c("HOSPITAL_ID", "POST_MONTH"))
                                       "CTY_OWN", exclude_own_system = TRUE,
                                       presence = "owned")))
 
-# Gate 1: in-state and out-of-state peers partition the unfiltered set.
+# Check 1: in-state and out-of-state peers partition the unfiltered set.
 stopifnot("in-state + out-of-state != unfiltered count" =
             all(md_p17$CTY_ALL_HOSPITALS ==
                   md_p17$CTY_OOS_HOSPITALS + md_p17$CTY_INS_HOSPITALS))
 
-# Gate 2: dating presence by ownership can only add peers.
+# Check 2: dating presence by ownership can only add peers.
 stopifnot("ownership-dated count below posting-dated count" =
             all(md_p17$CTY_OWN_HOSPITALS >= md_p17$CTY_ALL_HOSPITALS))
 
-# A focal hospital without a county FIPS cannot be placed in a state.
+# A focal hospital without a county FIPS cannot be placed in a state; its four
+# counts are set to NA.
 md_p17_cols <- c("CTY_ALL_HOSPITALS", "CTY_OOS_HOSPITALS",
                  "CTY_INS_HOSPITALS", "CTY_OWN_HOSPITALS")
 md_p17[HOSPITAL_ID %in% md_roster_st[is.na(COUNTY_FIPS), HOSPITAL_ID],
        (md_p17_cols) := NA_integer_]
 
-# Gate 3: the clean-FIPS rebuild reproduces the panel's IV06.
+# Check 3: the clean-FIPS rebuild reproduces the panel's IV06 (exact match in
+# at least 98% of hospital-months; the first mismatches are printed if not).
 md_p17_check <- merge(
   md_p17[!is.na(CTY_ALL_HOSPITALS), .(HOSPITAL_ID, POST_MONTH, CTY_ALL_HOSPITALS)],
   unique(md_county_panel[, .(HOSPITAL_ID, POST_MONTH, T_IV06 = get(PRIMARY_INSTRUMENT))]),
@@ -3621,12 +3886,17 @@ md_p17_desc <- md_p17[!is.na(CTY_ALL_HOSPITALS), .(
 save_csv(md_p17_desc, "MD_P17A_construction_descriptives.csv")
 print(t(md_p17_desc))
 
-# ---------------------------------------------------------------------------
-# 17.3 -- Headline specification under each construction, common sample
-#
-# All three instruments are estimated on the rows where the out-of-state
-# count is defined, so the comparison is not confounded by sample changes.
-# ---------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# 17.3  Headline specification under each construction, common sample
+# -----------------------------------------------------------------------------
+# The headline interacted model with each of three instruments: IV06
+# (PRIMARY_INSTRUMENT), CTY_OOS_HOSPITALS, and CTY_OWN_HOSPITALS. All three
+# are estimated on the county panel rows where the out-of-state count is
+# defined, so the comparison is not confounded by sample changes. The update
+# join adds CTY_OOS_HOSPITALS and CTY_OWN_HOSPITALS to md_county_panel in
+# place. Cached as md_p17_constructions_3inst; writes MD_P17B (rows) and
+# MD_P17C (tests).
 md_county_panel[md_p17, `:=`(CTY_OOS_HOSPITALS = i.CTY_OOS_HOSPITALS,
                              CTY_OWN_HOSPITALS = i.CTY_OWN_HOSPITALS),
                 on = .(HOSPITAL_ID, POST_MONTH)]
@@ -3666,13 +3936,12 @@ print(md_p17_res$rows[, .(INSTRUMENT_TESTED, TERM,
 print(md_p17_res$tests[, .(INSTRUMENT_TESTED, ESTIMATOR, P_VALUE = round(P_VALUE, 4))])
 
 
-# ---------------------------------------------------------------------------
-# 17.4 -- HSA size distribution in the estimation sample
-#
+# -----------------------------------------------------------------------------
+# 17.4  HSA size distribution in the estimation sample
+# -----------------------------------------------------------------------------
 # Reports how many sample HSAs contain one, two, three, or four or more
 # hospitals. This is the descriptive behind the HSA scope condition used in
-# Parts 11.4 and 12.
-# ---------------------------------------------------------------------------
+# Parts 11.4 and 12. Reloads the HSA panel with md_load_panel().
 p_hsa <- md_load_panel("HSA")
 hsa_n <- unique(p_hsa[!is.na(ANALYSIS_MARKET), .(HOSPITAL_ID, ANALYSIS_MARKET)])[
   , .(N_HOSP = .N), by = ANALYSIS_MARKET]
